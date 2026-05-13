@@ -1,3 +1,5 @@
+//go:build llmagent
+
 package llmagent
 
 import (
