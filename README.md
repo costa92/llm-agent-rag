@@ -38,6 +38,70 @@ Implemented:
 - prompt customization via `prompt.Template`
 - `rag.System` with `Import`, `ImportFrom`, `Retrieve`, and `Ask`
 
+## Quick start
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/costa92/llm-agent-rag/generate"
+	"github.com/costa92/llm-agent-rag/ingest"
+	"github.com/costa92/llm-agent-rag/rag"
+)
+
+type echoModel struct{}
+
+func (echoModel) Generate(_ context.Context, req generate.Request) (generate.Response, error) {
+	return generate.Response{Text: req.Messages[0].Content}, nil
+}
+
+func main() {
+	sys := rag.New(rag.Options{Model: echoModel{}})
+
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "paris", Content: "Paris is the capital of France."},
+		{ID: "berlin", Content: "Berlin is the capital of Germany."},
+	}, ingest.ImportOptions{Namespace: "cities"})
+	if err != nil {
+		panic(err)
+	}
+
+	hits, err := sys.Retrieve(context.Background(), "France capital", rag.SearchOptions{
+		Namespace: "cities",
+		TopK:      1,
+	})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(hits[0].Chunk.ID)
+
+	ans, err := sys.Ask(context.Background(), "What is the capital of France?", rag.AskOptions{
+		Search: rag.SearchOptions{Namespace: "cities", TopK: 1},
+	})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(ans.Text)
+}
+```
+
+## Usage notes
+
+- `Import` is for explicit in-memory document batches.
+- `ImportFrom` is for document sources that already implement the source seam.
+- `Retrieve` is LLM-free and only depends on the embedder and store.
+- `Ask` layers prompt rendering and answer generation on top of retrieval.
+
+## Minimal example workflow
+
+1. Build a `rag.System`
+2. Import documents through `Import` or `ImportFrom`
+3. Call `Retrieve` for raw ranked chunks
+4. Call `Ask` when you want a synthesized answer
+
 Not implemented yet:
 
 - production vector backends
