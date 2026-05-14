@@ -31,5 +31,45 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	if err != nil {
 		return Answer{}, err
 	}
-	return Answer{Text: resp.Text, Hits: hits, Prompt: req}, nil
+	ids := make([]string, 0, len(hits))
+	citations := make([]Citation, 0, len(hits))
+	for _, hit := range hits {
+		ids = append(ids, hit.Chunk.ID)
+		citations = append(citations, Citation{
+			ChunkID:   hit.Chunk.ID,
+			DocID:     hit.Chunk.DocID,
+			Namespace: hit.Chunk.Namespace,
+			Title:     hit.Chunk.Title,
+			Score:     hit.Score,
+		})
+	}
+	return Answer{
+		Text:      resp.Text,
+		Hits:      hits,
+		Prompt:    req,
+		Citations: citations,
+		Diagnostics: Diagnostics{
+			HitCount:         len(hits),
+			ReturnedChunkIDs: append([]string(nil), ids...),
+		},
+		Trace: Trace{
+			Question:         question,
+			Namespace:        opts.Search.Namespace,
+			TopK:             opts.Search.TopK,
+			Filters:          copyMap(opts.Search.Filters),
+			SecurityFilters:  copyMap(opts.Search.SecurityFilters),
+			SelectedChunkIDs: append([]string(nil), ids...),
+		},
+	}, nil
+}
+
+func copyMap(src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }

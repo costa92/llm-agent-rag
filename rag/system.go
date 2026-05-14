@@ -11,9 +11,34 @@ import (
 )
 
 type Answer struct {
-	Text   string
-	Hits   []store.Hit
-	Prompt generate.Request
+	Text        string
+	Hits        []store.Hit
+	Prompt      generate.Request
+	Citations   []Citation
+	Diagnostics Diagnostics
+	Trace       Trace
+}
+
+type Citation struct {
+	ChunkID   string
+	DocID     string
+	Namespace string
+	Title     string
+	Score     float64
+}
+
+type Diagnostics struct {
+	HitCount        int
+	ReturnedChunkIDs []string
+}
+
+type Trace struct {
+	Question        string
+	Namespace       string
+	TopK            int
+	Filters         map[string]any
+	SecurityFilters map[string]any
+	SelectedChunkIDs []string
 }
 
 type System struct {
