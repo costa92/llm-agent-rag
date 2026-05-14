@@ -44,6 +44,8 @@ Implemented:
   - MQE / HyDE query expansion
   - heuristic reranking
   - token-budget-aware context packing
+  - structure-aware section/path retrieval
+- document-tree primitives for structured markdown corpora
 
 ## Quick start
 
