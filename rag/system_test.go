@@ -2,10 +2,12 @@ package rag
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/ingest"
+	"github.com/costa92/llm-agent-rag/pack"
 	"github.com/costa92/llm-agent-rag/retrieve"
 	"github.com/costa92/llm-agent-rag/store"
 )
@@ -240,9 +242,9 @@ func (rewritePreprocessor) Process(_ context.Context, req retrieve.Request) (ret
 	return retrieve.PreprocessResult{
 		QueryVariants: []string{"france capital"},
 		Trace: retrieve.Trace{
-			OriginalQuery: req.Query,
+			OriginalQuery:  req.Query,
 			EffectiveQuery: "france capital",
-			QueryVariants: []string{"france capital"},
+			QueryVariants:  []string{"france capital"},
 		},
 	}, nil
 }
@@ -269,4 +271,81 @@ func TestRetrieveUsesConfiguredPreprocessor(t *testing.T) {
 	if hits[0].Chunk.DocID != "doc1" {
 		t.Fatalf("top hit doc = %s, want doc1", hits[0].Chunk.DocID)
 	}
+}
+
+func TestAskReranksAndPacksContext(t *testing.T) {
+	sys := New(Options{Model: fakeModel{}})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "general travel guide"},
+		{ID: "doc2", Content: "Paris is the capital of France and has museums cafes boulevards"},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+	ans, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search: SearchOptions{
+			Namespace:    "geo",
+			TopK:         2,
+			EnableRerank: true,
+		},
+		MaxTokens: 10,
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if len(ans.Trace.RerankedChunkIDs) == 0 || ans.Trace.RerankedChunkIDs[0] != "doc2:0" {
+		t.Fatalf("reranked ids = %#v, want doc2 first", ans.Trace.RerankedChunkIDs)
+	}
+	if len(ans.Diagnostics.PromptChunkIDs) == 0 || ans.Diagnostics.PromptChunkIDs[0] != "doc2:0" {
+		t.Fatalf("prompt chunk ids = %#v, want doc2 included", ans.Diagnostics.PromptChunkIDs)
+	}
+	if !strings.Contains(ans.Prompt.Messages[0].Content, "doc2:0") {
+		t.Fatalf("prompt missing packed chunk doc2: %q", ans.Prompt.Messages[0].Content)
+	}
+}
+
+func TestAskCanUseCustomPacker(t *testing.T) {
+	sys := New(Options{
+		Model:  fakeModel{},
+		Packer: fixedPacker{},
+	})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Paris is the capital of France."},
+		{ID: "doc2", Content: "Berlin is the capital of Germany."},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+	ans, err := sys.Ask(context.Background(), "Where is Paris?", AskOptions{
+		Search: SearchOptions{Namespace: "geo", TopK: 2},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if len(ans.Hits) != 1 || ans.Hits[0].Chunk.ID != "doc1:0" {
+		t.Fatalf("hits = %+v, want only doc1:0", ans.Hits)
+	}
+	if len(ans.Trace.DroppedChunkIDs) == 0 || ans.Trace.DroppedChunkIDs[0] != "doc2:0" {
+		t.Fatalf("dropped ids = %#v, want doc2 dropped", ans.Trace.DroppedChunkIDs)
+	}
+}
+
+type fixedPacker struct{}
+
+func (fixedPacker) Pack(_ context.Context, req pack.Request) (pack.Result, error) {
+	selected := make([]store.Hit, 0, 1)
+	if len(req.Hits) > 0 {
+		selected = append(selected, req.Hits[0])
+	}
+	dropped := make([]string, 0, len(req.Hits))
+	for _, hit := range req.Hits[1:] {
+		dropped = append(dropped, hit.Chunk.ID)
+	}
+	return pack.Result{
+		Hits: selected,
+		Trace: pack.Trace{
+			SelectedChunkIDs: chunkIDs(selected),
+			DroppedChunkIDs:  dropped,
+		},
+	}, nil
 }

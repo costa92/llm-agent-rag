@@ -6,7 +6,9 @@ import (
 	"github.com/costa92/llm-agent-rag/embed"
 	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/ingest"
+	"github.com/costa92/llm-agent-rag/pack"
 	"github.com/costa92/llm-agent-rag/prompt"
+	"github.com/costa92/llm-agent-rag/rerank"
 	"github.com/costa92/llm-agent-rag/retrieve"
 	"github.com/costa92/llm-agent-rag/store"
 )
@@ -31,6 +33,7 @@ type Citation struct {
 type Diagnostics struct {
 	HitCount         int
 	ReturnedChunkIDs []string
+	PromptChunkIDs   []string
 }
 
 type Trace struct {
@@ -39,6 +42,9 @@ type Trace struct {
 	TopK             int
 	Filters          map[string]any
 	SecurityFilters  map[string]any
+	RerankedChunkIDs []string
+	PackedChunkIDs   []string
+	DroppedChunkIDs  []string
 	SelectedChunkIDs []string
 }
 
@@ -50,6 +56,8 @@ type System struct {
 	template prompt.Template
 	pre      retrieve.QueryPreprocessor
 	ret      retrieve.Retriever
+	reranker rerank.Reranker
+	packer   pack.Packer
 	maxChars int
 }
 
@@ -80,6 +88,14 @@ func New(opts Options) *System {
 			Base: retrieve.DenseRetriever{Embedder: emb, Store: st},
 		}
 	}
+	rr := opts.Reranker
+	if rr == nil {
+		rr = rerank.HeuristicReranker{}
+	}
+	pk := opts.Packer
+	if pk == nil {
+		pk = pack.GreedyTokenPacker{}
+	}
 	maxChars := opts.MaxChars
 	if maxChars <= 0 {
 		maxChars = 500
@@ -92,6 +108,8 @@ func New(opts Options) *System {
 		template: tpl,
 		pre:      pre,
 		ret:      ret,
+		reranker: rr,
+		packer:   pk,
 		maxChars: maxChars,
 	}
 }

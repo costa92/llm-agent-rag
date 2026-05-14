@@ -42,6 +42,8 @@ Implemented:
   - lexical retrieval
   - hybrid retrieval
   - MQE / HyDE query expansion
+  - heuristic reranking
+  - token-budget-aware context packing
 
 ## Quick start
 
@@ -98,7 +100,8 @@ func main() {
 - `Import` is for explicit in-memory document batches.
 - `ImportFrom` is for document sources that already implement the source seam.
 - `Retrieve` is LLM-free and only depends on the embedder and store.
-- `Ask` layers prompt rendering and answer generation on top of retrieval.
+- `Ask` layers retrieval, optional rerank, context packing, prompt rendering,
+  and answer generation.
 
 ## Minimal example workflow
 
@@ -110,7 +113,6 @@ func main() {
 Not implemented yet:
 
 - production vector backends
-- rerankers
 - HTTP service layer
 - CLI
 

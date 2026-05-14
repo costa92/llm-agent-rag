@@ -16,6 +16,10 @@ this file.
   - `MQECount`
 - `retrieve.LLMExpansionPreprocessor` for policy-layer MQE/HyDE query rewriting
 - `retrieve.VariantRetriever` for multi-query merge/dedup over any base retriever
+- rerank and context-packing seams:
+  - `rerank.Reranker`
+  - `pack.Packer`
+- default heuristic reranking and greedy token-budget-aware context packing
 
 ### Changed
 
@@ -23,6 +27,8 @@ this file.
   plus variant-merging retrieval instead of requiring adapter-side query loops
 - optional `adapter/llmagent` search/ask now delegates MQE/HyDE handling to the
   standalone retrieval layer
+- default `rag.Ask(...)` now supports rerank plus prompt-evidence packing with
+  traceable chunk selection
 
 ### Fixed
 
