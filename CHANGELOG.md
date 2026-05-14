@@ -6,6 +6,30 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [v0.1.3] - 2026-05-14
+
+Patch release for Phase 9 source-aware ingestion groundwork.
+
+### Added
+
+- additive source-lineage fields on `ingest.Document`:
+  - `SourceID`
+  - `Version`
+  - `Checksum`
+  - `EmbeddingVersion`
+- automatic lineage metadata propagation into chunk and stored-chunk metadata
+- `MarkdownSplitter` with section-aware metadata:
+  - `heading`
+  - `heading_level`
+  - `section_path`
+- `ImportOptions.ReplaceSource` for replace-by-source ingestion behavior
+- `Store.RemoveByFilter(...)` plus default `InMemoryStore` support
+
+### Changed
+
+- standalone import can now remove existing chunks for the same `source_id`
+  before upserting new content when `ReplaceSource` is enabled
+
 ## [v0.1.2] - 2026-05-14
 
 Patch release for Phase 8 RAG contract hardening.
