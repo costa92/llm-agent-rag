@@ -6,6 +6,21 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [v0.1.2] - 2026-05-14
+
+Patch release for Phase 8 RAG contract hardening.
+
+### Added
+
+- real metadata filtering in the default `InMemoryStore`
+- explicit `SecurityFilters` plumbing in standalone retrieval queries
+- machine-readable answer citations, diagnostics, and retrieval trace fields
+
+### Changed
+
+- standalone retrieval now distinguishes normal caller filters from mandatory
+  security trimming inputs
+
 ## [v0.1.1] - 2026-05-14
 
 Patch release for CI stability.
