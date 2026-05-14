@@ -76,6 +76,25 @@ func (s *InMemoryStore) Get(_ context.Context, id string) (StoredChunk, error) {
 	return chunk, nil
 }
 
+func (s *InMemoryStore) List(_ context.Context, namespace string, filters Filter, securityFilters Filter) ([]StoredChunk, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]StoredChunk, 0, len(s.all))
+	for _, chunk := range s.all {
+		if namespace != "" && chunk.Namespace != namespace {
+			continue
+		}
+		if !matchesFilters(chunk.Metadata, filters) {
+			continue
+		}
+		if !matchesFilters(chunk.Metadata, securityFilters) {
+			continue
+		}
+		out = append(out, chunk)
+	}
+	return out, nil
+}
+
 func (s *InMemoryStore) Remove(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

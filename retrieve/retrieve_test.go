@@ -70,3 +70,84 @@ func TestDenseRetrieverUsesStoreContract(t *testing.T) {
 		t.Fatalf("trace = %+v, want effective query paris", trace)
 	}
 }
+
+func TestLexicalRetrieverUsesContentOverlap(t *testing.T) {
+	mem := store.NewInMemoryStore(2)
+	err := mem.Upsert(context.Background(), []store.StoredChunk{
+		{
+			ID:        "a",
+			Namespace: "docs",
+			Vector:    embed.Vector{1, 0},
+			Content:   "Paris travel guide for museums",
+		},
+		{
+			ID:        "b",
+			Namespace: "docs",
+			Vector:    embed.Vector{0.9, 0.1},
+			Content:   "Berlin public transit manual",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+
+	r := LexicalRetriever{Store: mem}
+	hits, _, err := r.Retrieve(context.Background(), Request{
+		Query:     "paris museums",
+		Namespace: "docs",
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("Retrieve(): %v", err)
+	}
+	if len(hits) != 1 || hits[0].Chunk.ID != "a" {
+		t.Fatalf("hits = %+v, want only a", hits)
+	}
+}
+
+func TestHybridRetrieverFusesDenseAndLexical(t *testing.T) {
+	mem := store.NewInMemoryStore(2)
+	err := mem.Upsert(context.Background(), []store.StoredChunk{
+		{
+			ID:        "a",
+			Namespace: "docs",
+			Vector:    embed.Vector{1, 0},
+			Content:   "Paris travel guide for museums",
+		},
+		{
+			ID:        "b",
+			Namespace: "docs",
+			Vector:    embed.Vector{0.95, 0.05},
+			Content:   "France capital overview",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+
+	r := HybridRetriever{
+		Dense:   DenseRetriever{Embedder: stubEmbedder{}, Store: mem},
+		Lexical: LexicalRetriever{Store: mem},
+	}
+	hits, _, err := r.Retrieve(context.Background(), Request{
+		Query:     "paris museums",
+		Namespace: "docs",
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("Retrieve(): %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatalf("expected fused hits, got none")
+	}
+	foundA := false
+	for _, hit := range hits {
+		if hit.Chunk.ID == "a" {
+			foundA = true
+			break
+		}
+	}
+	if !foundA {
+		t.Fatalf("hits = %+v, want fused result set to include lexical match a", hits)
+	}
+}

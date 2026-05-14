@@ -298,3 +298,38 @@ func TestInMemoryStoreRemoveByFilter(t *testing.T) {
 		t.Fatalf("stats.Count = %d, want 1", stats.Count)
 	}
 }
+
+func TestInMemoryStoreListHonorsFilters(t *testing.T) {
+	s := NewInMemoryStore(2)
+	err := s.Upsert(context.Background(), []StoredChunk{
+		{
+			ID:        "a",
+			Namespace: "docs",
+			Vector:    embed.Vector{1, 0},
+			Content:   "Paris travel guide",
+			Metadata: map[string]any{
+				"lang": "en",
+			},
+		},
+		{
+			ID:        "b",
+			Namespace: "docs",
+			Vector:    embed.Vector{0.9, 0.1},
+			Content:   "Guide de Paris",
+			Metadata: map[string]any{
+				"lang": "fr",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+
+	chunks, err := s.List(context.Background(), "docs", Filter{"lang": "en"}, nil)
+	if err != nil {
+		t.Fatalf("List(): %v", err)
+	}
+	if len(chunks) != 1 || chunks[0].ID != "a" {
+		t.Fatalf("chunks = %+v, want only a", chunks)
+	}
+}

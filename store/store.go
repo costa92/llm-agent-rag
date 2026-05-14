@@ -20,6 +20,7 @@ type Query struct {
 type Store interface {
 	Upsert(ctx context.Context, chunks []StoredChunk) error
 	Search(ctx context.Context, q Query) ([]Hit, error)
+	List(ctx context.Context, namespace string, filters Filter, securityFilters Filter) ([]StoredChunk, error)
 	Get(ctx context.Context, id string) (StoredChunk, error)
 	Remove(ctx context.Context, id string) error
 	RemoveByFilter(ctx context.Context, namespace string, filters Filter) (int, error)
