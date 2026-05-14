@@ -6,6 +6,17 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [v0.1.1] - 2026-05-14
+
+Patch release for CI stability.
+
+### Fixed
+
+- replaced `go mod tidy` drift enforcement with a module-boundary check so
+  `adapter/llmagent` build-tagged imports do not force a hard dependency on
+  `github.com/costa92/llm-agent`
+- kept standalone core packages publishable without modifying `go.mod`
+
 ## [v0.1.0] - 2026-05-14
 
 Initial standalone RAG SDK release.
