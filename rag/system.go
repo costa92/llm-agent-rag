@@ -7,6 +7,7 @@ import (
 	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/ingest"
 	"github.com/costa92/llm-agent-rag/prompt"
+	"github.com/costa92/llm-agent-rag/retrieve"
 	"github.com/costa92/llm-agent-rag/store"
 )
 
@@ -47,6 +48,8 @@ type System struct {
 	store    store.Store
 	model    generate.Model
 	template prompt.Template
+	pre      retrieve.QueryPreprocessor
+	ret      retrieve.Retriever
 	maxChars int
 }
 
@@ -67,6 +70,14 @@ func New(opts Options) *System {
 	if tpl == nil {
 		tpl = prompt.DefaultQATemplate{}
 	}
+	pre := opts.Preprocessor
+	if pre == nil {
+		pre = retrieve.NoopPreprocessor{}
+	}
+	ret := opts.Retriever
+	if ret == nil {
+		ret = retrieve.DenseRetriever{Embedder: emb, Store: st}
+	}
 	maxChars := opts.MaxChars
 	if maxChars <= 0 {
 		maxChars = 500
@@ -77,6 +88,8 @@ func New(opts Options) *System {
 		store:    st,
 		model:    opts.Model,
 		template: tpl,
+		pre:      pre,
+		ret:      ret,
 		maxChars: maxChars,
 	}
 }

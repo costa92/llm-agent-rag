@@ -5,6 +5,7 @@ import (
 	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/ingest"
 	"github.com/costa92/llm-agent-rag/prompt"
+	"github.com/costa92/llm-agent-rag/retrieve"
 	"github.com/costa92/llm-agent-rag/store"
 )
 
@@ -22,10 +23,12 @@ type AskOptions struct {
 }
 
 type Options struct {
-	Splitter ingest.Splitter
-	Embedder embed.Embedder
-	Store    store.Store
-	Model    generate.Model
-	Template prompt.Template
-	MaxChars int
+	Splitter     ingest.Splitter
+	Embedder     embed.Embedder
+	Store        store.Store
+	Model        generate.Model
+	Template     prompt.Template
+	Preprocessor retrieve.QueryPreprocessor
+	Retriever    retrieve.Retriever
+	MaxChars     int
 }

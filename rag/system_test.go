@@ -6,6 +6,7 @@ import (
 
 	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/ingest"
+	"github.com/costa92/llm-agent-rag/retrieve"
 	"github.com/costa92/llm-agent-rag/store"
 )
 
@@ -230,5 +231,42 @@ func TestImportReplaceSourceRemovesPreviousChunks(t *testing.T) {
 	}
 	if chunk.Metadata[ingest.MetadataSourceIDKey] != "source-alpha" {
 		t.Fatalf("source_id = %v, want source-alpha", chunk.Metadata[ingest.MetadataSourceIDKey])
+	}
+}
+
+type rewritePreprocessor struct{}
+
+func (rewritePreprocessor) Process(_ context.Context, req retrieve.Request) (retrieve.PreprocessResult, error) {
+	return retrieve.PreprocessResult{
+		QueryVariants: []string{"france capital"},
+		Trace: retrieve.Trace{
+			OriginalQuery: req.Query,
+			EffectiveQuery: "france capital",
+			QueryVariants: []string{"france capital"},
+		},
+	}, nil
+}
+
+func TestRetrieveUsesConfiguredPreprocessor(t *testing.T) {
+	sys := New(Options{Preprocessor: rewritePreprocessor{}})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Paris is the capital of France."},
+		{ID: "doc2", Content: "Berlin is the capital of Germany."},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+	hits, err := sys.Retrieve(context.Background(), "what is the capital of france", SearchOptions{
+		Namespace: "geo",
+		TopK:      1,
+	})
+	if err != nil {
+		t.Fatalf("Retrieve(): %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("len(hits) = %d, want 1", len(hits))
+	}
+	if hits[0].Chunk.DocID != "doc1" {
+		t.Fatalf("top hit doc = %s, want doc1", hits[0].Chunk.DocID)
 	}
 }
