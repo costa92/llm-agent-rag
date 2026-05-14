@@ -43,9 +43,10 @@ func (HeuristicReranker) Rerank(_ context.Context, req Request) ([]store.Hit, Tr
 	tokens := tokenize(req.Query)
 	scored := make([]scoredHit, 0, len(req.Hits))
 	for i, hit := range req.Hits {
+		structuredText := hit.Chunk.Title + " " + hit.Chunk.Content + " " + hit.Chunk.Heading + " " + strings.Join(hit.Chunk.SectionPath, " ")
 		scored = append(scored, scoredHit{
 			hit:   hit,
-			score: hit.Score + lexicalBoost(tokens, hit.Chunk.Title+" "+hit.Chunk.Content),
+			score: hit.Score + lexicalBoost(tokens, structuredText),
 			order: i,
 		})
 	}

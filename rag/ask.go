@@ -37,6 +37,8 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	packedHits := rankedHits
 	packedIDs := chunkIDs(packedHits)
 	var droppedIDs []string
+	matchedSections := sectionIDs(rankedHits)
+	searchPath := sectionPathTrail(rankedHits)
 	if s.packer != nil {
 		packed, err := s.packer.Pack(ctx, pack.Request{
 			Question:  question,
@@ -68,11 +70,13 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	for _, hit := range packedHits {
 		ids = append(ids, hit.Chunk.ID)
 		citations = append(citations, Citation{
-			ChunkID:   hit.Chunk.ID,
-			DocID:     hit.Chunk.DocID,
-			Namespace: hit.Chunk.Namespace,
-			Title:     hit.Chunk.Title,
-			Score:     hit.Score,
+			ChunkID:     hit.Chunk.ID,
+			DocID:       hit.Chunk.DocID,
+			Namespace:   hit.Chunk.Namespace,
+			Title:       hit.Chunk.Title,
+			SectionID:   hit.Chunk.SectionID,
+			SectionPath: append([]string(nil), hit.Chunk.SectionPath...),
+			Score:       hit.Score,
 		})
 	}
 	return Answer{
@@ -84,6 +88,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			HitCount:         len(hits),
 			ReturnedChunkIDs: append([]string(nil), chunkIDs(hits)...),
 			PromptChunkIDs:   append([]string(nil), ids...),
+			MatchedSections:  append([]string(nil), matchedSections...),
 		},
 		Trace: Trace{
 			Question:         question,
@@ -91,6 +96,8 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			TopK:             opts.Search.TopK,
 			Filters:          copyMap(opts.Search.Filters),
 			SecurityFilters:  copyMap(opts.Search.SecurityFilters),
+			SearchPath:       append([]string(nil), searchPath...),
+			MatchedSections:  append([]string(nil), matchedSections...),
 			RerankedChunkIDs: append([]string(nil), rerankedIDs...),
 			PackedChunkIDs:   append([]string(nil), packedIDs...),
 			DroppedChunkIDs:  append([]string(nil), droppedIDs...),
@@ -114,6 +121,32 @@ func chunkIDs(hits []store.Hit) []string {
 	out := make([]string, 0, len(hits))
 	for _, hit := range hits {
 		out = append(out, hit.Chunk.ID)
+	}
+	return out
+}
+
+func sectionIDs(hits []store.Hit) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		if hit.Chunk.SectionID == "" {
+			continue
+		}
+		if _, ok := seen[hit.Chunk.SectionID]; ok {
+			continue
+		}
+		seen[hit.Chunk.SectionID] = struct{}{}
+		out = append(out, hit.Chunk.SectionID)
+	}
+	return out
+}
+
+func sectionPathTrail(hits []store.Hit) []string {
+	out := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		for _, path := range hit.Chunk.SectionPath {
+			out = append(out, path)
+		}
 	}
 	return out
 }

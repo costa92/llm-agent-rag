@@ -11,7 +11,11 @@ import (
 func TestDefaultQATemplateRender(t *testing.T) {
 	req, err := DefaultQATemplate{}.Render(context.Background(), RenderContext{
 		Question: "Where is Paris?",
-		Hits: []store.Hit{{Chunk: store.StoredChunk{ID: "doc1#chunk-0", Content: "Paris is in France."}}},
+		Hits: []store.Hit{{Chunk: store.StoredChunk{
+			ID:          "doc1#chunk-0",
+			Content:     "Paris is in France.",
+			SectionPath: []string{"Cities", "Europe"},
+		}}},
 	})
 	if err != nil {
 		t.Fatalf("Render(): %v", err)
@@ -24,5 +28,8 @@ func TestDefaultQATemplateRender(t *testing.T) {
 	}
 	if !strings.Contains(req.Messages[0].Content, "doc1#chunk-0") {
 		t.Fatalf("rendered content missing chunk id: %q", req.Messages[0].Content)
+	}
+	if !strings.Contains(req.Messages[0].Content, "Cities > Europe") {
+		t.Fatalf("rendered content missing section path: %q", req.Messages[0].Content)
 	}
 }

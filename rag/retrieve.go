@@ -21,6 +21,7 @@ func (s *System) Retrieve(ctx context.Context, query string, opts SearchOptions)
 		EnableMQE:       opts.EnableMQE,
 		EnableHyDE:      opts.EnableHyDE,
 		MQECount:        opts.MQECount,
+		EnableStructure: opts.EnableStructure,
 	}
 	processed, err := s.pre.Process(ctx, req)
 	if err != nil {

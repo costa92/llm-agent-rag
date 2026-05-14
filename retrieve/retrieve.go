@@ -21,6 +21,7 @@ type Request struct {
 	EnableMQE       bool
 	EnableHyDE      bool
 	MQECount        int
+	EnableStructure bool
 	QueryVariants   []string
 }
 
@@ -30,9 +31,12 @@ type PreprocessResult struct {
 }
 
 type Trace struct {
-	OriginalQuery  string
-	EffectiveQuery string
-	QueryVariants  []string
+	OriginalQuery    string
+	EffectiveQuery   string
+	QueryVariants    []string
+	SearchPath       []string
+	MatchedSections  []string
+	SelectedChunkIDs []string
 }
 
 type QueryPreprocessor interface {
@@ -45,9 +49,10 @@ func (NoopPreprocessor) Process(_ context.Context, req Request) (PreprocessResul
 	return PreprocessResult{
 		QueryVariants: []string{req.Query},
 		Trace: Trace{
-			OriginalQuery:  req.Query,
-			EffectiveQuery: req.Query,
-			QueryVariants:  []string{req.Query},
+			OriginalQuery:    req.Query,
+			EffectiveQuery:   req.Query,
+			QueryVariants:    []string{req.Query},
+			SelectedChunkIDs: nil,
 		},
 	}, nil
 }
@@ -88,9 +93,10 @@ func (p LLMExpansionPreprocessor) Process(ctx context.Context, req Request) (Pre
 	return PreprocessResult{
 		QueryVariants: variants,
 		Trace: Trace{
-			OriginalQuery:  req.Query,
-			EffectiveQuery: variants[0],
-			QueryVariants:  append([]string(nil), variants...),
+			OriginalQuery:    req.Query,
+			EffectiveQuery:   variants[0],
+			QueryVariants:    append([]string(nil), variants...),
+			SelectedChunkIDs: nil,
 		},
 	}, nil
 }
@@ -163,9 +169,10 @@ func (r VariantRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hi
 		hits = append(hits, hit.hit)
 	}
 	return hits, Trace{
-		OriginalQuery:  req.Query,
-		EffectiveQuery: variants[0],
-		QueryVariants:  append([]string(nil), variants...),
+		OriginalQuery:    req.Query,
+		EffectiveQuery:   variants[0],
+		QueryVariants:    append([]string(nil), variants...),
+		SelectedChunkIDs: collectChunkIDs(hits),
 	}, nil
 }
 
@@ -190,9 +197,10 @@ func (r DenseRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit,
 		return nil, Trace{}, err
 	}
 	return hits, Trace{
-		OriginalQuery:  req.Query,
-		EffectiveQuery: req.Query,
-		QueryVariants:  []string{req.Query},
+		OriginalQuery:    req.Query,
+		EffectiveQuery:   req.Query,
+		QueryVariants:    []string{req.Query},
+		SelectedChunkIDs: collectChunkIDs(hits),
 	}, nil
 }
 
@@ -222,15 +230,64 @@ func (r LexicalRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hi
 		hits = hits[:req.TopK]
 	}
 	return hits, Trace{
-		OriginalQuery:  req.Query,
-		EffectiveQuery: req.Query,
-		QueryVariants:  []string{req.Query},
+		OriginalQuery:    req.Query,
+		EffectiveQuery:   req.Query,
+		QueryVariants:    []string{req.Query},
+		SelectedChunkIDs: collectChunkIDs(hits),
+	}, nil
+}
+
+type StructureRetriever struct {
+	Store store.Store
+}
+
+func (r StructureRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
+	chunks, err := r.Store.List(ctx, req.Namespace, store.Filter(req.Filters), store.Filter(req.SecurityFilters))
+	if err != nil {
+		return nil, Trace{}, err
+	}
+	tokens := tokenize(req.Query)
+	path := make([]string, 0, len(tokens))
+	sectionSeen := make(map[string]struct{})
+	matchedSections := make([]string, 0)
+	hits := make([]store.Hit, 0, len(chunks))
+	for _, chunk := range chunks {
+		score, matched := structureScore(tokens, chunk)
+		if score <= 0 {
+			continue
+		}
+		if matched != "" {
+			path = append(path, matched)
+		}
+		if chunk.SectionID != "" {
+			if _, ok := sectionSeen[chunk.SectionID]; !ok {
+				sectionSeen[chunk.SectionID] = struct{}{}
+				matchedSections = append(matchedSections, chunk.SectionID)
+			}
+		}
+		hits = append(hits, store.Hit{
+			Chunk: chunk,
+			Score: score,
+		})
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+	if req.TopK > 0 && len(hits) > req.TopK {
+		hits = hits[:req.TopK]
+	}
+	return hits, Trace{
+		OriginalQuery:    req.Query,
+		EffectiveQuery:   req.Query,
+		QueryVariants:    []string{req.Query},
+		SearchPath:       path,
+		MatchedSections:  matchedSections,
+		SelectedChunkIDs: collectChunkIDs(hits),
 	}, nil
 }
 
 type HybridRetriever struct {
-	Dense   Retriever
-	Lexical Retriever
+	Dense     Retriever
+	Lexical   Retriever
+	Structure Retriever
 }
 
 func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
@@ -243,8 +300,17 @@ func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit
 		return nil, Trace{}, err
 	}
 
+	var structureHits []store.Hit
+	var structureTrace Trace
+	if req.EnableStructure && r.Structure != nil {
+		structureHits, structureTrace, err = r.Structure.Retrieve(ctx, req)
+		if err != nil {
+			return nil, Trace{}, err
+		}
+	}
+
 	fused := make(map[string]store.Hit, len(denseHits)+len(lexHits))
-	rrfScores := make(map[string]float64, len(denseHits)+len(lexHits))
+	rrfScores := make(map[string]float64, len(denseHits)+len(lexHits)+len(structureHits))
 
 	apply := func(hits []store.Hit) {
 		for i, hit := range hits {
@@ -256,6 +322,7 @@ func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit
 	}
 	apply(denseHits)
 	apply(lexHits)
+	apply(structureHits)
 
 	out := make([]store.Hit, 0, len(fused))
 	for id, hit := range fused {
@@ -267,10 +334,62 @@ func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit
 		out = out[:req.TopK]
 	}
 	return out, Trace{
-		OriginalQuery:  req.Query,
-		EffectiveQuery: denseTrace.EffectiveQuery,
-		QueryVariants:  append([]string(nil), denseTrace.QueryVariants...),
+		OriginalQuery:    req.Query,
+		EffectiveQuery:   denseTrace.EffectiveQuery,
+		QueryVariants:    append([]string(nil), denseTrace.QueryVariants...),
+		SearchPath:       append([]string(nil), structureTrace.SearchPath...),
+		MatchedSections:  append([]string(nil), structureTrace.MatchedSections...),
+		SelectedChunkIDs: collectChunkIDs(out),
 	}, nil
+}
+
+func collectChunkIDs(hits []store.Hit) []string {
+	out := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		out = append(out, hit.Chunk.ID)
+	}
+	return out
+}
+
+func structureScore(tokens []string, chunk store.StoredChunk) (float64, string) {
+	if len(tokens) == 0 {
+		return 0, ""
+	}
+	searchSpace := append([]string(nil), chunk.SectionPath...)
+	if chunk.Heading != "" {
+		searchSpace = append(searchSpace, chunk.Heading)
+	}
+	if chunk.Title != "" {
+		searchSpace = append(searchSpace, chunk.Title)
+	}
+	var score float64
+	var matched string
+	for _, candidate := range searchSpace {
+		lc := strings.ToLower(candidate)
+		for _, tok := range tokens {
+			if strings.Contains(lc, tok) {
+				score += 2
+				if matched == "" {
+					matched = candidate
+				}
+			}
+		}
+	}
+	if score == 0 {
+		return lexicalScore(tokens, chunk.Content) * 0.5, matched
+	}
+	if chunk.Heading != "" {
+		heading := strings.ToLower(chunk.Heading)
+		for _, tok := range tokens {
+			if strings.Contains(heading, tok) {
+				score += 1.5
+			}
+		}
+	}
+	if len(chunk.SectionPath) > 0 {
+		score += float64(len(chunk.SectionPath)) * 0.1
+	}
+	return score, matched
 }
 
 func uniqueQueries(query string) []string {

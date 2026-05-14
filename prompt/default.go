@@ -26,6 +26,10 @@ func (t DefaultQATemplate) Render(_ context.Context, rc RenderContext) (generate
 	b.WriteString(instructions)
 	b.WriteString("\n\nContext:\n")
 	for _, hit := range rc.Hits {
+		if len(hit.Chunk.SectionPath) > 0 {
+			fmt.Fprintf(&b, "[%s | %s] %s\n\n", hit.Chunk.ID, strings.Join(hit.Chunk.SectionPath, " > "), hit.Chunk.Content)
+			continue
+		}
 		fmt.Fprintf(&b, "[%s] %s\n\n", hit.Chunk.ID, hit.Chunk.Content)
 	}
 	fmt.Fprintf(&b, "Question: %s", rc.Question)

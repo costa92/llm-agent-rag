@@ -20,6 +20,7 @@ type SearchOptions struct {
 	EnableHyDE      bool
 	MQECount        int
 	EnableRerank    bool
+	EnableStructure bool
 }
 
 type AskOptions struct {

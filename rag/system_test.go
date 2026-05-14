@@ -330,6 +330,69 @@ func TestAskCanUseCustomPacker(t *testing.T) {
 	}
 }
 
+func TestStructureAwareRetrieveAndAskTrace(t *testing.T) {
+	sys := New(Options{Model: fakeModel{}, Splitter: ingest.NewMarkdownSplitter(500, 50)})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{
+			ID:      "doc1",
+			Content: "# Cities\nParis is in France.\n## Travel\nMuseums and cafes.\n## History\nAncient capital notes.",
+		},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	hits, err := sys.Retrieve(context.Background(), "travel paris", SearchOptions{
+		Namespace:       "geo",
+		TopK:            2,
+		EnableStructure: true,
+	})
+	if err != nil {
+		t.Fatalf("Retrieve(): %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("expected structure-aware hits")
+	}
+	if len(hits[0].Chunk.SectionPath) == 0 {
+		t.Fatalf("top hit missing section path: %+v", hits[0].Chunk)
+	}
+	foundTravel := false
+	for _, hit := range hits {
+		if strings.Join(hit.Chunk.SectionPath, " > ") == "Cities > Travel" {
+			foundTravel = true
+			break
+		}
+	}
+	if !foundTravel {
+		t.Fatalf("structure hits missing travel section: %+v", hits)
+	}
+
+	ans, err := sys.Ask(context.Background(), "Where should I travel in Paris?", AskOptions{
+		Search: SearchOptions{
+			Namespace:       "geo",
+			TopK:            2,
+			EnableStructure: true,
+			EnableRerank:    true,
+		},
+		MaxTokens: 50,
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if len(ans.Trace.MatchedSections) == 0 {
+		t.Fatalf("matched sections = %#v, want non-empty", ans.Trace.MatchedSections)
+	}
+	if len(ans.Trace.SearchPath) == 0 {
+		t.Fatalf("search path = %#v, want non-empty", ans.Trace.SearchPath)
+	}
+	if len(ans.Citations) == 0 || len(ans.Citations[0].SectionPath) == 0 {
+		t.Fatalf("citations = %+v, want section path", ans.Citations)
+	}
+	if !strings.Contains(ans.Prompt.Messages[0].Content, "Cities >") {
+		t.Fatalf("prompt missing structured path prefix: %q", ans.Prompt.Messages[0].Content)
+	}
+}
+
 type fixedPacker struct{}
 
 func (fixedPacker) Pack(_ context.Context, req pack.Request) (pack.Result, error) {

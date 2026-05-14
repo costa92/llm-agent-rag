@@ -3,13 +3,17 @@ package store
 import "github.com/costa92/llm-agent-rag/embed"
 
 type StoredChunk struct {
-	ID        string
-	Namespace string
-	DocID     string
-	Title     string
-	Content   string
-	Vector    embed.Vector
-	Metadata  map[string]any
+	ID           string
+	Namespace    string
+	DocID        string
+	Title        string
+	SectionID    string
+	SectionPath  []string
+	Heading      string
+	HeadingLevel int
+	Content      string
+	Vector       embed.Vector
+	Metadata     map[string]any
 }
 
 type Hit struct {

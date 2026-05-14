@@ -23,17 +23,20 @@ type Answer struct {
 }
 
 type Citation struct {
-	ChunkID   string
-	DocID     string
-	Namespace string
-	Title     string
-	Score     float64
+	ChunkID     string
+	DocID       string
+	Namespace   string
+	Title       string
+	SectionID   string
+	SectionPath []string
+	Score       float64
 }
 
 type Diagnostics struct {
 	HitCount         int
 	ReturnedChunkIDs []string
 	PromptChunkIDs   []string
+	MatchedSections  []string
 }
 
 type Trace struct {
@@ -42,6 +45,8 @@ type Trace struct {
 	TopK             int
 	Filters          map[string]any
 	SecurityFilters  map[string]any
+	SearchPath       []string
+	MatchedSections  []string
 	RerankedChunkIDs []string
 	PackedChunkIDs   []string
 	DroppedChunkIDs  []string
@@ -85,7 +90,11 @@ func New(opts Options) *System {
 	ret := opts.Retriever
 	if ret == nil {
 		ret = retrieve.VariantRetriever{
-			Base: retrieve.DenseRetriever{Embedder: emb, Store: st},
+			Base: retrieve.HybridRetriever{
+				Dense:     retrieve.DenseRetriever{Embedder: emb, Store: st},
+				Lexical:   retrieve.LexicalRetriever{Store: st},
+				Structure: retrieve.StructureRetriever{Store: st},
+			},
 		}
 	}
 	rr := opts.Reranker
