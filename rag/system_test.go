@@ -6,6 +6,7 @@ import (
 
 	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/ingest"
+	"github.com/costa92/llm-agent-rag/store"
 )
 
 type fakeModel struct{}
@@ -151,5 +152,83 @@ func TestAskCarriesTraceAndFilters(t *testing.T) {
 	}
 	if len(ans.Trace.SelectedChunkIDs) != 1 {
 		t.Fatalf("len(ans.Trace.SelectedChunkIDs) = %d, want 1", len(ans.Trace.SelectedChunkIDs))
+	}
+}
+
+func TestImportPreservesLineageMetadataIntoStore(t *testing.T) {
+	mem := store.NewInMemoryStore(32)
+	sys := New(Options{Store: mem})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{
+			ID:               "doc1",
+			Content:          "Paris is in France.",
+			SourceID:         "knowledge-base",
+			Version:          "2026-05-14",
+			Checksum:         "sha256:abc",
+			EmbeddingVersion: "hash-32-v1",
+			Metadata: map[string]any{
+				"lang": "en",
+			},
+		},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+	chunk, err := mem.Get(context.Background(), "doc1:0")
+	if err != nil {
+		t.Fatalf("Get(): %v", err)
+	}
+	if chunk.Metadata[ingest.MetadataSourceIDKey] != "knowledge-base" {
+		t.Fatalf("source_id = %v, want knowledge-base", chunk.Metadata[ingest.MetadataSourceIDKey])
+	}
+	if chunk.Metadata[ingest.MetadataVersionKey] != "2026-05-14" {
+		t.Fatalf("version = %v, want 2026-05-14", chunk.Metadata[ingest.MetadataVersionKey])
+	}
+	if chunk.Metadata[ingest.MetadataChecksumKey] != "sha256:abc" {
+		t.Fatalf("checksum = %v, want sha256:abc", chunk.Metadata[ingest.MetadataChecksumKey])
+	}
+	if chunk.Metadata[ingest.MetadataEmbeddingVersionKey] != "hash-32-v1" {
+		t.Fatalf("embedding_version = %v, want hash-32-v1", chunk.Metadata[ingest.MetadataEmbeddingVersionKey])
+	}
+	if chunk.Metadata["lang"] != "en" {
+		t.Fatalf("lang = %v, want en", chunk.Metadata["lang"])
+	}
+}
+
+func TestImportReplaceSourceRemovesPreviousChunks(t *testing.T) {
+	mem := store.NewInMemoryStore(32)
+	sys := New(Options{Store: mem})
+
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{
+			ID:       "doc1",
+			Content:  "Old alpha content",
+			SourceID: "source-alpha",
+		},
+	}, ingest.ImportOptions{Namespace: "docs"})
+	if err != nil {
+		t.Fatalf("first Import(): %v", err)
+	}
+
+	_, err = sys.Import(context.Background(), []ingest.Document{
+		{
+			ID:       "doc2",
+			Content:  "New alpha content",
+			SourceID: "source-alpha",
+		},
+	}, ingest.ImportOptions{Namespace: "docs", ReplaceSource: true})
+	if err != nil {
+		t.Fatalf("second Import(): %v", err)
+	}
+
+	if _, err := mem.Get(context.Background(), "doc1:0"); err == nil {
+		t.Fatalf("old chunk still exists after ReplaceSource import")
+	}
+	chunk, err := mem.Get(context.Background(), "doc2:0")
+	if err != nil {
+		t.Fatalf("Get(new chunk): %v", err)
+	}
+	if chunk.Metadata[ingest.MetadataSourceIDKey] != "source-alpha" {
+		t.Fatalf("source_id = %v, want source-alpha", chunk.Metadata[ingest.MetadataSourceIDKey])
 	}
 }

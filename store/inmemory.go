@@ -86,6 +86,23 @@ func (s *InMemoryStore) Remove(_ context.Context, id string) error {
 	return nil
 }
 
+func (s *InMemoryStore) RemoveByFilter(_ context.Context, namespace string, filters Filter) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := 0
+	for id, chunk := range s.all {
+		if namespace != "" && chunk.Namespace != namespace {
+			continue
+		}
+		if !matchesFilters(chunk.Metadata, filters) {
+			continue
+		}
+		delete(s.all, id)
+		removed++
+	}
+	return removed, nil
+}
+
 func (s *InMemoryStore) Stats(_ context.Context, namespace string) (Stats, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

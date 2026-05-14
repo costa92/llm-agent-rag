@@ -5,9 +5,10 @@ import (
 )
 
 type ImportOptions struct {
-	Namespace string
-	MaxChars  int
-	Splitter  Splitter
+	Namespace     string
+	MaxChars      int
+	Splitter      Splitter
+	ReplaceSource bool
 }
 
 type Importer struct {

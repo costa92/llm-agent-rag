@@ -20,6 +20,14 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 	var chunks []store.StoredChunk
 	var res ingest.ImportResult
 	for _, doc := range docs {
+		if opts.ReplaceSource && doc.SourceID != "" {
+			_, err := s.store.RemoveByFilter(ctx, opts.Namespace, store.Filter{
+				ingest.MetadataSourceIDKey: doc.SourceID,
+			})
+			if err != nil {
+				return ingest.ImportResult{}, fmt.Errorf("rag: remove existing source %s: %w", doc.SourceID, err)
+			}
+		}
 		docChunks := splitter.Split(doc, maxChars)
 		res.Documents++
 		res.Chunks += len(docChunks)

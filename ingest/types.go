@@ -1,10 +1,14 @@
 package ingest
 
 type Document struct {
-	ID       string
-	Title    string
-	Content  string
-	Metadata map[string]any
+	ID               string
+	Title            string
+	Content          string
+	SourceID         string
+	Version          string
+	Checksum         string
+	EmbeddingVersion string
+	Metadata         map[string]any
 }
 
 type Chunk struct {

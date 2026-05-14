@@ -247,3 +247,54 @@ func TestInMemoryStoreSecurityFiltersOverrideConflictingCallerIntent(t *testing.
 		t.Fatalf("hits = %+v, want no hits because security and caller filters conflict", hits)
 	}
 }
+
+func TestInMemoryStoreRemoveByFilter(t *testing.T) {
+	s := NewInMemoryStore(2)
+	err := s.Upsert(context.Background(), []StoredChunk{
+		{
+			ID:        "a1",
+			Namespace: "docs",
+			Vector:    embed.Vector{1, 0},
+			Metadata: map[string]any{
+				"source_id": "alpha",
+			},
+		},
+		{
+			ID:        "a2",
+			Namespace: "docs",
+			Vector:    embed.Vector{0.9, 0.1},
+			Metadata: map[string]any{
+				"source_id": "alpha",
+			},
+		},
+		{
+			ID:        "b1",
+			Namespace: "docs",
+			Vector:    embed.Vector{0.8, 0.2},
+			Metadata: map[string]any{
+				"source_id": "beta",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+
+	removed, err := s.RemoveByFilter(context.Background(), "docs", Filter{
+		"source_id": "alpha",
+	})
+	if err != nil {
+		t.Fatalf("RemoveByFilter(): %v", err)
+	}
+	if removed != 2 {
+		t.Fatalf("removed = %d, want 2", removed)
+	}
+
+	stats, err := s.Stats(context.Background(), "docs")
+	if err != nil {
+		t.Fatalf("Stats(): %v", err)
+	}
+	if stats.Count != 1 {
+		t.Fatalf("stats.Count = %d, want 1", stats.Count)
+	}
+}
