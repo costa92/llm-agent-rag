@@ -24,3 +24,138 @@ func TestInMemoryStoreNamespaceIsolation(t *testing.T) {
 		t.Fatalf("hits = %+v, want only a", hits)
 	}
 }
+
+func TestInMemoryStoreMetadataFilters(t *testing.T) {
+	s := NewInMemoryStore(2)
+	err := s.Upsert(context.Background(), []StoredChunk{
+		{
+			ID:        "paris-guide",
+			Namespace: "docs",
+			Vector:    embed.Vector{1, 0},
+			Metadata: map[string]any{
+				"lang":   "en",
+				"source": "guide",
+				"tier":   1,
+			},
+		},
+		{
+			ID:        "paris-faq",
+			Namespace: "docs",
+			Vector:    embed.Vector{0.9, 0.1},
+			Metadata: map[string]any{
+				"lang":   "fr",
+				"source": "faq",
+				"tier":   2,
+			},
+		},
+		{
+			ID:        "berlin-guide",
+			Namespace: "docs",
+			Vector:    embed.Vector{0.8, 0.2},
+			Metadata: map[string]any{
+				"lang":   "en",
+				"source": "guide",
+				"tier":   2,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+
+	hits, err := s.Search(context.Background(), Query{
+		Namespace: "docs",
+		Vector:    embed.Vector{1, 0},
+		TopK:      5,
+		Filters: Filter{
+			"lang":   "en",
+			"source": "guide",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Search(): %v", err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("len(hits) = %d, want 2", len(hits))
+	}
+	if hits[0].Chunk.ID != "paris-guide" || hits[1].Chunk.ID != "berlin-guide" {
+		t.Fatalf("hits = %+v, want filtered english guide docs in score order", hits)
+	}
+}
+
+func TestInMemoryStoreMetadataFiltersRequireExactMatch(t *testing.T) {
+	s := NewInMemoryStore(2)
+	err := s.Upsert(context.Background(), []StoredChunk{
+		{
+			ID:        "doc-a",
+			Namespace: "docs",
+			Vector:    embed.Vector{1, 0},
+			Metadata: map[string]any{
+				"tier": 1,
+			},
+		},
+		{
+			ID:        "doc-b",
+			Namespace: "docs",
+			Vector:    embed.Vector{0.9, 0.1},
+			Metadata: map[string]any{
+				"tier": 2,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+
+	hits, err := s.Search(context.Background(), Query{
+		Namespace: "docs",
+		Vector:    embed.Vector{1, 0},
+		TopK:      5,
+		Filters: Filter{
+			"tier": 2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Search(): %v", err)
+	}
+	if len(hits) != 1 || hits[0].Chunk.ID != "doc-b" {
+		t.Fatalf("hits = %+v, want only doc-b", hits)
+	}
+}
+
+func TestInMemoryStoreMetadataFiltersMissingKeyExcludesChunk(t *testing.T) {
+	s := NewInMemoryStore(2)
+	err := s.Upsert(context.Background(), []StoredChunk{
+		{
+			ID:        "with-lang",
+			Namespace: "docs",
+			Vector:    embed.Vector{1, 0},
+			Metadata: map[string]any{
+				"lang": "en",
+			},
+		},
+		{
+			ID:        "without-lang",
+			Namespace: "docs",
+			Vector:    embed.Vector{0.9, 0.1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+
+	hits, err := s.Search(context.Background(), Query{
+		Namespace: "docs",
+		Vector:    embed.Vector{1, 0},
+		TopK:      5,
+		Filters: Filter{
+			"lang": "en",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Search(): %v", err)
+	}
+	if len(hits) != 1 || hits[0].Chunk.ID != "with-lang" {
+		t.Fatalf("hits = %+v, want only with-lang", hits)
+	}
+}

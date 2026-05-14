@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"reflect"
 	"sort"
 	"sync"
 
@@ -47,6 +48,9 @@ func (s *InMemoryStore) Search(_ context.Context, q Query) ([]Hit, error) {
 		if q.Namespace != "" && chunk.Namespace != q.Namespace {
 			continue
 		}
+		if !matchesFilters(chunk.Metadata, q.Filters) {
+			continue
+		}
 		hits = append(hits, Hit{
 			Chunk: chunk,
 			Score: embed.CosineSimilarity(q.Vector, chunk.Vector),
@@ -89,4 +93,23 @@ func (s *InMemoryStore) Stats(_ context.Context, namespace string) (Stats, error
 		}
 	}
 	return Stats{Count: count, Dim: s.dim}, nil
+}
+
+func matchesFilters(metadata map[string]any, filters Filter) bool {
+	if len(filters) == 0 {
+		return true
+	}
+	if len(metadata) == 0 {
+		return false
+	}
+	for key, want := range filters {
+		got, ok := metadata[key]
+		if !ok {
+			return false
+		}
+		if !reflect.DeepEqual(got, want) {
+			return false
+		}
+	}
+	return true
 }
