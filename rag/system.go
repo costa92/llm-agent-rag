@@ -29,16 +29,16 @@ type Citation struct {
 }
 
 type Diagnostics struct {
-	HitCount        int
+	HitCount         int
 	ReturnedChunkIDs []string
 }
 
 type Trace struct {
-	Question        string
-	Namespace       string
-	TopK            int
-	Filters         map[string]any
-	SecurityFilters map[string]any
+	Question         string
+	Namespace        string
+	TopK             int
+	Filters          map[string]any
+	SecurityFilters  map[string]any
 	SelectedChunkIDs []string
 }
 
@@ -72,11 +72,13 @@ func New(opts Options) *System {
 	}
 	pre := opts.Preprocessor
 	if pre == nil {
-		pre = retrieve.NoopPreprocessor{}
+		pre = retrieve.LLMExpansionPreprocessor{Model: opts.Model}
 	}
 	ret := opts.Retriever
 	if ret == nil {
-		ret = retrieve.DenseRetriever{Embedder: emb, Store: st}
+		ret = retrieve.VariantRetriever{
+			Base: retrieve.DenseRetriever{Embedder: emb, Store: st},
+		}
 	}
 	maxChars := opts.MaxChars
 	if maxChars <= 0 {

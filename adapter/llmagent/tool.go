@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	agents "github.com/costa92/llm-agent"
-	"github.com/costa92/llm-agent-rag/advanced"
 	"github.com/costa92/llm-agent-rag/ingest"
 	"github.com/costa92/llm-agent-rag/prompt"
 	ragcore "github.com/costa92/llm-agent-rag/rag"
@@ -128,57 +127,13 @@ func search(ctx context.Context, r *ragcore.System, p ragToolArgs) ([]store.Hit,
 	if topK <= 0 {
 		topK = 5
 	}
-	pool := topK
-	queries := []string{p.Query}
-
-	model, err := modelFromSystem(r)
-	if err != nil {
-		return nil, err
-	}
-	if p.EnableMQE {
-		count := p.MQECount
-		if count <= 0 {
-			count = 3
-		}
-		expansions, err := advanced.ExpandQuery(ctx, model, p.Query, count)
-		if err != nil {
-			return nil, fmt.Errorf("rag: MQE: %w", err)
-		}
-		queries = append(queries, expansions...)
-	}
-	if p.EnableHyDE {
-		hypo, err := advanced.GenerateHypothetical(ctx, model, p.Query)
-		if err != nil {
-			return nil, fmt.Errorf("rag: HyDE: %w", err)
-		}
-		queries = append(queries, hypo)
-	}
-
-	merged := make(map[string]store.Hit, pool)
-	for _, q := range queries {
-		hits, err := r.Retrieve(ctx, q, ragcore.SearchOptions{
-			TopK:      pool,
-			Namespace: p.Namespace,
-		})
-		if err != nil {
-			return nil, err
-		}
-		for _, hit := range hits {
-			if prev, ok := merged[hit.Chunk.ID]; !ok || hit.Score > prev.Score {
-				merged[hit.Chunk.ID] = hit
-			}
-		}
-	}
-
-	out := make([]store.Hit, 0, len(merged))
-	for _, hit := range merged {
-		out = append(out, hit)
-	}
-	sortHitsDesc(out)
-	if len(out) > topK {
-		out = out[:topK]
-	}
-	return out, nil
+	return r.Retrieve(ctx, p.Query, ragcore.SearchOptions{
+		TopK:       topK,
+		Namespace:  p.Namespace,
+		EnableMQE:  p.EnableMQE,
+		EnableHyDE: p.EnableHyDE,
+		MQECount:   p.MQECount,
+	})
 }
 
 func ask(ctx context.Context, r *ragcore.System, p ragToolArgs) (string, error) {
@@ -219,14 +174,6 @@ func modelFromSystem(r *ragcore.System) (ModelAdapter, error) {
 		return ModelAdapter{}, ragcore.ErrModelRequired
 	}
 	return model, nil
-}
-
-func sortHitsDesc(hits []store.Hit) {
-	for i := 1; i < len(hits); i++ {
-		for j := i; j > 0 && hits[j].Score > hits[j-1].Score; j-- {
-			hits[j], hits[j-1] = hits[j-1], hits[j]
-		}
-	}
 }
 
 func max(a, b int) int {

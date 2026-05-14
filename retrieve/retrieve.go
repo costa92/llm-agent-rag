@@ -2,10 +2,13 @@ package retrieve
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 
+	"github.com/costa92/llm-agent-rag/advanced"
 	"github.com/costa92/llm-agent-rag/embed"
+	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/store"
 )
 
@@ -15,6 +18,10 @@ type Request struct {
 	TopK            int
 	Filters         map[string]any
 	SecurityFilters map[string]any
+	EnableMQE       bool
+	EnableHyDE      bool
+	MQECount        int
+	QueryVariants   []string
 }
 
 type PreprocessResult struct {
@@ -23,9 +30,9 @@ type PreprocessResult struct {
 }
 
 type Trace struct {
-	OriginalQuery string
+	OriginalQuery  string
 	EffectiveQuery string
-	QueryVariants []string
+	QueryVariants  []string
 }
 
 type QueryPreprocessor interface {
@@ -38,9 +45,52 @@ func (NoopPreprocessor) Process(_ context.Context, req Request) (PreprocessResul
 	return PreprocessResult{
 		QueryVariants: []string{req.Query},
 		Trace: Trace{
-			OriginalQuery: req.Query,
+			OriginalQuery:  req.Query,
 			EffectiveQuery: req.Query,
-			QueryVariants: []string{req.Query},
+			QueryVariants:  []string{req.Query},
+		},
+	}, nil
+}
+
+type LLMExpansionPreprocessor struct {
+	Model generate.Model
+}
+
+func (p LLMExpansionPreprocessor) Process(ctx context.Context, req Request) (PreprocessResult, error) {
+	variants := uniqueQueries(req.Query)
+	if req.EnableMQE {
+		if p.Model == nil {
+			return PreprocessResult{}, advanced.ErrModelRequired
+		}
+		count := req.MQECount
+		if count <= 0 {
+			count = 3
+		}
+		expansions, err := advanced.ExpandQuery(ctx, p.Model, req.Query, count)
+		if err != nil {
+			return PreprocessResult{}, err
+		}
+		variants = appendUniqueQueries(variants, expansions...)
+	}
+	if req.EnableHyDE {
+		if p.Model == nil {
+			return PreprocessResult{}, advanced.ErrModelRequired
+		}
+		hypo, err := advanced.GenerateHypothetical(ctx, p.Model, req.Query)
+		if err != nil {
+			return PreprocessResult{}, err
+		}
+		variants = appendUniqueQueries(variants, hypo)
+	}
+	if len(variants) == 0 {
+		variants = []string{req.Query}
+	}
+	return PreprocessResult{
+		QueryVariants: variants,
+		Trace: Trace{
+			OriginalQuery:  req.Query,
+			EffectiveQuery: variants[0],
+			QueryVariants:  append([]string(nil), variants...),
 		},
 	}, nil
 }
@@ -51,6 +101,72 @@ type QueryEmbedder interface {
 
 type Retriever interface {
 	Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error)
+}
+
+var ErrBaseRetrieverRequired = errors.New("retrieve: base retriever required")
+
+type VariantRetriever struct {
+	Base Retriever
+}
+
+func (r VariantRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
+	if r.Base == nil {
+		return nil, Trace{}, ErrBaseRetrieverRequired
+	}
+	variants := req.QueryVariants
+	if len(variants) == 0 {
+		variants = []string{req.Query}
+	}
+	type rankedHit struct {
+		hit   store.Hit
+		order int
+	}
+	merged := make(map[string]rankedHit)
+	nextOrder := 0
+	for _, query := range variants {
+		subReq := req
+		subReq.Query = query
+		subReq.QueryVariants = nil
+		hits, _, err := r.Base.Retrieve(ctx, subReq)
+		if err != nil {
+			return nil, Trace{}, err
+		}
+		for _, hit := range hits {
+			prev, ok := merged[hit.Chunk.ID]
+			if !ok {
+				merged[hit.Chunk.ID] = rankedHit{hit: hit, order: nextOrder}
+				nextOrder++
+				continue
+			}
+			if hit.Score > prev.hit.Score {
+				prev.hit = hit
+				merged[hit.Chunk.ID] = prev
+			}
+		}
+	}
+	out := make([]rankedHit, 0, len(merged))
+	for _, hit := range merged {
+		out = append(out, hit)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].hit.Score == out[j].hit.Score {
+			return out[i].order < out[j].order
+		}
+		return out[i].hit.Score > out[j].hit.Score
+	})
+	limit := len(out)
+	if req.TopK > 0 && limit > req.TopK {
+		limit = req.TopK
+	}
+	hits := make([]store.Hit, 0, limit)
+	for _, hit := range out[:limit] {
+		hits = append(hits, hit.hit)
+	}
+	return hits, Trace{
+		OriginalQuery:  req.Query,
+		EffectiveQuery: variants[0],
+		QueryVariants:  append([]string(nil), variants...),
+	}, nil
 }
 
 type DenseRetriever struct {
@@ -74,9 +190,9 @@ func (r DenseRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit,
 		return nil, Trace{}, err
 	}
 	return hits, Trace{
-		OriginalQuery: req.Query,
+		OriginalQuery:  req.Query,
 		EffectiveQuery: req.Query,
-		QueryVariants: []string{req.Query},
+		QueryVariants:  []string{req.Query},
 	}, nil
 }
 
@@ -106,9 +222,9 @@ func (r LexicalRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hi
 		hits = hits[:req.TopK]
 	}
 	return hits, Trace{
-		OriginalQuery: req.Query,
+		OriginalQuery:  req.Query,
 		EffectiveQuery: req.Query,
-		QueryVariants: []string{req.Query},
+		QueryVariants:  []string{req.Query},
 	}, nil
 }
 
@@ -151,10 +267,44 @@ func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit
 		out = out[:req.TopK]
 	}
 	return out, Trace{
-		OriginalQuery: req.Query,
+		OriginalQuery:  req.Query,
 		EffectiveQuery: denseTrace.EffectiveQuery,
-		QueryVariants: []string{req.Query},
+		QueryVariants:  append([]string(nil), denseTrace.QueryVariants...),
 	}, nil
+}
+
+func uniqueQueries(query string) []string {
+	return appendUniqueQueries(nil, query)
+}
+
+func appendUniqueQueries(dst []string, queries ...string) []string {
+	seen := make(map[string]struct{}, len(dst)+len(queries))
+	out := make([]string, 0, len(dst)+len(queries))
+	for _, query := range dst {
+		trimmed := strings.TrimSpace(query)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+	}
+	for _, query := range queries {
+		trimmed := strings.TrimSpace(query)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 func tokenize(text string) []string {

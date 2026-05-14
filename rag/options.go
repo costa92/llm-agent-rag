@@ -14,6 +14,9 @@ type SearchOptions struct {
 	Namespace       string
 	Filters         map[string]any
 	SecurityFilters map[string]any
+	EnableMQE       bool
+	EnableHyDE      bool
+	MQECount        int
 }
 
 type AskOptions struct {

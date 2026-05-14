@@ -18,14 +18,18 @@ func (s *System) Retrieve(ctx context.Context, query string, opts SearchOptions)
 		TopK:            opts.TopK,
 		Filters:         opts.Filters,
 		SecurityFilters: opts.SecurityFilters,
+		EnableMQE:       opts.EnableMQE,
+		EnableHyDE:      opts.EnableHyDE,
+		MQECount:        opts.MQECount,
 	}
 	processed, err := s.pre.Process(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 	effective := req
-	if len(processed.QueryVariants) > 0 {
-		effective.Query = processed.QueryVariants[0]
+	effective.QueryVariants = append([]string(nil), processed.QueryVariants...)
+	if len(effective.QueryVariants) > 0 {
+		effective.Query = effective.QueryVariants[0]
 	}
 	hits, _, err := s.ret.Retrieve(ctx, effective)
 	if err != nil {

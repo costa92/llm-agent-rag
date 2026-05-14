@@ -6,6 +6,29 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [Unreleased]
+
+### Added
+
+- retrieval-layer query expansion orchestration via `SearchOptions`:
+  - `EnableMQE`
+  - `EnableHyDE`
+  - `MQECount`
+- `retrieve.LLMExpansionPreprocessor` for policy-layer MQE/HyDE query rewriting
+- `retrieve.VariantRetriever` for multi-query merge/dedup over any base retriever
+
+### Changed
+
+- default `rag.System` retrieval now routes through policy-aware preprocessor
+  plus variant-merging retrieval instead of requiring adapter-side query loops
+- optional `adapter/llmagent` search/ask now delegates MQE/HyDE handling to the
+  standalone retrieval layer
+
+### Fixed
+
+- removed duplicate MQE/HyDE orchestration logic between adapter and core
+  retrieval paths
+
 ## [v0.1.3] - 2026-05-14
 
 Patch release for Phase 9 source-aware ingestion groundwork.

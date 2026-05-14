@@ -37,6 +37,11 @@ Implemented:
 - abstract generation via `generate.Model`
 - prompt customization via `prompt.Template`
 - `rag.System` with `Import`, `ImportFrom`, `Retrieve`, and `Ask`
+- retrieval policy seams for:
+  - query preprocessing
+  - lexical retrieval
+  - hybrid retrieval
+  - MQE / HyDE query expansion
 
 ## Quick start
 
@@ -106,7 +111,6 @@ Not implemented yet:
 
 - production vector backends
 - rerankers
-- MQE / HyDE
 - HTTP service layer
 - CLI
 
