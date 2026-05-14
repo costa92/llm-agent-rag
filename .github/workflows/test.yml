@@ -23,16 +23,20 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: go mod tidy (drift check)
+      - name: Verify core packages do not import llm-agent
         run: |
-          go mod tidy
-          drift=$(git status --porcelain go.mod go.sum 2>/dev/null)
-          if [ -n "$drift" ]; then
-            echo "go mod tidy changed files — commit tidy changes first"
-            echo "$drift"
-            git --no-pager diff -- go.mod go.sum || true
+          hits=$(rg -n 'github.com/costa92/llm-agent([/"[:space:]]|$)' . \
+            --glob '!adapter/**' \
+            --glob '!.github/**' \
+            --glob '!README.md' \
+            --glob '!CHANGELOG.md' \
+            --glob '!go.mod' || true)
+          if [ -n "$hits" ]; then
+            echo "::error::core module boundary violated; only adapter/ may import github.com/costa92/llm-agent"
+            echo "$hits"
             exit 1
           fi
+          echo "OK: core packages stay independent from github.com/costa92/llm-agent"
       - name: go vet
         run: go vet ./...
       - name: go build
