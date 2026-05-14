@@ -51,6 +51,9 @@ func (s *InMemoryStore) Search(_ context.Context, q Query) ([]Hit, error) {
 		if !matchesFilters(chunk.Metadata, q.Filters) {
 			continue
 		}
+		if !matchesFilters(chunk.Metadata, q.SecurityFilters) {
+			continue
+		}
 		hits = append(hits, Hit{
 			Chunk: chunk,
 			Score: embed.CosineSimilarity(q.Vector, chunk.Vector),

@@ -9,9 +9,10 @@ import (
 )
 
 type SearchOptions struct {
-	TopK      int
-	Namespace string
-	Filters   map[string]any
+	TopK            int
+	Namespace       string
+	Filters         map[string]any
+	SecurityFilters map[string]any
 }
 
 type AskOptions struct {

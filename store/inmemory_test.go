@@ -159,3 +159,91 @@ func TestInMemoryStoreMetadataFiltersMissingKeyExcludesChunk(t *testing.T) {
 		t.Fatalf("hits = %+v, want only with-lang", hits)
 	}
 }
+
+func TestInMemoryStoreSecurityFiltersCannotBeBypassed(t *testing.T) {
+	s := NewInMemoryStore(2)
+	err := s.Upsert(context.Background(), []StoredChunk{
+		{
+			ID:        "tenant-a-public",
+			Namespace: "docs",
+			Vector:    embed.Vector{1, 0},
+			Metadata: map[string]any{
+				"tenant": "a",
+				"scope":  "public",
+			},
+		},
+		{
+			ID:        "tenant-b-public",
+			Namespace: "docs",
+			Vector:    embed.Vector{0.95, 0.05},
+			Metadata: map[string]any{
+				"tenant": "b",
+				"scope":  "public",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+
+	hits, err := s.Search(context.Background(), Query{
+		Namespace: "docs",
+		Vector:    embed.Vector{1, 0},
+		TopK:      5,
+		Filters: Filter{
+			"scope": "public",
+		},
+		SecurityFilters: Filter{
+			"tenant": "a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Search(): %v", err)
+	}
+	if len(hits) != 1 || hits[0].Chunk.ID != "tenant-a-public" {
+		t.Fatalf("hits = %+v, want only tenant-a-public", hits)
+	}
+}
+
+func TestInMemoryStoreSecurityFiltersOverrideConflictingCallerIntent(t *testing.T) {
+	s := NewInMemoryStore(2)
+	err := s.Upsert(context.Background(), []StoredChunk{
+		{
+			ID:        "tenant-a",
+			Namespace: "docs",
+			Vector:    embed.Vector{1, 0},
+			Metadata: map[string]any{
+				"tenant": "a",
+			},
+		},
+		{
+			ID:        "tenant-b",
+			Namespace: "docs",
+			Vector:    embed.Vector{0.9, 0.1},
+			Metadata: map[string]any{
+				"tenant": "b",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+
+	hits, err := s.Search(context.Background(), Query{
+		Namespace: "docs",
+		Vector:    embed.Vector{1, 0},
+		TopK:      5,
+		Filters: Filter{
+			"tenant": "b",
+		},
+		SecurityFilters: Filter{
+			"tenant": "a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Search(): %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("hits = %+v, want no hits because security and caller filters conflict", hits)
+	}
+}

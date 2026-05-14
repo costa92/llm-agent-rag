@@ -58,3 +58,42 @@ func TestAskRequiresModel(t *testing.T) {
 		t.Fatalf("err = %v, want ErrModelRequired", err)
 	}
 }
+
+func TestSystemRetrieveSecurityFilters(t *testing.T) {
+	sys := New(Options{})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{
+			ID:      "doc1",
+			Content: "Paris is in France.",
+			Metadata: map[string]any{
+				"tenant": "a",
+			},
+		},
+		{
+			ID:      "doc2",
+			Content: "Paris travel guide.",
+			Metadata: map[string]any{
+				"tenant": "b",
+			},
+		},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+	hits, err := sys.Retrieve(context.Background(), "Paris", SearchOptions{
+		Namespace: "geo",
+		TopK:      5,
+		SecurityFilters: map[string]any{
+			"tenant": "a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Retrieve(): %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("len(hits) = %d, want 1", len(hits))
+	}
+	if hits[0].Chunk.Metadata["tenant"] != "a" {
+		t.Fatalf("hit tenant = %v, want a", hits[0].Chunk.Metadata["tenant"])
+	}
+}

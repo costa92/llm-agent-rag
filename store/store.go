@@ -10,10 +10,11 @@ import (
 type Filter map[string]any
 
 type Query struct {
-	Namespace string
-	Vector    embed.Vector
-	TopK      int
-	Filters   Filter
+	Namespace       string
+	Vector          embed.Vector
+	TopK            int
+	Filters         Filter
+	SecurityFilters Filter
 }
 
 type Store interface {

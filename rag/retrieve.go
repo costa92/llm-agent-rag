@@ -16,9 +16,10 @@ func (s *System) Retrieve(ctx context.Context, query string, opts SearchOptions)
 		return nil, err
 	}
 	return s.store.Search(ctx, store.Query{
-		Namespace: opts.Namespace,
-		Vector:    vec,
-		TopK:      opts.TopK,
-		Filters:   opts.Filters,
+		Namespace:       opts.Namespace,
+		Vector:          vec,
+		TopK:            opts.TopK,
+		Filters:         opts.Filters,
+		SecurityFilters: opts.SecurityFilters,
 	})
 }
