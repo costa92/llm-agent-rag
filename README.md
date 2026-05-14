@@ -133,6 +133,11 @@ development dependency and run:
 GOWORK=off GOCACHE=/tmp/go-build go test -tags llmagent ./adapter/llmagent
 ```
 
+Because the adapter imports `github.com/costa92/llm-agent`, the standalone
+module does not keep that dependency in its publishable core `go.mod`.
+For local adapter development, add a temporary `require` and `replace`
+pointing at your local `llm-agent` checkout, then run the tagged test above.
+
 ## Verification
 
 ```bash

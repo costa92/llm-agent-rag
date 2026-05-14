@@ -63,3 +63,7 @@ func (s *System) Remove(ctx context.Context, id string) error {
 func (s *System) Stats(ctx context.Context, namespace string) (store.Stats, error) {
 	return s.store.Stats(ctx, namespace)
 }
+
+func (s *System) Model() generate.Model {
+	return s.model
+}
