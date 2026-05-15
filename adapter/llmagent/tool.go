@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 
 	agents "github.com/costa92/llm-agent"
 	"github.com/costa92/llm-agent-rag/ingest"
@@ -59,6 +60,12 @@ type ragToolArgs struct {
 }
 
 func ragToolHandler(r *ragcore.System) agents.ExecuteFunc {
+	// addTextSeq makes every caller-omitted add_text ID unique. Without
+	// this counter, the ingest splitter defaults Document.ID to the
+	// literal "doc", which means two successive add_text calls collide
+	// at the same chunk ID (e.g. "doc:0") and the second Upsert
+	// silently overwrites the first.
+	var addTextSeq atomic.Uint64
 	return func(ctx context.Context, raw json.RawMessage) (string, error) {
 		var p ragToolArgs
 		if err := json.Unmarshal(raw, &p); err != nil {
@@ -69,8 +76,12 @@ func ragToolHandler(r *ragcore.System) agents.ExecuteFunc {
 			if p.Text == "" {
 				return "", errors.New("rag: text required for add_text")
 			}
+			docID := p.ID
+			if docID == "" {
+				docID = fmt.Sprintf("doc-%d", addTextSeq.Add(1))
+			}
 			res, err := r.Import(ctx, []ingest.Document{{
-				ID:       p.ID,
+				ID:       docID,
 				Content:  p.Text,
 				Metadata: p.Metadata,
 			}}, ingest.ImportOptions{Namespace: p.Namespace})
