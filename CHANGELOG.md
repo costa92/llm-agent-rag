@@ -6,6 +6,45 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [v0.2.0] - 2026-05-15
+
+Minor release closing the v0.5 RAG-productionization milestone
+(Phases 11-13). First release with non-stdlib dependencies — confined
+to the `postgres` subpackage.
+
+### Added
+
+- structure-aware retrieval policy (Phase 11):
+  - subtree route-path constraints and automatic section route selection
+  - multi-candidate auto-route planning with confidence/evidence metadata
+  - executable route policy: confidence threshold + top-N fanout
+  - route-policy rationale and selected-route trace markers
+  - confidence-gap adaptive fanout — converge on a strong top-1, fan out
+    when the top two routes are close
+  - per-route `SearchTrajectory` output attributing hits and sections to
+    each executed route
+  - pluggable `retrieve.SectionPlanner` interface with
+    `GapAwareSectionPlanner` as the default
+- `postgres` package — PostgreSQL + pgvector implementation of
+  `store.Store`, behind the first non-stdlib deps in this module
+  (`pgx/v5`, `pgvector-go`)
+- `store/storetest.RunConformance` — shared 12-subtest conformance suite
+  every `store.Store` implementation runs against
+- `rag.Observer{OnImport, OnRetrieve, OnAsk}` hook surface plus
+  `rag.ImportTrace`, for external tracing without touching internals
+- `eval` package — retrieval/grounding evaluation framework with
+  precision@k / recall@k / MRR / grounding@k metrics and a JSONL loader
+- `feedback` package — concurrent-safe writer that captures flagged Asks
+  as JSONL eval examples (online-to-offline regression feedback loop)
+- `contract` package — compile-time gate pinning the cross-repo surface
+  the core `llm-agent/rag` facade consumes
+
+### Fixed
+
+- `adapter/llmagent` rag tool: `add_text` now generates a unique base
+  document ID per call when the caller omits one, preventing silent
+  chunk-ID collision across namespaces
+
 ## [v0.1.4] - 2026-05-14
 
 ### Added
