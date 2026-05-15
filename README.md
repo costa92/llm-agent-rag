@@ -1,7 +1,18 @@
 # llm-agent-rag
 
 Standalone Go RAG SDK with abstract import, retrieval, custom LLM generation,
-and custom prompt-template seams.
+and custom prompt-template seams. Production-ready with a PostgreSQL +
+pgvector backend, an observation hook for OTel, and an evaluation
+framework as a `go test` regression gate.
+
+## Documentation
+
+- [Production deployment](./docs/production-deployment.md) — pgvector
+  setup, pool config, observer wiring, operational notes
+- [Backend selection](./docs/backend-selection.md) — in-memory vs
+  postgres, conformance contract, adding a new backend
+- [Core compatibility](./docs/core-compatibility.md) — relationship
+  to `github.com/costa92/llm-agent` and the optional adapter
 
 ## Scope
 
@@ -11,32 +22,43 @@ This SDK is designed around three primary workflows:
 - retrieve ranked chunks for a query
 - generate answers with a caller-provided model and prompt template
 
-The core packages are provider-agnostic and do not depend on
-`github.com/costa92/llm-agent`.
+The default packages have **no non-stdlib dependencies**. The
+`postgres` subpackage and the `adapter/llmagent` build-tagged
+package are the only places that pull external deps in.
 
 ## Package layout
 
 - `ingest`: documents, sources, splitters, import helpers
 - `embed`: embedder seam and default hash embedder
 - `store`: vector store seam and in-memory reference store
+- `store/storetest`: shared conformance suite every backend wires against
+- `postgres`: PostgreSQL + pgvector backend (opt-in deps: `pgx/v5`, `pgvector-go`)
+- `retrieve`: hybrid retrieval, structure-aware route policy, search trajectory
+- `pack`: token-budget-aware context packing
+- `rerank`: heuristic reranker
 - `generate`: text-generation seam
 - `prompt`: prompt-template seam and default QA template
-- `rag`: orchestration layer for import, retrieve, and ask
-- `adapter/llmagent`: optional adapter layer for `llm-agent`
+- `rag`: orchestration layer for import, retrieve, ask + observer hook
+- `eval`: dataset format + metrics + JSONL loader for the CI eval gate
+- `tree`: document-tree primitives for structured markdown corpora
+- `adapter/llmagent`: optional adapter layer for `llm-agent` (build tag `llmagent`)
 
 ## Status
 
-Current status: scaffold / v0.1 baseline.
+Current status: production-ready core, evolving ecosystem.
 
 Implemented:
 
 - abstract import via `ingest.Source` and `ingest.Importer`
-- deterministic default `CharSplitter`
+- deterministic default `CharSplitter` and markdown splitter
 - default `HashEmbedder`
-- default `InMemoryStore`
+- default `InMemoryStore` + `postgres.Store` (pgvector)
+- shared `store/storetest.RunConformance` contract suite
 - abstract generation via `generate.Model`
 - prompt customization via `prompt.Template`
 - `rag.System` with `Import`, `ImportFrom`, `Retrieve`, and `Ask`
+- `rag.Observer{OnImport, OnRetrieve, OnAsk}` hook for external
+  tracing (consumed by `llm-agent-otel`)
 - retrieval policy seams for:
   - query preprocessing
   - lexical retrieval
@@ -45,7 +67,17 @@ Implemented:
   - heuristic reranking
   - token-budget-aware context packing
   - structure-aware section/path retrieval
+  - subtree-constrained route-path retrieval
+  - automatic section route selection for hierarchical corpora
+  - confidence-gap adaptive fanout (converge on strong top-1,
+    fan out when top two routes are close)
+  - per-route `SearchTrajectory` attribution
+  - pluggable `SectionPlanner` interface (default
+    `GapAwareSectionPlanner`)
 - document-tree primitives for structured markdown corpora
+- evaluation framework (`eval`) with precision / recall / MRR /
+  grounding@k metrics, a JSONL loader, and a seed regression
+  test that gates retrieval quality at `go test` time
 
 ## Quick start
 
@@ -114,9 +146,10 @@ func main() {
 
 Not implemented yet:
 
-- production vector backends
 - HTTP service layer
 - CLI
+- online-to-offline production-feedback workflow (planned in slice 13-03)
+- cross-repo contract-drift CI gates (planned in slice 13-04)
 
 ## Optional adapter
 
