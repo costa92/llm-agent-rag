@@ -19,14 +19,17 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 	}
 	var chunks []store.StoredChunk
 	var res ingest.ImportResult
+	embedCount := 0
+	removedChunks := 0
 	for _, doc := range docs {
 		if opts.ReplaceSource && doc.SourceID != "" {
-			_, err := s.store.RemoveByFilter(ctx, opts.Namespace, store.Filter{
+			removed, err := s.store.RemoveByFilter(ctx, opts.Namespace, store.Filter{
 				ingest.MetadataSourceIDKey: doc.SourceID,
 			})
 			if err != nil {
 				return ingest.ImportResult{}, fmt.Errorf("rag: remove existing source %s: %w", doc.SourceID, err)
 			}
+			removedChunks += removed
 		}
 		docChunks := splitter.Split(doc, maxChars)
 		res.Documents++
@@ -36,6 +39,7 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 			if err != nil {
 				return ingest.ImportResult{}, fmt.Errorf("rag: embed chunk %s: %w", chunk.ID, err)
 			}
+			embedCount++
 			chunks = append(chunks, store.StoredChunk{
 				ID:           chunk.ID,
 				Namespace:    opts.Namespace,
@@ -54,6 +58,17 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 	}
 	if err := s.store.Upsert(ctx, chunks); err != nil {
 		return ingest.ImportResult{}, fmt.Errorf("rag: upsert: %w", err)
+	}
+	if s.observer.OnImport != nil {
+		s.observer.OnImport(ctx, ImportTrace{
+			Namespace:     opts.Namespace,
+			Documents:     res.Documents,
+			Chunks:        res.Chunks,
+			ChunkIDs:      append([]string(nil), res.ChunkIDs...),
+			EmbedCount:    embedCount,
+			ReplaceSource: opts.ReplaceSource,
+			RemovedChunks: removedChunks,
+		})
 	}
 	return res, nil
 }

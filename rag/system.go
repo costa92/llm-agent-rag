@@ -33,24 +33,35 @@ type Citation struct {
 }
 
 type Diagnostics struct {
-	HitCount         int
-	ReturnedChunkIDs []string
-	PromptChunkIDs   []string
-	MatchedSections  []string
+	HitCount            int
+	ReturnedChunkIDs    []string
+	PromptChunkIDs      []string
+	MatchedSections     []string
+	ExpandedChunkIDs    []string
+	AutoRouteCandidates []retrieve.RouteCandidate
+	RoutePolicy         retrieve.RoutePolicyTrace
+	SearchTrajectory    []retrieve.TrajectoryStep
 }
 
 type Trace struct {
-	Question         string
-	Namespace        string
-	TopK             int
-	Filters          map[string]any
-	SecurityFilters  map[string]any
-	SearchPath       []string
-	MatchedSections  []string
-	RerankedChunkIDs []string
-	PackedChunkIDs   []string
-	DroppedChunkIDs  []string
-	SelectedChunkIDs []string
+	Question            string
+	Namespace           string
+	TopK                int
+	Filters             map[string]any
+	SecurityFilters     map[string]any
+	RoutePath           []string
+	AutoRoutePath       []string
+	AutoRouteCandidates []retrieve.RouteCandidate
+	RoutePolicy         retrieve.RoutePolicyTrace
+	SearchPath          []string
+	MatchedSections     []string
+	ExpandedSections    []string
+	ExpandedChunkIDs    []string
+	RerankedChunkIDs    []string
+	PackedChunkIDs      []string
+	DroppedChunkIDs     []string
+	SelectedChunkIDs    []string
+	SearchTrajectory    []retrieve.TrajectoryStep
 }
 
 type System struct {
@@ -64,6 +75,7 @@ type System struct {
 	reranker rerank.Reranker
 	packer   pack.Packer
 	maxChars int
+	observer Observer
 }
 
 func New(opts Options) *System {
@@ -120,6 +132,7 @@ func New(opts Options) *System {
 		reranker: rr,
 		packer:   pk,
 		maxChars: maxChars,
+		observer: opts.Observer,
 	}
 }
 

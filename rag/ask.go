@@ -6,6 +6,7 @@ import (
 	"github.com/costa92/llm-agent-rag/pack"
 	"github.com/costa92/llm-agent-rag/prompt"
 	"github.com/costa92/llm-agent-rag/rerank"
+	retrievepolicy "github.com/costa92/llm-agent-rag/retrieve"
 	"github.com/costa92/llm-agent-rag/store"
 )
 
@@ -13,7 +14,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	if s.model == nil {
 		return Answer{}, ErrModelRequired
 	}
-	hits, err := s.Retrieve(ctx, question, opts.Search)
+	hits, retrieveTrace, err := s.retrieve(ctx, question, opts.Search)
 	if err != nil {
 		return Answer{}, err
 	}
@@ -37,8 +38,10 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	packedHits := rankedHits
 	packedIDs := chunkIDs(packedHits)
 	var droppedIDs []string
-	matchedSections := sectionIDs(rankedHits)
-	searchPath := sectionPathTrail(rankedHits)
+	matchedSections := traceOrFallbackSections(retrieveTrace, rankedHits)
+	searchPath := traceOrFallbackSearchPath(retrieveTrace, rankedHits)
+	expandedSections := append([]string(nil), retrieveTrace.ExpandedSections...)
+	expandedChunkIDs := append([]string(nil), retrieveTrace.ExpandedChunkIDs...)
 	if s.packer != nil {
 		packed, err := s.packer.Pack(ctx, pack.Request{
 			Question:  question,
@@ -79,31 +82,46 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			Score:       hit.Score,
 		})
 	}
-	return Answer{
+	answer := Answer{
 		Text:      resp.Text,
 		Hits:      packedHits,
 		Prompt:    req,
 		Citations: citations,
 		Diagnostics: Diagnostics{
-			HitCount:         len(hits),
-			ReturnedChunkIDs: append([]string(nil), chunkIDs(hits)...),
-			PromptChunkIDs:   append([]string(nil), ids...),
-			MatchedSections:  append([]string(nil), matchedSections...),
+			HitCount:            len(hits),
+			ReturnedChunkIDs:    append([]string(nil), chunkIDs(hits)...),
+			PromptChunkIDs:      append([]string(nil), ids...),
+			MatchedSections:     append([]string(nil), matchedSections...),
+			ExpandedChunkIDs:    append([]string(nil), expandedChunkIDs...),
+			AutoRouteCandidates: cloneAskRouteCandidates(retrieveTrace.AutoRouteCandidates),
+			RoutePolicy:         retrieveTrace.RoutePolicy,
+			SearchTrajectory:    cloneTrajectory(retrieveTrace.SearchTrajectory),
 		},
 		Trace: Trace{
-			Question:         question,
-			Namespace:        opts.Search.Namespace,
-			TopK:             opts.Search.TopK,
-			Filters:          copyMap(opts.Search.Filters),
-			SecurityFilters:  copyMap(opts.Search.SecurityFilters),
-			SearchPath:       append([]string(nil), searchPath...),
-			MatchedSections:  append([]string(nil), matchedSections...),
-			RerankedChunkIDs: append([]string(nil), rerankedIDs...),
-			PackedChunkIDs:   append([]string(nil), packedIDs...),
-			DroppedChunkIDs:  append([]string(nil), droppedIDs...),
-			SelectedChunkIDs: append([]string(nil), ids...),
+			Question:            question,
+			Namespace:           opts.Search.Namespace,
+			TopK:                opts.Search.TopK,
+			Filters:             copyMap(opts.Search.Filters),
+			SecurityFilters:     copyMap(opts.Search.SecurityFilters),
+			RoutePath:           append([]string(nil), retrieveTrace.RoutePath...),
+			AutoRoutePath:       append([]string(nil), retrieveTrace.AutoRoutePath...),
+			AutoRouteCandidates: cloneAskRouteCandidates(retrieveTrace.AutoRouteCandidates),
+			RoutePolicy:         retrieveTrace.RoutePolicy,
+			SearchPath:          append([]string(nil), searchPath...),
+			MatchedSections:     append([]string(nil), matchedSections...),
+			ExpandedSections:    append([]string(nil), expandedSections...),
+			ExpandedChunkIDs:    append([]string(nil), expandedChunkIDs...),
+			RerankedChunkIDs:    append([]string(nil), rerankedIDs...),
+			PackedChunkIDs:      append([]string(nil), packedIDs...),
+			DroppedChunkIDs:     append([]string(nil), droppedIDs...),
+			SelectedChunkIDs:    append([]string(nil), ids...),
+			SearchTrajectory:    cloneTrajectory(retrieveTrace.SearchTrajectory),
 		},
-	}, nil
+	}
+	if s.observer.OnAsk != nil {
+		s.observer.OnAsk(ctx, answer.Trace)
+	}
+	return answer, nil
 }
 
 func copyMap(src map[string]any) map[string]any {
@@ -147,6 +165,55 @@ func sectionPathTrail(hits []store.Hit) []string {
 		for _, path := range hit.Chunk.SectionPath {
 			out = append(out, path)
 		}
+	}
+	return out
+}
+
+func traceOrFallbackSections(trace retrievepolicy.Trace, hits []store.Hit) []string {
+	if len(trace.MatchedSections) > 0 {
+		return append([]string(nil), trace.MatchedSections...)
+	}
+	return sectionIDs(hits)
+}
+
+func traceOrFallbackSearchPath(trace retrievepolicy.Trace, hits []store.Hit) []string {
+	if len(trace.SearchPath) > 0 {
+		return append([]string(nil), trace.SearchPath...)
+	}
+	return sectionPathTrail(hits)
+}
+
+func cloneAskRouteCandidates(src []retrievepolicy.RouteCandidate) []retrievepolicy.RouteCandidate {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]retrievepolicy.RouteCandidate, 0, len(src))
+	for _, candidate := range src {
+		out = append(out, retrievepolicy.RouteCandidate{
+			Path:    append([]string(nil), candidate.Path...),
+			Score:   candidate.Score,
+			Queries: append([]string(nil), candidate.Queries...),
+		})
+	}
+	return out
+}
+
+func cloneTrajectory(src []retrievepolicy.TrajectoryStep) []retrievepolicy.TrajectoryStep {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]retrievepolicy.TrajectoryStep, 0, len(src))
+	for _, step := range src {
+		out = append(out, retrievepolicy.TrajectoryStep{
+			Route:            append([]string(nil), step.Route...),
+			Confidence:       step.Confidence,
+			Mode:             step.Mode,
+			HitCount:         step.HitCount,
+			HitIDs:           append([]string(nil), step.HitIDs...),
+			MatchedSections:  append([]string(nil), step.MatchedSections...),
+			ExpandedSections: append([]string(nil), step.ExpandedSections...),
+			Rationale:        step.Rationale,
+		})
 	}
 	return out
 }

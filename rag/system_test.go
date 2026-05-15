@@ -369,10 +369,12 @@ func TestStructureAwareRetrieveAndAskTrace(t *testing.T) {
 
 	ans, err := sys.Ask(context.Background(), "Where should I travel in Paris?", AskOptions{
 		Search: SearchOptions{
-			Namespace:       "geo",
-			TopK:            2,
-			EnableStructure: true,
-			EnableRerank:    true,
+			Namespace:           "geo",
+			TopK:                3,
+			EnableStructure:     true,
+			EnableTreeExpansion: true,
+			ExpansionDepth:      3,
+			EnableRerank:        true,
 		},
 		MaxTokens: 50,
 	})
@@ -385,6 +387,15 @@ func TestStructureAwareRetrieveAndAskTrace(t *testing.T) {
 	if len(ans.Trace.SearchPath) == 0 {
 		t.Fatalf("search path = %#v, want non-empty", ans.Trace.SearchPath)
 	}
+	if len(ans.Trace.ExpandedSections) == 0 {
+		t.Fatalf("expanded sections = %#v, want non-empty", ans.Trace.ExpandedSections)
+	}
+	if len(ans.Trace.ExpandedChunkIDs) == 0 {
+		t.Fatalf("expanded chunk ids = %#v, want non-empty", ans.Trace.ExpandedChunkIDs)
+	}
+	if len(ans.Diagnostics.ExpandedChunkIDs) == 0 {
+		t.Fatalf("diagnostics expanded chunk ids = %#v, want non-empty", ans.Diagnostics.ExpandedChunkIDs)
+	}
 	if len(ans.Citations) == 0 || len(ans.Citations[0].SectionPath) == 0 {
 		t.Fatalf("citations = %+v, want section path", ans.Citations)
 	}
@@ -393,7 +404,300 @@ func TestStructureAwareRetrieveAndAskTrace(t *testing.T) {
 	}
 }
 
+func TestAskCarriesRoutePathAndConstrainsSubtree(t *testing.T) {
+	sys := New(Options{Model: fakeModel{}, Splitter: ingest.NewMarkdownSplitter(500, 50)})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{
+			ID:      "doc1",
+			Content: "# Cities\nParis overview.\n## Travel\nMuseums and cafes.\n## History\nAncient capital notes.",
+		},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	ans, err := sys.Ask(context.Background(), "Paris notes", AskOptions{
+		Search: SearchOptions{
+			Namespace:           "geo",
+			TopK:                3,
+			RoutePath:           []string{"Cities", "Travel"},
+			EnableStructure:     true,
+			EnableTreeExpansion: true,
+			ExpansionDepth:      3,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if !pathEquals(ans.Trace.RoutePath, []string{"Cities", "Travel"}) {
+		t.Fatalf("trace route path = %#v, want travel route", ans.Trace.RoutePath)
+	}
+	for _, hit := range ans.Hits {
+		if strings.Join(hit.Chunk.SectionPath, " > ") != "Cities > Travel" {
+			t.Fatalf("hit path = %q, want only travel subtree", strings.Join(hit.Chunk.SectionPath, " > "))
+		}
+	}
+}
+
+func TestAskCarriesAutoRoutePathAndConstrainsSubtree(t *testing.T) {
+	sys := New(Options{Model: fakeModel{}, Splitter: ingest.NewMarkdownSplitter(500, 50)})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{
+			ID:      "doc1",
+			Content: "# Cities\nParis overview.\n## Travel\nMuseums and cafes.\n## History\nAncient capital notes.",
+		},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	ans, err := sys.Ask(context.Background(), "travel museums", AskOptions{
+		Search: SearchOptions{
+			Namespace:           "geo",
+			TopK:                3,
+			EnableAutoRoute:     true,
+			AutoRouteMinScore:   2,
+			EnableStructure:     true,
+			EnableTreeExpansion: true,
+			ExpansionDepth:      3,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if !pathEquals(ans.Trace.RoutePath, []string{"Cities", "Travel"}) {
+		t.Fatalf("trace route path = %#v, want travel route", ans.Trace.RoutePath)
+	}
+	if !pathEquals(ans.Trace.AutoRoutePath, []string{"Cities", "Travel"}) {
+		t.Fatalf("trace auto route path = %#v, want travel route", ans.Trace.AutoRoutePath)
+	}
+	if len(ans.Trace.AutoRouteCandidates) == 0 {
+		t.Fatalf("trace auto route candidates = %#v, want non-empty", ans.Trace.AutoRouteCandidates)
+	}
+	if len(ans.Diagnostics.AutoRouteCandidates) == 0 {
+		t.Fatalf("diagnostics auto route candidates = %#v, want non-empty", ans.Diagnostics.AutoRouteCandidates)
+	}
+	for _, hit := range ans.Hits {
+		if strings.Join(hit.Chunk.SectionPath, " > ") != "Cities > Travel" {
+			t.Fatalf("hit path = %q, want only auto-routed travel subtree", strings.Join(hit.Chunk.SectionPath, " > "))
+		}
+	}
+}
+
+func TestAskCarriesMergedAutoRouteCandidatesAcrossVariants(t *testing.T) {
+	sys := New(Options{
+		Model:        fakeModel{},
+		Splitter:     ingest.NewMarkdownSplitter(500, 50),
+		Preprocessor: rewriteVariantPreprocessor{},
+	})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{
+			ID:      "doc1",
+			Content: "# Cities\nParis overview.\n## Travel\nMuseums and cafes.\n## History\nAncient capital notes.",
+		},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	ans, err := sys.Ask(context.Background(), "route planner", AskOptions{
+		Search: SearchOptions{
+			Namespace:              "geo",
+			TopK:                   3,
+			EnableAutoRoute:        true,
+			AutoRouteMinScore:      2,
+			AutoRouteMaxCandidates: 2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if len(ans.Trace.AutoRouteCandidates) < 2 {
+		t.Fatalf("trace auto route candidates = %#v, want merged candidates", ans.Trace.AutoRouteCandidates)
+	}
+}
+
+func TestAskCanFanoutAcrossTopRouteCandidates(t *testing.T) {
+	sys := New(Options{Model: fakeModel{}, Splitter: ingest.NewMarkdownSplitter(500, 50)})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{
+			ID:      "doc1",
+			Content: "# Cities\nParis overview.\n## Travel\nMuseums and cafes.\n## History\nHistory museums and capital notes.",
+		},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	ans, err := sys.Ask(context.Background(), "travel history museums", AskOptions{
+		Search: SearchOptions{
+			Namespace:                    "geo",
+			TopK:                         5,
+			EnableAutoRoute:              true,
+			AutoRouteMinScore:            2,
+			AutoRouteMaxCandidates:       2,
+			AutoRouteConfidenceThreshold: 0.5,
+			AutoRouteFanout:              2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	foundTravel := false
+	foundHistory := false
+	for _, hit := range ans.Hits {
+		if pathEquals(hit.Chunk.SectionPath, []string{"Cities", "Travel"}) {
+			foundTravel = true
+		}
+		if pathEquals(hit.Chunk.SectionPath, []string{"Cities", "History"}) {
+			foundHistory = true
+		}
+	}
+	if !foundTravel || !foundHistory {
+		t.Fatalf("hits = %+v, want travel and history fanout hits", ans.Hits)
+	}
+	if ans.Trace.RoutePolicy.Mode != "fanout" {
+		t.Fatalf("trace route policy mode = %q, want fanout", ans.Trace.RoutePolicy.Mode)
+	}
+	if ans.Trace.RoutePolicy.SelectedCount != 2 {
+		t.Fatalf("trace route policy selected count = %d, want 2", ans.Trace.RoutePolicy.SelectedCount)
+	}
+	if len(ans.Trace.RoutePolicy.Rationale) == 0 {
+		t.Fatalf("trace route policy rationale = %#v, want non-empty", ans.Trace.RoutePolicy.Rationale)
+	}
+	if ans.Diagnostics.RoutePolicy.Mode != "fanout" {
+		t.Fatalf("diagnostics route policy mode = %q, want fanout", ans.Diagnostics.RoutePolicy.Mode)
+	}
+}
+
+func TestAskConvergesWhenConfidenceGapDominates(t *testing.T) {
+	sys := New(Options{Model: fakeModel{}, Splitter: ingest.NewMarkdownSplitter(500, 50)})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{
+			ID:      "doc1",
+			Content: "# Cities\nParis overview.\n## Travel museums\nWalking tour notes.\n## History museums\nLegacy notes.",
+		},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	ans, err := sys.Ask(context.Background(), "travel museums", AskOptions{
+		Search: SearchOptions{
+			Namespace:                    "geo",
+			TopK:                         5,
+			EnableAutoRoute:              true,
+			AutoRouteMinScore:            2,
+			AutoRouteMaxCandidates:       2,
+			AutoRouteConfidenceThreshold: 0.4,
+			AutoRouteFanout:              2,
+			AutoRouteConfidenceGap:       0.3,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if ans.Trace.RoutePolicy.Mode != "converged" {
+		t.Fatalf("trace route policy mode = %q, want converged", ans.Trace.RoutePolicy.Mode)
+	}
+	if ans.Trace.RoutePolicy.SelectedCount != 1 {
+		t.Fatalf("trace route policy selected count = %d, want 1", ans.Trace.RoutePolicy.SelectedCount)
+	}
+	if ans.Trace.RoutePolicy.ConfidenceGap != 0.3 {
+		t.Fatalf("trace route policy confidence gap = %v, want 0.3", ans.Trace.RoutePolicy.ConfidenceGap)
+	}
+	if ans.Trace.RoutePolicy.Gap <= 0 {
+		t.Fatalf("trace route policy gap = %v, want > 0", ans.Trace.RoutePolicy.Gap)
+	}
+	hasConverged := false
+	for _, line := range ans.Trace.RoutePolicy.Rationale {
+		if strings.HasPrefix(line, "converged:") {
+			hasConverged = true
+			break
+		}
+	}
+	if !hasConverged {
+		t.Fatalf("trace route policy rationale = %#v, want converged: entry", ans.Trace.RoutePolicy.Rationale)
+	}
+	if ans.Diagnostics.RoutePolicy.Mode != "converged" {
+		t.Fatalf("diagnostics route policy mode = %q, want converged", ans.Diagnostics.RoutePolicy.Mode)
+	}
+	if ans.Diagnostics.RoutePolicy.Gap != ans.Trace.RoutePolicy.Gap {
+		t.Fatalf("diagnostics gap = %v, want trace gap %v", ans.Diagnostics.RoutePolicy.Gap, ans.Trace.RoutePolicy.Gap)
+	}
+	for _, hit := range ans.Hits {
+		if pathEquals(hit.Chunk.SectionPath, []string{"Cities", "History museums"}) {
+			t.Fatalf("hits = %+v, history museums route should not be queried when converged", ans.Hits)
+		}
+	}
+}
+
+func TestAskExposesPerRouteSearchTrajectory(t *testing.T) {
+	sys := New(Options{Model: fakeModel{}, Splitter: ingest.NewMarkdownSplitter(500, 50)})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{
+			ID:      "doc1",
+			Content: "# Cities\nParis overview.\n## Travel\nMuseums and cafes.\n## History\nHistory museums and capital notes.",
+		},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	ans, err := sys.Ask(context.Background(), "travel history museums", AskOptions{
+		Search: SearchOptions{
+			Namespace:                    "geo",
+			TopK:                         5,
+			EnableAutoRoute:              true,
+			AutoRouteMinScore:            2,
+			AutoRouteMaxCandidates:       2,
+			AutoRouteConfidenceThreshold: 0.5,
+			AutoRouteFanout:              2,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if len(ans.Trace.SearchTrajectory) != 2 {
+		t.Fatalf("trace search trajectory len = %d, want 2 fanout steps", len(ans.Trace.SearchTrajectory))
+	}
+	if len(ans.Diagnostics.SearchTrajectory) != len(ans.Trace.SearchTrajectory) {
+		t.Fatalf("diagnostics trajectory len = %d, want %d", len(ans.Diagnostics.SearchTrajectory), len(ans.Trace.SearchTrajectory))
+	}
+	for i, step := range ans.Trace.SearchTrajectory {
+		if step.HitCount == 0 {
+			t.Fatalf("trajectory step %d route=%v has zero hits", i, step.Route)
+		}
+		if len(step.HitIDs) != step.HitCount {
+			t.Fatalf("trajectory step %d hit count = %d but ids = %#v", i, step.HitCount, step.HitIDs)
+		}
+		if step.Mode != "fanout" {
+			t.Fatalf("trajectory step %d mode = %q, want fanout", i, step.Mode)
+		}
+		mirror := ans.Diagnostics.SearchTrajectory[i]
+		if mirror.HitCount != step.HitCount {
+			t.Fatalf("diagnostics trajectory step %d hit count = %d, trace had %d", i, mirror.HitCount, step.HitCount)
+		}
+		if !pathEquals(mirror.Route, step.Route) {
+			t.Fatalf("diagnostics trajectory step %d route = %#v, trace had %#v", i, mirror.Route, step.Route)
+		}
+	}
+}
+
 type fixedPacker struct{}
+
+type rewriteVariantPreprocessor struct{}
+
+func (rewriteVariantPreprocessor) Process(_ context.Context, req retrieve.Request) (retrieve.PreprocessResult, error) {
+	return retrieve.PreprocessResult{
+		QueryVariants: []string{"travel museums", "history notes"},
+		Trace: retrieve.Trace{
+			OriginalQuery:  req.Query,
+			EffectiveQuery: "travel museums",
+			QueryVariants:  []string{"travel museums", "history notes"},
+		},
+	}, nil
+}
 
 func (fixedPacker) Pack(_ context.Context, req pack.Request) (pack.Result, error) {
 	selected := make([]store.Hit, 0, 1)
@@ -411,4 +715,16 @@ func (fixedPacker) Pack(_ context.Context, req pack.Request) (pack.Result, error
 			DroppedChunkIDs:  dropped,
 		},
 	}, nil
+}
+
+func pathEquals(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

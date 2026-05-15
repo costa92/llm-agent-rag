@@ -12,15 +12,24 @@ import (
 )
 
 type SearchOptions struct {
-	TopK            int
-	Namespace       string
-	Filters         map[string]any
-	SecurityFilters map[string]any
-	EnableMQE       bool
-	EnableHyDE      bool
-	MQECount        int
-	EnableRerank    bool
-	EnableStructure bool
+	TopK                         int
+	Namespace                    string
+	Filters                      map[string]any
+	SecurityFilters              map[string]any
+	RoutePath                    []string
+	EnableAutoRoute              bool
+	AutoRouteMinScore            float64
+	AutoRouteMaxCandidates       int
+	AutoRouteConfidenceThreshold float64
+	AutoRouteFanout              int
+	AutoRouteConfidenceGap       float64
+	EnableMQE                    bool
+	EnableHyDE                   bool
+	MQECount                     int
+	EnableRerank                 bool
+	EnableStructure              bool
+	EnableTreeExpansion          bool
+	ExpansionDepth               int
 }
 
 type AskOptions struct {
@@ -41,4 +50,5 @@ type Options struct {
 	Reranker     rerank.Reranker
 	Packer       pack.Packer
 	MaxChars     int
+	Observer     Observer
 }
