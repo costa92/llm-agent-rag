@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/costa92/llm-agent-rag/ingest"
+	"github.com/costa92/llm-agent-rag/store"
 )
 
 type Node struct {
@@ -14,6 +15,7 @@ type Node struct {
 	Level    int
 	Path     []string
 	Content  string
+	Parent   *Node
 	Children []*Node
 }
 
@@ -24,15 +26,31 @@ type DocumentTree struct {
 }
 
 func Build(doc ingest.Document, chunks []ingest.Chunk) *DocumentTree {
+	stored := make([]store.StoredChunk, 0, len(chunks))
+	for _, chunk := range chunks {
+		stored = append(stored, store.StoredChunk{
+			ID:           chunk.ID,
+			DocID:        chunk.DocID,
+			Title:        chunk.Title,
+			SectionPath:  metadataPath(chunk.Metadata),
+			Heading:      metadataHeading(chunk.Metadata),
+			HeadingLevel: metadataLevel(chunk.Metadata),
+			Content:      chunk.Content,
+		})
+	}
+	return BuildStored(doc.ID, doc.Title, stored)
+}
+
+func BuildStored(docID, title string, chunks []store.StoredChunk) *DocumentTree {
 	root := &Node{
-		ID:      doc.ID + ":root",
-		DocID:   doc.ID,
-		Title:   doc.Title,
-		Heading: doc.Title,
+		ID:      docID + ":root",
+		DocID:   docID,
+		Title:   title,
+		Heading: title,
 		Level:   0,
 	}
 	tree := &DocumentTree{
-		DocID: doc.ID,
+		DocID: docID,
 		Root:  root,
 		index: map[string]*Node{root.ID: root},
 	}
@@ -45,7 +63,7 @@ func Build(doc ingest.Document, chunks []ingest.Chunk) *DocumentTree {
 	}
 
 	for _, chunk := range chunks {
-		path := metadataPath(chunk.Metadata)
+		path := append([]string(nil), chunk.SectionPath...)
 		parent := root
 		var accumulated []string
 		for i, heading := range path {
@@ -54,12 +72,13 @@ func Build(doc ingest.Document, chunks []ingest.Chunk) *DocumentTree {
 			node, ok := pathIndex[key]
 			if !ok {
 				node = &Node{
-					ID:      doc.ID + ":" + key,
-					DocID:   doc.ID,
-					Title:   doc.Title,
+					ID:      docID + ":" + key,
+					DocID:   docID,
+					Title:   title,
 					Heading: heading,
 					Level:   i + 1,
 					Path:    append([]string(nil), accumulated...),
+					Parent:  parent,
 				}
 				parent.Children = append(parent.Children, node)
 				pathIndex[key] = node
@@ -75,10 +94,11 @@ func Build(doc ingest.Document, chunks []ingest.Chunk) *DocumentTree {
 			ID:      chunk.ID,
 			DocID:   chunk.DocID,
 			Title:   chunk.Title,
-			Heading: metadataHeading(chunk.Metadata),
-			Level:   metadataLevel(chunk.Metadata),
+			Heading: chunk.Heading,
+			Level:   chunk.HeadingLevel,
 			Path:    path,
 			Content: chunk.Content,
+			Parent:  parent,
 		}
 		parent.Children = append(parent.Children, leaf)
 		tree.index[leaf.ID] = leaf

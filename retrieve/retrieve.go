@@ -4,25 +4,36 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/costa92/llm-agent-rag/advanced"
 	"github.com/costa92/llm-agent-rag/embed"
 	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/store"
+	"github.com/costa92/llm-agent-rag/tree"
 )
 
 type Request struct {
-	Query           string
-	Namespace       string
-	TopK            int
-	Filters         map[string]any
-	SecurityFilters map[string]any
-	EnableMQE       bool
-	EnableHyDE      bool
-	MQECount        int
-	EnableStructure bool
-	QueryVariants   []string
+	Query                        string
+	Namespace                    string
+	TopK                         int
+	Filters                      map[string]any
+	SecurityFilters              map[string]any
+	RoutePath                    []string
+	EnableAutoRoute              bool
+	AutoRouteMinScore            float64
+	AutoRouteMaxCandidates       int
+	AutoRouteConfidenceThreshold float64
+	AutoRouteFanout              int
+	AutoRouteConfidenceGap       float64
+	EnableMQE                    bool
+	EnableHyDE                   bool
+	MQECount                     int
+	EnableStructure              bool
+	EnableTreeExpansion          bool
+	ExpansionDepth               int
+	QueryVariants                []string
 }
 
 type PreprocessResult struct {
@@ -30,13 +41,118 @@ type PreprocessResult struct {
 	Trace         Trace
 }
 
-type Trace struct {
-	OriginalQuery    string
-	EffectiveQuery   string
-	QueryVariants    []string
-	SearchPath       []string
+type RouteCandidate struct {
+	Path       []string
+	Score      float64
+	Confidence float64
+	Queries    []string
+	Signals    []string
+	Selected   bool
+	Reason     string
+}
+
+type RoutePolicyTrace struct {
+	Mode                string
+	ConfidenceThreshold float64
+	ConfidenceGap       float64
+	Gap                 float64
+	Fanout              int
+	CandidateCount      int
+	SelectedCount       int
+	Rationale           []string
+}
+
+type TrajectoryStep struct {
+	Route            []string
+	Confidence       float64
+	Mode             string
+	HitCount         int
+	HitIDs           []string
 	MatchedSections  []string
-	SelectedChunkIDs []string
+	ExpandedSections []string
+	Rationale        string
+}
+
+type SectionPlannerDecision struct {
+	Selected  []RouteCandidate
+	Mode      string
+	Fanout    int
+	Gap       float64
+	Rationale []string
+}
+
+type SectionPlanner interface {
+	Plan(ctx context.Context, req Request, candidates []RouteCandidate) (SectionPlannerDecision, error)
+}
+
+type GapAwareSectionPlanner struct{}
+
+func (GapAwareSectionPlanner) Plan(_ context.Context, req Request, candidates []RouteCandidate) (SectionPlannerDecision, error) {
+	if len(candidates) == 0 {
+		return SectionPlannerDecision{
+			Mode:      "single",
+			Fanout:    1,
+			Rationale: []string{"no route candidates available"},
+		}, nil
+	}
+	filtered, rationale := filterRouteCandidates(candidates, req.AutoRouteConfidenceThreshold)
+	if len(filtered) == 0 {
+		return SectionPlannerDecision{
+			Mode:      "single",
+			Fanout:    1,
+			Rationale: append([]string(nil), rationale...),
+		}, nil
+	}
+	gap := 0.0
+	converged := false
+	if req.AutoRouteConfidenceGap > 0 && len(filtered) >= 2 {
+		gap = filtered[0].Confidence - filtered[1].Confidence
+		if gap >= req.AutoRouteConfidenceGap {
+			rationale = append(rationale, "converged: top-1 dominates by gap="+formatFloat(gap)+" >= threshold "+formatFloat(req.AutoRouteConfidenceGap))
+			filtered = filtered[:1]
+			converged = true
+		} else {
+			rationale = append(rationale, "fanout: top-2 within gap="+formatFloat(gap)+" < threshold "+formatFloat(req.AutoRouteConfidenceGap))
+		}
+	}
+	fanout := req.AutoRouteFanout
+	if fanout <= 0 {
+		fanout = 1
+	}
+	if converged {
+		fanout = 1
+	}
+	if len(filtered) > fanout {
+		filtered = filtered[:fanout]
+	}
+	mode := "fanout"
+	if converged {
+		mode = "converged"
+	}
+	markSelectedCandidates(filtered, fanout)
+	return SectionPlannerDecision{
+		Selected:  filtered,
+		Mode:      mode,
+		Fanout:    fanout,
+		Gap:       gap,
+		Rationale: append([]string(nil), rationale...),
+	}, nil
+}
+
+type Trace struct {
+	OriginalQuery       string
+	EffectiveQuery      string
+	QueryVariants       []string
+	RoutePath           []string
+	AutoRoutePath       []string
+	AutoRouteCandidates []RouteCandidate
+	RoutePolicy         RoutePolicyTrace
+	SearchPath          []string
+	MatchedSections     []string
+	ExpandedSections    []string
+	ExpandedChunkIDs    []string
+	SelectedChunkIDs    []string
+	SearchTrajectory    []TrajectoryStep
 }
 
 type QueryPreprocessor interface {
@@ -49,10 +165,13 @@ func (NoopPreprocessor) Process(_ context.Context, req Request) (PreprocessResul
 	return PreprocessResult{
 		QueryVariants: []string{req.Query},
 		Trace: Trace{
-			OriginalQuery:    req.Query,
-			EffectiveQuery:   req.Query,
-			QueryVariants:    []string{req.Query},
-			SelectedChunkIDs: nil,
+			OriginalQuery:       req.Query,
+			EffectiveQuery:      req.Query,
+			QueryVariants:       []string{req.Query},
+			RoutePath:           append([]string(nil), req.RoutePath...),
+			AutoRoutePath:       append([]string(nil), req.RoutePath...),
+			AutoRouteCandidates: routeCandidatesFromPath(req.Query, req.RoutePath),
+			SelectedChunkIDs:    nil,
 		},
 	}, nil
 }
@@ -93,10 +212,13 @@ func (p LLMExpansionPreprocessor) Process(ctx context.Context, req Request) (Pre
 	return PreprocessResult{
 		QueryVariants: variants,
 		Trace: Trace{
-			OriginalQuery:    req.Query,
-			EffectiveQuery:   variants[0],
-			QueryVariants:    append([]string(nil), variants...),
-			SelectedChunkIDs: nil,
+			OriginalQuery:       req.Query,
+			EffectiveQuery:      variants[0],
+			QueryVariants:       append([]string(nil), variants...),
+			RoutePath:           append([]string(nil), req.RoutePath...),
+			AutoRoutePath:       append([]string(nil), req.RoutePath...),
+			AutoRouteCandidates: routeCandidatesFromPath(req.Query, req.RoutePath),
+			SelectedChunkIDs:    nil,
 		},
 	}, nil
 }
@@ -112,12 +234,17 @@ type Retriever interface {
 var ErrBaseRetrieverRequired = errors.New("retrieve: base retriever required")
 
 type VariantRetriever struct {
-	Base Retriever
+	Base    Retriever
+	Planner SectionPlanner
 }
 
 func (r VariantRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
 	if r.Base == nil {
 		return nil, Trace{}, ErrBaseRetrieverRequired
+	}
+	planner := r.Planner
+	if planner == nil {
+		planner = GapAwareSectionPlanner{}
 	}
 	variants := req.QueryVariants
 	if len(variants) == 0 {
@@ -129,13 +256,49 @@ func (r VariantRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hi
 	}
 	merged := make(map[string]rankedHit)
 	nextOrder := 0
+	trace := Trace{
+		OriginalQuery:  req.Query,
+		EffectiveQuery: req.Query,
+		QueryVariants:  append([]string(nil), variants...),
+		RoutePath:      append([]string(nil), req.RoutePath...),
+		AutoRoutePath:  append([]string(nil), req.RoutePath...),
+	}
 	for _, query := range variants {
 		subReq := req
 		subReq.Query = query
 		subReq.QueryVariants = nil
-		hits, _, err := r.Base.Retrieve(ctx, subReq)
+		hits, subTrace, err := retrieveWithRoutePolicy(ctx, r.Base, planner, subReq)
 		if err != nil {
 			return nil, Trace{}, err
+		}
+		if trace.EffectiveQuery == req.Query && subTrace.EffectiveQuery != "" {
+			trace.EffectiveQuery = subTrace.EffectiveQuery
+		}
+		if len(trace.AutoRoutePath) == 0 && len(subTrace.AutoRoutePath) > 0 {
+			trace.AutoRoutePath = append([]string(nil), subTrace.AutoRoutePath...)
+		}
+		if len(trace.RoutePath) == 0 && len(subTrace.RoutePath) > 0 {
+			trace.RoutePath = append([]string(nil), subTrace.RoutePath...)
+		}
+		if trace.RoutePolicy.Mode == "" && subTrace.RoutePolicy.Mode != "" {
+			trace.RoutePolicy = subTrace.RoutePolicy
+		}
+		trace.AutoRouteCandidates = mergeRouteCandidates(trace.AutoRouteCandidates, subTrace.AutoRouteCandidates)
+		trace.SearchPath = appendUniqueStrings(trace.SearchPath, subTrace.SearchPath...)
+		trace.MatchedSections = appendUniqueStrings(trace.MatchedSections, subTrace.MatchedSections...)
+		trace.ExpandedSections = appendUniqueStrings(trace.ExpandedSections, subTrace.ExpandedSections...)
+		trace.ExpandedChunkIDs = appendUniqueStrings(trace.ExpandedChunkIDs, subTrace.ExpandedChunkIDs...)
+		for _, step := range subTrace.SearchTrajectory {
+			trace.SearchTrajectory = append(trace.SearchTrajectory, TrajectoryStep{
+				Route:            append([]string(nil), step.Route...),
+				Confidence:       step.Confidence,
+				Mode:             step.Mode,
+				HitCount:         step.HitCount,
+				HitIDs:           append([]string(nil), step.HitIDs...),
+				MatchedSections:  append([]string(nil), step.MatchedSections...),
+				ExpandedSections: append([]string(nil), step.ExpandedSections...),
+				Rationale:        step.Rationale,
+			})
 		}
 		for _, hit := range hits {
 			prev, ok := merged[hit.Chunk.ID]
@@ -168,12 +331,177 @@ func (r VariantRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hi
 	for _, hit := range out[:limit] {
 		hits = append(hits, hit.hit)
 	}
-	return hits, Trace{
-		OriginalQuery:    req.Query,
-		EffectiveQuery:   variants[0],
-		QueryVariants:    append([]string(nil), variants...),
-		SelectedChunkIDs: collectChunkIDs(hits),
-	}, nil
+	trace.SelectedChunkIDs = collectChunkIDs(hits)
+	return hits, trace, nil
+}
+
+func retrieveWithRoutePolicy(ctx context.Context, base Retriever, planner SectionPlanner, req Request) ([]store.Hit, Trace, error) {
+	if base == nil {
+		return nil, Trace{}, ErrBaseRetrieverRequired
+	}
+	if planner == nil {
+		planner = GapAwareSectionPlanner{}
+	}
+	if len(req.RoutePath) > 0 || !req.EnableAutoRoute || req.AutoRouteFanout <= 1 {
+		hits, trace, err := base.Retrieve(ctx, req)
+		if err != nil {
+			return nil, Trace{}, err
+		}
+		policyRationale := []string{"fanout disabled or explicit route path provided"}
+		if req.AutoRouteConfidenceGap > 0 {
+			policyRationale = append(policyRationale, "gap policy inactive: fanout disabled")
+		}
+		trace.RoutePolicy = RoutePolicyTrace{
+			Mode:          "single",
+			ConfidenceGap: req.AutoRouteConfidenceGap,
+			Fanout:        1,
+			Rationale:     policyRationale,
+		}
+		trace.SearchTrajectory = []TrajectoryStep{singleTrajectoryStep(req, trace, hits)}
+		return hits, trace, nil
+	}
+	probeReq := req
+	probeReq.TopK = maxInt(req.TopK, 8)
+	hits, trace, err := base.Retrieve(ctx, probeReq)
+	if err != nil {
+		return nil, Trace{}, err
+	}
+	decision, err := planner.Plan(ctx, req, trace.AutoRouteCandidates)
+	if err != nil {
+		return nil, Trace{}, err
+	}
+	candidates := decision.Selected
+	if len(candidates) == 0 {
+		trace.RoutePolicy = RoutePolicyTrace{
+			Mode:                "single",
+			ConfidenceThreshold: req.AutoRouteConfidenceThreshold,
+			ConfidenceGap:       req.AutoRouteConfidenceGap,
+			Fanout:              1,
+			CandidateCount:      len(trace.AutoRouteCandidates),
+			SelectedCount:       0,
+			Rationale:           append([]string(nil), decision.Rationale...),
+		}
+		return hits, trace, nil
+	}
+	type rankedHit struct {
+		hit   store.Hit
+		order int
+	}
+	merged := make(map[string]rankedHit)
+	nextOrder := 0
+	mergedTrace := trace
+	mergedTrace.RoutePath = append([]string(nil), candidates[0].Path...)
+	mergedTrace.AutoRoutePath = append([]string(nil), candidates[0].Path...)
+	mergedTrace.AutoRouteCandidates = cloneRouteCandidates(candidates)
+	mode := decision.Mode
+	if mode == "" {
+		mode = "fanout"
+	}
+	mergedTrace.RoutePolicy = RoutePolicyTrace{
+		Mode:                mode,
+		ConfidenceThreshold: effectiveThreshold(req.AutoRouteConfidenceThreshold),
+		ConfidenceGap:       req.AutoRouteConfidenceGap,
+		Gap:                 decision.Gap,
+		Fanout:              decision.Fanout,
+		CandidateCount:      len(trace.AutoRouteCandidates),
+		SelectedCount:       len(candidates),
+		Rationale:           append([]string(nil), decision.Rationale...),
+	}
+	mergedTrace.SearchPath = nil
+	mergedTrace.MatchedSections = nil
+	mergedTrace.ExpandedSections = nil
+	mergedTrace.ExpandedChunkIDs = nil
+	mergedTrace.SearchTrajectory = nil
+	for _, candidate := range candidates {
+		routeReq := req
+		routeReq.RoutePath = append([]string(nil), candidate.Path...)
+		routeReq.EnableAutoRoute = false
+		routeHits, routeTrace, err := base.Retrieve(ctx, routeReq)
+		if err != nil {
+			return nil, Trace{}, err
+		}
+		mergedTrace.SearchPath = appendUniqueStrings(mergedTrace.SearchPath, routeTrace.SearchPath...)
+		mergedTrace.MatchedSections = appendUniqueStrings(mergedTrace.MatchedSections, routeTrace.MatchedSections...)
+		mergedTrace.ExpandedSections = appendUniqueStrings(mergedTrace.ExpandedSections, routeTrace.ExpandedSections...)
+		mergedTrace.ExpandedChunkIDs = appendUniqueStrings(mergedTrace.ExpandedChunkIDs, routeTrace.ExpandedChunkIDs...)
+		mergedTrace.SearchTrajectory = append(mergedTrace.SearchTrajectory, TrajectoryStep{
+			Route:            append([]string(nil), candidate.Path...),
+			Confidence:       candidate.Confidence,
+			Mode:             mode,
+			HitCount:         len(routeHits),
+			HitIDs:           collectChunkIDs(routeHits),
+			MatchedSections:  append([]string(nil), routeTrace.MatchedSections...),
+			ExpandedSections: append([]string(nil), routeTrace.ExpandedSections...),
+			Rationale:        candidate.Reason,
+		})
+		for _, hit := range routeHits {
+			boosted := hit
+			boosted.Score = hit.Score + candidate.Confidence
+			prev, ok := merged[hit.Chunk.ID]
+			if !ok {
+				merged[hit.Chunk.ID] = rankedHit{hit: boosted, order: nextOrder}
+				nextOrder++
+				continue
+			}
+			if boosted.Score > prev.hit.Score {
+				prev.hit = boosted
+				merged[hit.Chunk.ID] = prev
+			}
+		}
+	}
+	out := make([]rankedHit, 0, len(merged))
+	for _, hit := range merged {
+		out = append(out, hit)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].hit.Score == out[j].hit.Score {
+			return out[i].order < out[j].order
+		}
+		return out[i].hit.Score > out[j].hit.Score
+	})
+	limit := len(out)
+	if req.TopK > 0 && limit > req.TopK {
+		limit = req.TopK
+	}
+	finalHits := make([]store.Hit, 0, limit)
+	for _, hit := range out[:limit] {
+		finalHits = append(finalHits, hit.hit)
+	}
+	mergedTrace.SelectedChunkIDs = collectChunkIDs(finalHits)
+	return finalHits, mergedTrace, nil
+}
+
+func filterRouteCandidates(candidates []RouteCandidate, threshold float64) ([]RouteCandidate, []string) {
+	if len(candidates) == 0 {
+		return nil, []string{"no route candidates available"}
+	}
+	threshold = effectiveThreshold(threshold)
+	out := make([]RouteCandidate, 0, len(candidates))
+	rationale := make([]string, 0, len(candidates)+1)
+	rationale = append(rationale, "applied confidence threshold "+formatFloat(threshold))
+	for _, candidate := range candidates {
+		if candidate.Confidence < threshold {
+			rationale = append(rationale, "rejected "+strings.Join(candidate.Path, " > ")+" confidence="+formatFloat(candidate.Confidence))
+			continue
+		}
+		candidate.Reason = "kept: confidence >= threshold"
+		out = append(out, candidate)
+		rationale = append(rationale, "kept "+strings.Join(candidate.Path, " > ")+" confidence="+formatFloat(candidate.Confidence))
+	}
+	if len(out) == 0 {
+		fallback := candidates[0]
+		fallback.Reason = "fallback: top candidate retained after thresholding"
+		out = append(out, fallback)
+		rationale = append(rationale, "fallback to top candidate "+strings.Join(fallback.Path, " > "))
+	}
+	return out, rationale
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 type DenseRetriever struct {
@@ -182,9 +510,13 @@ type DenseRetriever struct {
 }
 
 func (r DenseRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
+	req, autoRouteCandidates := withAutoRoute(req, r.Store)
 	vec, err := r.Embedder.Embed(ctx, req.Query)
 	if err != nil {
 		return nil, Trace{}, err
+	}
+	if len(req.RoutePath) > 0 {
+		return r.retrieveWithinRoute(ctx, req, vec, autoRouteCandidates)
 	}
 	hits, err := r.Store.Search(ctx, store.Query{
 		Namespace:       req.Namespace,
@@ -197,10 +529,43 @@ func (r DenseRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit,
 		return nil, Trace{}, err
 	}
 	return hits, Trace{
-		OriginalQuery:    req.Query,
-		EffectiveQuery:   req.Query,
-		QueryVariants:    []string{req.Query},
-		SelectedChunkIDs: collectChunkIDs(hits),
+		OriginalQuery:       req.Query,
+		EffectiveQuery:      req.Query,
+		QueryVariants:       []string{req.Query},
+		RoutePath:           append([]string(nil), req.RoutePath...),
+		AutoRoutePath:       append([]string(nil), req.RoutePath...),
+		AutoRouteCandidates: routeTraceCandidates(req, autoRouteCandidates),
+		SelectedChunkIDs:    collectChunkIDs(hits),
+	}, nil
+}
+
+func (r DenseRetriever) retrieveWithinRoute(ctx context.Context, req Request, vec embed.Vector, autoRouteCandidates []RouteCandidate) ([]store.Hit, Trace, error) {
+	chunks, err := r.Store.List(ctx, req.Namespace, store.Filter(req.Filters), store.Filter(req.SecurityFilters))
+	if err != nil {
+		return nil, Trace{}, err
+	}
+	hits := make([]store.Hit, 0, len(chunks))
+	for _, chunk := range chunks {
+		if !chunkInRoute(chunk, req.RoutePath) {
+			continue
+		}
+		hits = append(hits, store.Hit{
+			Chunk: chunk,
+			Score: embed.CosineSimilarity(vec, chunk.Vector),
+		})
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+	if req.TopK > 0 && len(hits) > req.TopK {
+		hits = hits[:req.TopK]
+	}
+	return hits, Trace{
+		OriginalQuery:       req.Query,
+		EffectiveQuery:      req.Query,
+		QueryVariants:       []string{req.Query},
+		RoutePath:           append([]string(nil), req.RoutePath...),
+		AutoRoutePath:       append([]string(nil), req.RoutePath...),
+		AutoRouteCandidates: routeTraceCandidates(req, autoRouteCandidates),
+		SelectedChunkIDs:    collectChunkIDs(hits),
 	}, nil
 }
 
@@ -209,6 +574,7 @@ type LexicalRetriever struct {
 }
 
 func (r LexicalRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
+	req, autoRouteCandidates := withAutoRoute(req, r.Store)
 	chunks, err := r.Store.List(ctx, req.Namespace, store.Filter(req.Filters), store.Filter(req.SecurityFilters))
 	if err != nil {
 		return nil, Trace{}, err
@@ -216,6 +582,9 @@ func (r LexicalRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hi
 	tokens := tokenize(req.Query)
 	hits := make([]store.Hit, 0, len(chunks))
 	for _, chunk := range chunks {
+		if !chunkInRoute(chunk, req.RoutePath) {
+			continue
+		}
 		score := lexicalScore(tokens, chunk.Content)
 		if score <= 0 {
 			continue
@@ -230,10 +599,13 @@ func (r LexicalRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hi
 		hits = hits[:req.TopK]
 	}
 	return hits, Trace{
-		OriginalQuery:    req.Query,
-		EffectiveQuery:   req.Query,
-		QueryVariants:    []string{req.Query},
-		SelectedChunkIDs: collectChunkIDs(hits),
+		OriginalQuery:       req.Query,
+		EffectiveQuery:      req.Query,
+		QueryVariants:       []string{req.Query},
+		RoutePath:           append([]string(nil), req.RoutePath...),
+		AutoRoutePath:       append([]string(nil), req.RoutePath...),
+		AutoRouteCandidates: routeTraceCandidates(req, autoRouteCandidates),
+		SelectedChunkIDs:    collectChunkIDs(hits),
 	}, nil
 }
 
@@ -242,6 +614,7 @@ type StructureRetriever struct {
 }
 
 func (r StructureRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
+	req, autoRouteCandidates := withAutoRoute(req, r.Store)
 	chunks, err := r.Store.List(ctx, req.Namespace, store.Filter(req.Filters), store.Filter(req.SecurityFilters))
 	if err != nil {
 		return nil, Trace{}, err
@@ -250,38 +623,150 @@ func (r StructureRetriever) Retrieve(ctx context.Context, req Request) ([]store.
 	path := make([]string, 0, len(tokens))
 	sectionSeen := make(map[string]struct{})
 	matchedSections := make([]string, 0)
-	hits := make([]store.Hit, 0, len(chunks))
+	expandedSections := make([]string, 0)
+	merged := make(map[string]store.Hit, len(chunks))
+	treesByDoc := make(map[string]*tree.DocumentTree)
+	chunksByDoc := make(map[string][]store.StoredChunk)
+	titleByDoc := make(map[string]string)
 	for _, chunk := range chunks {
-		score, matched := structureScore(tokens, chunk)
-		if score <= 0 {
+		if !chunkInRoute(chunk, req.RoutePath) {
 			continue
 		}
-		if matched != "" {
-			path = append(path, matched)
+		chunksByDoc[chunk.DocID] = append(chunksByDoc[chunk.DocID], chunk)
+		if _, ok := titleByDoc[chunk.DocID]; !ok {
+			titleByDoc[chunk.DocID] = chunk.Title
 		}
-		if chunk.SectionID != "" {
-			if _, ok := sectionSeen[chunk.SectionID]; !ok {
-				sectionSeen[chunk.SectionID] = struct{}{}
-				matchedSections = append(matchedSections, chunk.SectionID)
+	}
+
+	for docID, docChunks := range chunksByDoc {
+		docTree := tree.BuildStored(docID, titleByDoc[docID], docChunks)
+		treesByDoc[docID] = docTree
+		for _, section := range docTree.Sections() {
+			score := sectionNodeScore(tokens, section)
+			if score <= 0 {
+				continue
+			}
+			joinedPath := strings.Join(section.Path, " > ")
+			if joinedPath != "" {
+				path = append(path, joinedPath)
+			}
+			sectionID := sectionIDForPath(docChunks, section.Path)
+			if sectionID == "" {
+				sectionID = section.ID
+			}
+			if _, ok := sectionSeen[sectionID]; !ok {
+				sectionSeen[sectionID] = struct{}{}
+				matchedSections = append(matchedSections, sectionID)
+			}
+			if !containsString(expandedSections, section.ID) {
+				expandedSections = append(expandedSections, section.ID)
+			}
+			leafHits := expandSectionLeaves(section, docChunks, req.ExpansionDepth)
+			for _, expanded := range leafHits {
+				expanded.Score += score
+				expanded.Score += lexicalScore(tokens, expanded.Chunk.Content) * 0.5
+				prev, ok := merged[expanded.Chunk.ID]
+				if !ok || expanded.Score > prev.Score {
+					merged[expanded.Chunk.ID] = expanded
+				}
 			}
 		}
-		hits = append(hits, store.Hit{
-			Chunk: chunk,
-			Score: score,
-		})
+	}
+
+	if len(merged) == 0 {
+		for _, chunk := range chunks {
+			if !chunkInRoute(chunk, req.RoutePath) {
+				continue
+			}
+			score, matched := structureScore(tokens, chunk)
+			if score <= 0 {
+				continue
+			}
+			if matched != "" {
+				path = append(path, matched)
+			}
+			if chunk.SectionID != "" {
+				if _, ok := sectionSeen[chunk.SectionID]; !ok {
+					sectionSeen[chunk.SectionID] = struct{}{}
+					matchedSections = append(matchedSections, chunk.SectionID)
+				}
+			}
+			merged[chunk.ID] = store.Hit{
+				Chunk: chunk,
+				Score: score,
+			}
+		}
+	}
+
+	hits := make([]store.Hit, 0, len(merged))
+	for _, hit := range merged {
+		hits = append(hits, hit)
 	}
 	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
 	if req.TopK > 0 && len(hits) > req.TopK {
 		hits = hits[:req.TopK]
 	}
 	return hits, Trace{
-		OriginalQuery:    req.Query,
-		EffectiveQuery:   req.Query,
-		QueryVariants:    []string{req.Query},
-		SearchPath:       path,
-		MatchedSections:  matchedSections,
-		SelectedChunkIDs: collectChunkIDs(hits),
+		OriginalQuery:       req.Query,
+		EffectiveQuery:      req.Query,
+		QueryVariants:       []string{req.Query},
+		RoutePath:           append([]string(nil), req.RoutePath...),
+		AutoRoutePath:       append([]string(nil), req.RoutePath...),
+		AutoRouteCandidates: routeTraceCandidates(req, autoRouteCandidates),
+		SearchPath:          path,
+		MatchedSections:     matchedSections,
+		ExpandedSections:    expandedSections,
+		ExpandedChunkIDs:    collectChunkIDs(hits),
+		SelectedChunkIDs:    collectChunkIDs(hits),
 	}, nil
+}
+
+func sectionNodeScore(tokens []string, section *tree.Node) float64 {
+	if len(tokens) == 0 || section == nil {
+		return 0
+	}
+	searchSpace := append([]string(nil), section.Path...)
+	if section.Heading != "" {
+		searchSpace = append(searchSpace, section.Heading)
+	}
+	if section.Title != "" {
+		searchSpace = append(searchSpace, section.Title)
+	}
+	var score float64
+	for _, candidate := range searchSpace {
+		lc := strings.ToLower(candidate)
+		for _, tok := range tokens {
+			if strings.Contains(lc, tok) {
+				score += 2
+			}
+		}
+	}
+	if score == 0 {
+		return 0
+	}
+	score += float64(len(section.Path)) * 0.2
+	return score
+}
+
+func sectionIDForPath(chunks []store.StoredChunk, path []string) string {
+	for _, chunk := range chunks {
+		if pathEqualsFold(chunk.SectionPath, path) && chunk.SectionID != "" {
+			return chunk.SectionID
+		}
+	}
+	return ""
+}
+
+func pathEqualsFold(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !strings.EqualFold(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 type HybridRetriever struct {
@@ -334,13 +819,362 @@ func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit
 		out = out[:req.TopK]
 	}
 	return out, Trace{
-		OriginalQuery:    req.Query,
-		EffectiveQuery:   denseTrace.EffectiveQuery,
-		QueryVariants:    append([]string(nil), denseTrace.QueryVariants...),
-		SearchPath:       append([]string(nil), structureTrace.SearchPath...),
-		MatchedSections:  append([]string(nil), structureTrace.MatchedSections...),
-		SelectedChunkIDs: collectChunkIDs(out),
+		OriginalQuery:       req.Query,
+		EffectiveQuery:      denseTrace.EffectiveQuery,
+		QueryVariants:       append([]string(nil), denseTrace.QueryVariants...),
+		RoutePath:           append([]string(nil), denseTrace.RoutePath...),
+		AutoRoutePath:       append([]string(nil), denseTrace.AutoRoutePath...),
+		AutoRouteCandidates: mergeRouteCandidates(denseTrace.AutoRouteCandidates, structureTrace.AutoRouteCandidates),
+		SearchPath:          append([]string(nil), structureTrace.SearchPath...),
+		MatchedSections:     append([]string(nil), structureTrace.MatchedSections...),
+		ExpandedSections:    append([]string(nil), structureTrace.ExpandedSections...),
+		ExpandedChunkIDs:    append([]string(nil), structureTrace.ExpandedChunkIDs...),
+		SelectedChunkIDs:    collectChunkIDs(out),
 	}, nil
+}
+
+func findSectionNode(docTree *tree.DocumentTree, path []string) *tree.Node {
+	if docTree == nil || docTree.Root == nil || len(path) == 0 {
+		return nil
+	}
+	node := docTree.Root
+	for _, segment := range path {
+		var next *tree.Node
+		for _, child := range node.Children {
+			if child.Content != "" {
+				continue
+			}
+			if strings.EqualFold(child.Heading, segment) {
+				next = child
+				break
+			}
+		}
+		if next == nil {
+			return nil
+		}
+		node = next
+	}
+	return node
+}
+
+func expandSectionLeaves(section *tree.Node, chunks []store.StoredChunk, depth int) []store.Hit {
+	if section == nil {
+		return nil
+	}
+	chunkByID := make(map[string]store.StoredChunk, len(chunks))
+	for _, chunk := range chunks {
+		chunkByID[chunk.ID] = chunk
+	}
+	maxDepth := depth
+	if maxDepth <= 0 {
+		maxDepth = 8
+	}
+	var hits []store.Hit
+	var walk func(*tree.Node, int)
+	walk = func(node *tree.Node, currentDepth int) {
+		if node == nil || currentDepth > maxDepth {
+			return
+		}
+		if node.Content != "" {
+			chunk, ok := chunkByID[node.ID]
+			if !ok {
+				return
+			}
+			score := 1.5 + float64(maxDepth-currentDepth)*0.1
+			if len(chunk.SectionPath) > 0 && len(node.Path) > 0 && pathHasPrefix(chunk.SectionPath, node.Path) {
+				score += 0.5
+			}
+			hits = append(hits, store.Hit{
+				Chunk: chunk,
+				Score: score,
+			})
+			return
+		}
+		for _, child := range node.Children {
+			walk(child, currentDepth+1)
+		}
+	}
+	for _, child := range section.Children {
+		walk(child, 1)
+	}
+	return hits
+}
+
+func expandedChunkIDs(merged map[string]store.Hit, directHits []store.Hit) []string {
+	direct := make(map[string]struct{}, len(directHits))
+	for _, hit := range directHits {
+		direct[hit.Chunk.ID] = struct{}{}
+	}
+	out := make([]string, 0, len(merged))
+	for id := range merged {
+		if _, ok := direct[id]; ok {
+			continue
+		}
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func pathHasPrefix(path []string, prefix []string) bool {
+	if len(prefix) == 0 || len(prefix) > len(path) {
+		return false
+	}
+	for i := range prefix {
+		if !strings.EqualFold(path[i], prefix[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func chunkInRoute(chunk store.StoredChunk, routePath []string) bool {
+	if len(routePath) == 0 {
+		return true
+	}
+	return pathHasPrefix(chunk.SectionPath, routePath)
+}
+
+func withAutoRoute(req Request, st store.Store) (Request, []RouteCandidate) {
+	if len(req.RoutePath) > 0 || !req.EnableAutoRoute || st == nil {
+		return req, routeCandidatesFromPath(req.Query, req.RoutePath)
+	}
+	candidates := proposeRouteCandidates(req, st)
+	if len(candidates) == 0 {
+		return req, nil
+	}
+	req.RoutePath = append([]string(nil), candidates[0].Path...)
+	return req, candidates
+}
+
+func proposeRouteCandidates(req Request, st store.Store) []RouteCandidate {
+	chunks, err := st.List(context.Background(), req.Namespace, store.Filter(req.Filters), store.Filter(req.SecurityFilters))
+	if err != nil {
+		return nil
+	}
+	tokens := tokenize(req.Query)
+	if len(tokens) == 0 {
+		return nil
+	}
+	candidates := make(map[string]RouteCandidate)
+	seen := make(map[string]struct{})
+	for _, chunk := range chunks {
+		if len(chunk.SectionPath) == 0 {
+			continue
+		}
+		key := strings.Join(chunk.SectionPath, "\x00")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		score, signals := routeScore(tokens, chunk.SectionPath, chunk.Heading, chunk.Title)
+		if score <= 0 {
+			continue
+		}
+		candidates[key] = RouteCandidate{
+			Path:    append([]string(nil), chunk.SectionPath...),
+			Score:   score,
+			Queries: []string{req.Query},
+			Signals: append([]string(nil), signals...),
+		}
+	}
+	threshold := req.AutoRouteMinScore
+	if threshold <= 0 {
+		threshold = 2
+	}
+	out := make([]RouteCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Score < threshold {
+			continue
+		}
+		out = append(out, candidate)
+	}
+	sortRouteCandidates(out)
+	limit := req.AutoRouteMaxCandidates
+	if limit <= 0 {
+		limit = 3
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	normalizeRouteCandidateConfidence(out)
+	return out
+}
+
+func routeScore(tokens []string, path []string, heading string, title string) (float64, []string) {
+	searchSpace := append([]string(nil), path...)
+	if heading != "" {
+		searchSpace = append(searchSpace, heading)
+	}
+	if title != "" {
+		searchSpace = append(searchSpace, title)
+	}
+	var score float64
+	var signals []string
+	for _, candidate := range searchSpace {
+		lc := strings.ToLower(candidate)
+		matchedTokens := make([]string, 0, len(tokens))
+		for _, tok := range tokens {
+			if strings.Contains(lc, tok) {
+				score += 2
+				matchedTokens = append(matchedTokens, tok)
+			}
+		}
+		if len(matchedTokens) > 0 {
+			signals = append(signals, candidate+": "+strings.Join(matchedTokens, ","))
+		}
+	}
+	if score > 0 {
+		score += float64(len(path)) * 0.2
+	}
+	return score, signals
+}
+
+func routeCandidatesFromPath(query string, path []string) []RouteCandidate {
+	if len(path) == 0 {
+		return nil
+	}
+	return []RouteCandidate{{
+		Path:       append([]string(nil), path...),
+		Score:      0,
+		Confidence: 1,
+		Queries:    []string{query},
+		Signals:    []string{"explicit_route_path"},
+	}}
+}
+
+func mergeRouteCandidates(dst []RouteCandidate, src []RouteCandidate) []RouteCandidate {
+	type mergedCandidate struct {
+		path    []string
+		score   float64
+		queries []string
+		signals []string
+	}
+	merged := make(map[string]mergedCandidate, len(dst)+len(src))
+	for _, candidate := range dst {
+		key := strings.Join(candidate.Path, "\x00")
+		merged[key] = mergedCandidate{
+			path:    append([]string(nil), candidate.Path...),
+			score:   candidate.Score,
+			queries: append([]string(nil), candidate.Queries...),
+			signals: append([]string(nil), candidate.Signals...),
+		}
+	}
+	for _, candidate := range src {
+		key := strings.Join(candidate.Path, "\x00")
+		entry, ok := merged[key]
+		if !ok {
+			merged[key] = mergedCandidate{
+				path:    append([]string(nil), candidate.Path...),
+				score:   candidate.Score,
+				queries: append([]string(nil), candidate.Queries...),
+				signals: append([]string(nil), candidate.Signals...),
+			}
+			continue
+		}
+		entry.score += candidate.Score
+		entry.queries = appendUniqueStrings(entry.queries, candidate.Queries...)
+		entry.signals = appendUniqueStrings(entry.signals, candidate.Signals...)
+		merged[key] = entry
+	}
+	out := make([]RouteCandidate, 0, len(merged))
+	for _, candidate := range merged {
+		out = append(out, RouteCandidate{
+			Path:    candidate.path,
+			Score:   candidate.score,
+			Queries: candidate.queries,
+			Signals: candidate.signals,
+		})
+	}
+	sortRouteCandidates(out)
+	normalizeRouteCandidateConfidence(out)
+	return out
+}
+
+func sortRouteCandidates(candidates []RouteCandidate) {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Score == candidates[j].Score {
+			return len(candidates[i].Path) > len(candidates[j].Path)
+		}
+		return candidates[i].Score > candidates[j].Score
+	})
+}
+
+func cloneRouteCandidates(src []RouteCandidate) []RouteCandidate {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]RouteCandidate, 0, len(src))
+	for _, candidate := range src {
+		out = append(out, RouteCandidate{
+			Path:       append([]string(nil), candidate.Path...),
+			Score:      candidate.Score,
+			Confidence: candidate.Confidence,
+			Queries:    append([]string(nil), candidate.Queries...),
+			Signals:    append([]string(nil), candidate.Signals...),
+			Selected:   candidate.Selected,
+			Reason:     candidate.Reason,
+		})
+	}
+	return out
+}
+
+func routeTraceCandidates(req Request, candidates []RouteCandidate) []RouteCandidate {
+	if len(candidates) > 0 {
+		return cloneRouteCandidates(candidates)
+	}
+	return routeCandidatesFromPath(req.Query, req.RoutePath)
+}
+
+func normalizeRouteCandidateConfidence(candidates []RouteCandidate) {
+	if len(candidates) == 0 {
+		return
+	}
+	maxScore := candidates[0].Score
+	if maxScore <= 0 {
+		for i := range candidates {
+			candidates[i].Confidence = 0
+		}
+		return
+	}
+	for i := range candidates {
+		candidates[i].Confidence = candidates[i].Score / maxScore
+	}
+}
+
+func effectiveThreshold(threshold float64) float64 {
+	if threshold <= 0 {
+		return 0.6
+	}
+	return threshold
+}
+
+func markSelectedCandidates(candidates []RouteCandidate, fanout int) {
+	for i := range candidates {
+		if i < fanout {
+			candidates[i].Selected = true
+			if candidates[i].Reason == "" {
+				candidates[i].Reason = "selected for route execution"
+			}
+		}
+	}
+}
+
+func formatFloat(v float64) string {
+	return strings.TrimRight(strings.TrimRight(sprintfFloat(v), "0"), ".")
+}
+
+func sprintfFloat(v float64) string {
+	return strconv.FormatFloat(v, 'f', 2, 64)
+}
+
+func containsString(list []string, target string) bool {
+	for _, item := range list {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func collectChunkIDs(hits []store.Hit) []string {
@@ -349,6 +1183,27 @@ func collectChunkIDs(hits []store.Hit) []string {
 		out = append(out, hit.Chunk.ID)
 	}
 	return out
+}
+
+func singleTrajectoryStep(req Request, trace Trace, hits []store.Hit) TrajectoryStep {
+	route := append([]string(nil), req.RoutePath...)
+	if len(route) == 0 {
+		route = append([]string(nil), trace.AutoRoutePath...)
+	}
+	confidence := 0.0
+	if len(trace.AutoRouteCandidates) > 0 {
+		confidence = trace.AutoRouteCandidates[0].Confidence
+	}
+	return TrajectoryStep{
+		Route:            route,
+		Confidence:       confidence,
+		Mode:             "single",
+		HitCount:         len(hits),
+		HitIDs:           collectChunkIDs(hits),
+		MatchedSections:  append([]string(nil), trace.MatchedSections...),
+		ExpandedSections: append([]string(nil), trace.ExpandedSections...),
+		Rationale:        "single route execution",
+	}
 }
 
 func structureScore(tokens []string, chunk store.StoredChunk) (float64, string) {
@@ -422,6 +1277,32 @@ func appendUniqueQueries(dst []string, queries ...string) []string {
 		}
 		seen[key] = struct{}{}
 		out = append(out, trimmed)
+	}
+	return out
+}
+
+func appendUniqueStrings(dst []string, values ...string) []string {
+	seen := make(map[string]struct{}, len(dst)+len(values))
+	out := make([]string, 0, len(dst)+len(values))
+	for _, value := range dst {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
 	}
 	return out
 }
