@@ -6,6 +6,57 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [v0.3.0] - 2026-05-18
+
+Minor release closing the v0.6 production-grade-retrieval milestone
+(Phases 14-19). No new dependencies — entirely standard library plus the
+existing seams; the `postgres` subpackage remains the only non-stdlib
+island.
+
+### Added
+
+- BM25 lexical retrieval (Phase 14):
+  - Okapi BM25 ranking in the in-memory lexical path, replacing
+    token-overlap scoring; configurable `retrieve.BM25Params`
+  - optional `store.LexicalSearcher` capability interface, implemented by
+    the `postgres` store via a `tsvector`/`ts_rank_cd` path
+  - configurable RRF fusion constant plus per-signal `FusionAttribution`
+    in the retrieval trace
+- model-based reranking (Phase 15):
+  - `rerank.ScoringModel` seam, `ModelReranker`, and `HTTPScoringModel`
+    (a `net/http` rerank-API client)
+  - rerank explainability: `rerank.RerankScore` / `Trace.Scores` surfaced
+    through `rag.Diagnostics.RerankScores`
+- generation-side evaluation — the RAG Triad (Phase 16):
+  - `eval.Judge` seam and `LLMJudge` (LLM-as-judge for groundedness and
+    answer-relevance)
+  - `eval.TriadEvaluator` assembling retrieval + generation metrics into a
+    `TriadResult`, with a JSONL report and a RAG-Triad CI gate
+- cost and latency observability (Phase 17):
+  - `obs` package — `Metrics` with per-stage durations, embed/generate
+    call counts, and token usage, recorded on `rag.Diagnostics`,
+    `retrieve.Trace`, `ingest.ImportResult`, and `rag.ImportTrace`
+  - `generate.Usage` token-accounting field on `generate.Response`
+- content safety (Phase 18):
+  - `guard` package — `PIIRedactor` redacts PII from ingested content
+    before chunking, with a configurable entity rule set
+  - `guard.PatternScanner` prompt-injection filter with a `SanitizeMode`
+    (neutralize/drop), applied to retrieved chunks before prompt assembly
+- agentic retrieval (Phase 19):
+  - `retrieve.MultiHopRetriever` decomposes a compound query into
+    sub-queries and merges the sub-retrievals (`QueryDecomposer` seam)
+  - `agentic` package — `CorrectiveAsker` self-correcting retrieval loop
+    that detects low grounding and retries with reformulated queries
+    under a bounded cap
+
+### Changed
+
+- lexical retrieval now uses Okapi BM25 instead of token-overlap scoring
+- `generate.Response` gains an additive `Usage` field
+- `rag.Diagnostics`, `retrieve.Trace`, `ingest.ImportResult`, and
+  `rag.ImportTrace` carry additional observability and safety fields
+  (`Metrics`, `Redactions`, `InjectionFindings`, `Hops`) — all additive
+
 ## [v0.2.0] - 2026-05-15
 
 Minor release closing the v0.5 RAG-productionization milestone
