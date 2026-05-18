@@ -11,6 +11,7 @@ type Filter map[string]any
 
 type Query struct {
 	Namespace       string
+	Text            string
 	Vector          embed.Vector
 	TopK            int
 	Filters         Filter
@@ -25,6 +26,13 @@ type Store interface {
 	Remove(ctx context.Context, id string) error
 	RemoveByFilter(ctx context.Context, namespace string, filters Filter) (int, error)
 	Stats(ctx context.Context, namespace string) (Stats, error)
+}
+
+// LexicalSearcher is an optional capability a Store may implement to run
+// keyword/full-text ranking natively. Retrieval type-asserts for it and
+// falls back to an in-process scan when a store does not implement it.
+type LexicalSearcher interface {
+	LexicalSearch(ctx context.Context, q Query) ([]Hit, error)
 }
 
 var ErrNotFound = errors.New("store: chunk not found")

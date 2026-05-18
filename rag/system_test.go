@@ -304,6 +304,41 @@ func TestAskReranksAndPacksContext(t *testing.T) {
 	}
 }
 
+func TestAskPopulatesRerankScores(t *testing.T) {
+	sys := New(Options{Model: fakeModel{}})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "general travel guide"},
+		{ID: "doc2", Content: "Paris is the capital of France and has museums cafes"},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+	withRerank, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search:    SearchOptions{Namespace: "geo", TopK: 2, EnableRerank: true},
+		MaxTokens: 10,
+	})
+	if err != nil {
+		t.Fatalf("Ask(rerank on): %v", err)
+	}
+	if len(withRerank.Diagnostics.RerankScores) == 0 {
+		t.Fatalf("RerankScores empty, want per-hit rerank detail when EnableRerank is true")
+	}
+	for _, s := range withRerank.Diagnostics.RerankScores {
+		if s.ChunkID == "" || s.OutputRank == 0 {
+			t.Fatalf("rerank score %+v incomplete", s)
+		}
+	}
+	noRerank, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search: SearchOptions{Namespace: "geo", TopK: 2},
+	})
+	if err != nil {
+		t.Fatalf("Ask(rerank off): %v", err)
+	}
+	if noRerank.Diagnostics.RerankScores != nil {
+		t.Fatalf("RerankScores = %+v, want nil when EnableRerank is false", noRerank.Diagnostics.RerankScores)
+	}
+}
+
 func TestAskCanUseCustomPacker(t *testing.T) {
 	sys := New(Options{
 		Model:  fakeModel{},

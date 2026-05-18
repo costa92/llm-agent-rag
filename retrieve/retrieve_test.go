@@ -142,7 +142,7 @@ func TestDenseRetrieverUsesStoreContract(t *testing.T) {
 	}
 }
 
-func TestLexicalRetrieverUsesContentOverlap(t *testing.T) {
+func TestLexicalRetrieverRanksByBM25(t *testing.T) {
 	mem := store.NewInMemoryStore(2)
 	err := mem.Upsert(context.Background(), []store.StoredChunk{
 		{
@@ -173,6 +173,133 @@ func TestLexicalRetrieverUsesContentOverlap(t *testing.T) {
 	}
 	if len(hits) != 1 || hits[0].Chunk.ID != "a" {
 		t.Fatalf("hits = %+v, want only a", hits)
+	}
+}
+
+func indexOfHit(hits []store.Hit, id string) int {
+	for i, h := range hits {
+		if h.Chunk.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestLexicalRetrieverScoresTermFrequency(t *testing.T) {
+	mem := store.NewInMemoryStore(2)
+	err := mem.Upsert(context.Background(), []store.StoredChunk{
+		{ID: "tf-high", Namespace: "docs", Vector: embed.Vector{1, 0}, Content: "kafka kafka kafka streaming pipeline"},
+		{ID: "tf-low", Namespace: "docs", Vector: embed.Vector{1, 0}, Content: "kafka introduction overview guide notes"},
+	})
+	if err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+	hits, _, err := LexicalRetriever{Store: mem}.Retrieve(context.Background(), Request{
+		Query: "kafka", Namespace: "docs", TopK: 5,
+	})
+	if err != nil {
+		t.Fatalf("Retrieve(): %v", err)
+	}
+	if len(hits) != 2 || hits[0].Chunk.ID != "tf-high" {
+		t.Fatalf("hits = %+v, want tf-high ranked first by term frequency", hits)
+	}
+	if hits[0].Score <= hits[1].Score {
+		t.Fatalf("scores = %v / %v, want repeated-term chunk to score higher", hits[0].Score, hits[1].Score)
+	}
+}
+
+func TestLexicalRetrieverDownweightsCommonTerms(t *testing.T) {
+	mem := store.NewInMemoryStore(2)
+	err := mem.Upsert(context.Background(), []store.StoredChunk{
+		{ID: "rare-doc", Namespace: "docs", Vector: embed.Vector{1, 0}, Content: "quasar alpha beta gamma"},
+		{ID: "common-doc", Namespace: "docs", Vector: embed.Vector{1, 0}, Content: "common alpha beta gamma"},
+		{ID: "filler-1", Namespace: "docs", Vector: embed.Vector{1, 0}, Content: "common delta epsilon zeta"},
+		{ID: "filler-2", Namespace: "docs", Vector: embed.Vector{1, 0}, Content: "common eta theta iota"},
+	})
+	if err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+	hits, _, err := LexicalRetriever{Store: mem}.Retrieve(context.Background(), Request{
+		Query: "quasar common", Namespace: "docs", TopK: 5,
+	})
+	if err != nil {
+		t.Fatalf("Retrieve(): %v", err)
+	}
+	rare, common := indexOfHit(hits, "rare-doc"), indexOfHit(hits, "common-doc")
+	if rare == -1 || common == -1 {
+		t.Fatalf("hits = %+v, want both rare-doc and common-doc present", hits)
+	}
+	if rare >= common {
+		t.Fatalf("rare-doc at %d, common-doc at %d, want rare term to outrank ubiquitous term", rare, common)
+	}
+}
+
+func TestLexicalRetrieverNormalizesByLength(t *testing.T) {
+	mem := store.NewInMemoryStore(2)
+	err := mem.Upsert(context.Background(), []store.StoredChunk{
+		{ID: "short", Namespace: "docs", Vector: embed.Vector{1, 0}, Content: "vector search index"},
+		{ID: "long", Namespace: "docs", Vector: embed.Vector{1, 0}, Content: "vector search index plus lots of additional unrelated padding words here now today"},
+	})
+	if err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+	hits, _, err := LexicalRetriever{Store: mem}.Retrieve(context.Background(), Request{
+		Query: "vector", Namespace: "docs", TopK: 5,
+	})
+	if err != nil {
+		t.Fatalf("Retrieve(): %v", err)
+	}
+	if len(hits) != 2 || hits[0].Chunk.ID != "short" {
+		t.Fatalf("hits = %+v, want short focused chunk ranked first", hits)
+	}
+}
+
+func TestLexicalRetrieverEmptyQuery(t *testing.T) {
+	mem := store.NewInMemoryStore(2)
+	err := mem.Upsert(context.Background(), []store.StoredChunk{
+		{ID: "a", Namespace: "docs", Vector: embed.Vector{1, 0}, Content: "kafka streaming pipeline"},
+	})
+	if err != nil {
+		t.Fatalf("Upsert(): %v", err)
+	}
+	hits, _, err := LexicalRetriever{Store: mem}.Retrieve(context.Background(), Request{
+		Query: "", Namespace: "docs", TopK: 5,
+	})
+	if err != nil {
+		t.Fatalf("Retrieve(): %v", err)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("hits = %+v, want no hits for empty query", hits)
+	}
+}
+
+type lexicalSearcherStub struct {
+	*store.InMemoryStore
+	lexHits []store.Hit
+	called  bool
+}
+
+func (s *lexicalSearcherStub) LexicalSearch(_ context.Context, _ store.Query) ([]store.Hit, error) {
+	s.called = true
+	return append([]store.Hit(nil), s.lexHits...), nil
+}
+
+func TestLexicalRetrieverDelegatesToLexicalSearcher(t *testing.T) {
+	stub := &lexicalSearcherStub{
+		InMemoryStore: store.NewInMemoryStore(2),
+		lexHits:       []store.Hit{{Chunk: store.StoredChunk{ID: "sentinel", Namespace: "docs"}, Score: 9.9}},
+	}
+	hits, _, err := LexicalRetriever{Store: stub}.Retrieve(context.Background(), Request{
+		Query: "anything", Namespace: "docs", TopK: 5,
+	})
+	if err != nil {
+		t.Fatalf("Retrieve(): %v", err)
+	}
+	if !stub.called {
+		t.Fatalf("LexicalSearch was not called; retriever did not use the LexicalSearcher capability")
+	}
+	if len(hits) != 1 || hits[0].Chunk.ID != "sentinel" {
+		t.Fatalf("hits = %+v, want the sentinel hit from LexicalSearch", hits)
 	}
 }
 
@@ -1165,5 +1292,93 @@ func TestVariantRetrieverHonorsCustomPlanner(t *testing.T) {
 	}
 	if len(trace.SearchTrajectory) != 1 {
 		t.Fatalf("trajectory len = %d, want 1 (custom planner forces single route execution)", len(trace.SearchTrajectory))
+	}
+}
+
+func hitList(ids ...string) []store.Hit {
+	hits := make([]store.Hit, len(ids))
+	for i, id := range ids {
+		hits[i] = store.Hit{Chunk: store.StoredChunk{ID: id}, Score: float64(len(ids) - i)}
+	}
+	return hits
+}
+
+func TestHybridRetrieverFusionAttribution(t *testing.T) {
+	const q = "fusion query"
+	dense := &recordingRetriever{hitsByQ: map[string][]store.Hit{q: hitList("c1", "c2")}}
+	lexical := &recordingRetriever{hitsByQ: map[string][]store.Hit{q: hitList("c2", "c3")}}
+	r := HybridRetriever{Dense: dense, Lexical: lexical}
+	_, trace, err := r.Retrieve(context.Background(), Request{Query: q, TopK: 10})
+	if err != nil {
+		t.Fatalf("Retrieve(): %v", err)
+	}
+	if len(trace.Fusion) != 3 {
+		t.Fatalf("Fusion len = %d, want 3", len(trace.Fusion))
+	}
+	if trace.Fusion[0].ChunkID != "c2" {
+		t.Fatalf("Fusion[0] = %q, want c2 (ranked by both signals)", trace.Fusion[0].ChunkID)
+	}
+	byID := map[string]FusionAttribution{}
+	for _, f := range trace.Fusion {
+		byID[f.ChunkID] = f
+	}
+	if byID["c2"].DenseRank != 2 || byID["c2"].LexicalRank != 1 || byID["c2"].StructureRank != 0 {
+		t.Fatalf("c2 attribution = %+v, want dense=2 lexical=1 structure=0", byID["c2"])
+	}
+	if byID["c1"].DenseRank != 1 || byID["c1"].LexicalRank != 0 {
+		t.Fatalf("c1 attribution = %+v, want dense=1 lexical=0", byID["c1"])
+	}
+	if byID["c3"].DenseRank != 0 || byID["c3"].LexicalRank != 2 {
+		t.Fatalf("c3 attribution = %+v, want dense=0 lexical=2", byID["c3"])
+	}
+	if byID["c2"].RRFScore <= byID["c1"].RRFScore || byID["c2"].RRFScore <= byID["c3"].RRFScore {
+		t.Fatalf("multi-signal chunk c2 should outscore single-signal chunks: %+v", byID)
+	}
+}
+
+func TestHybridRetrieverRRFConstantDefaultPreservesBehavior(t *testing.T) {
+	const q = "rrf query"
+	run := func(k float64) []store.Hit {
+		dense := &recordingRetriever{hitsByQ: map[string][]store.Hit{q: hitList("a", "b", "c")}}
+		lexical := &recordingRetriever{hitsByQ: map[string][]store.Hit{q: hitList("b", "d")}}
+		out, _, err := HybridRetriever{Dense: dense, Lexical: lexical, RRFConstant: k}.Retrieve(
+			context.Background(), Request{Query: q, TopK: 10})
+		if err != nil {
+			t.Fatalf("Retrieve(k=%v): %v", k, err)
+		}
+		return out
+	}
+	def, explicit := run(0), run(60)
+	if len(def) != len(explicit) {
+		t.Fatalf("lengths differ: %d vs %d", len(def), len(explicit))
+	}
+	for i := range def {
+		if def[i].Chunk.ID != explicit[i].Chunk.ID || def[i].Score != explicit[i].Score {
+			t.Fatalf("hit %d differs: %+v vs %+v (zero RRFConstant must equal 60)", i, def[i], explicit[i])
+		}
+	}
+}
+
+func TestHybridRetrieverRRFConstantConfigurable(t *testing.T) {
+	const q = "configurable query"
+	build := func(k float64) []store.Hit {
+		dense := &recordingRetriever{hitsByQ: map[string][]store.Hit{q: hitList("x", "p", "q", "r", "y")}}
+		lexical := &recordingRetriever{hitsByQ: map[string][]store.Hit{q: hitList("a", "b", "c", "d", "y")}}
+		out, _, err := HybridRetriever{Dense: dense, Lexical: lexical, RRFConstant: k}.Retrieve(
+			context.Background(), Request{Query: q, TopK: 10})
+		if err != nil {
+			t.Fatalf("Retrieve(k=%v): %v", k, err)
+		}
+		return out
+	}
+	// Default k=60: y (rank 5 in both signals) outranks x (rank 1 in one).
+	def := build(0)
+	if indexOfHit(def, "y") >= indexOfHit(def, "x") {
+		t.Fatalf("k=60: want y before x, got %+v", def)
+	}
+	// Small k=1: the rank-1 vs rank-5 gap dominates, so x outranks y.
+	small := build(1)
+	if indexOfHit(small, "x") >= indexOfHit(small, "y") {
+		t.Fatalf("k=1: want x before y, got %+v", small)
 	}
 }

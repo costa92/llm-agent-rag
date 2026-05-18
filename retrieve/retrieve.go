@@ -3,6 +3,7 @@ package retrieve
 import (
 	"context"
 	"errors"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/costa92/llm-agent-rag/advanced"
 	"github.com/costa92/llm-agent-rag/embed"
 	"github.com/costa92/llm-agent-rag/generate"
+	"github.com/costa92/llm-agent-rag/obs"
 	"github.com/costa92/llm-agent-rag/store"
 	"github.com/costa92/llm-agent-rag/tree"
 )
@@ -153,6 +155,20 @@ type Trace struct {
 	ExpandedChunkIDs    []string
 	SelectedChunkIDs    []string
 	SearchTrajectory    []TrajectoryStep
+	Fusion              []FusionAttribution
+	Metrics             obs.Metrics
+	Hops                []HopAttribution
+}
+
+// FusionAttribution records how each retrieval signal ranked one chunk during
+// reciprocal rank fusion. A rank of 0 means the signal did not return the
+// chunk. RRFScore is the chunk's summed RRF contribution across all signals.
+type FusionAttribution struct {
+	ChunkID       string
+	DenseRank     int
+	LexicalRank   int
+	StructureRank int
+	RRFScore      float64
 }
 
 type QueryPreprocessor interface {
@@ -569,24 +585,138 @@ func (r DenseRetriever) retrieveWithinRoute(ctx context.Context, req Request, ve
 	}, nil
 }
 
+// BM25Params holds the Okapi BM25 tuning constants. The zero value resolves
+// to the standard defaults (K1 1.2, B 0.75) via orDefault.
+type BM25Params struct {
+	K1 float64
+	B  float64
+}
+
+func (p BM25Params) orDefault() BM25Params {
+	if p.K1 == 0 {
+		p.K1 = 1.2
+	}
+	if p.B == 0 {
+		p.B = 0.75
+	}
+	return p
+}
+
+// bm25Scores ranks a corpus against query tokens with Okapi BM25. The IDF
+// term uses the non-negative ln(1 + (N-df+0.5)/(df+0.5)) variant. Corpus
+// statistics (N, df, avgdl) are computed over the supplied chunks only.
+func bm25Scores(queryTokens []string, corpus []store.StoredChunk, p BM25Params) map[string]float64 {
+	if len(queryTokens) == 0 || len(corpus) == 0 {
+		return map[string]float64{}
+	}
+	p = p.orDefault()
+
+	counts := make(map[string]map[string]int, len(corpus))
+	lengths := make(map[string]int, len(corpus))
+	df := make(map[string]int)
+	totalLen := 0
+	for _, chunk := range corpus {
+		toks := tokenize(chunk.Content)
+		c := make(map[string]int, len(toks))
+		for _, t := range toks {
+			c[t]++
+		}
+		counts[chunk.ID] = c
+		lengths[chunk.ID] = len(toks)
+		totalLen += len(toks)
+		for t := range c {
+			df[t]++
+		}
+	}
+	n := float64(len(corpus))
+	avgdl := float64(totalLen) / n
+	if avgdl == 0 {
+		return map[string]float64{}
+	}
+
+	queryTerms := make([]string, 0, len(queryTokens))
+	seen := make(map[string]struct{}, len(queryTokens))
+	for _, t := range queryTokens {
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		queryTerms = append(queryTerms, t)
+	}
+	idf := make(map[string]float64, len(queryTerms))
+	for _, t := range queryTerms {
+		d := float64(df[t])
+		idf[t] = math.Log(1 + (n-d+0.5)/(d+0.5))
+	}
+
+	scores := make(map[string]float64, len(corpus))
+	for id, c := range counts {
+		dl := float64(lengths[id])
+		if dl == 0 {
+			continue
+		}
+		var score float64
+		for _, t := range queryTerms {
+			tf := float64(c[t])
+			if tf == 0 {
+				continue
+			}
+			norm := tf + p.K1*(1-p.B+p.B*dl/avgdl)
+			score += idf[t] * (tf * (p.K1 + 1)) / norm
+		}
+		if score > 0 {
+			scores[id] = score
+		}
+	}
+	return scores
+}
+
 type LexicalRetriever struct {
-	Store store.Store
+	Store  store.Store
+	Params BM25Params
 }
 
 func (r LexicalRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
 	req, autoRouteCandidates := withAutoRoute(req, r.Store)
+
+	if searcher, ok := r.Store.(store.LexicalSearcher); ok && len(req.RoutePath) == 0 {
+		hits, err := searcher.LexicalSearch(ctx, store.Query{
+			Namespace:       req.Namespace,
+			Text:            req.Query,
+			TopK:            req.TopK,
+			Filters:         store.Filter(req.Filters),
+			SecurityFilters: store.Filter(req.SecurityFilters),
+		})
+		if err != nil {
+			return nil, Trace{}, err
+		}
+		return hits, Trace{
+			OriginalQuery:       req.Query,
+			EffectiveQuery:      req.Query,
+			QueryVariants:       []string{req.Query},
+			RoutePath:           append([]string(nil), req.RoutePath...),
+			AutoRoutePath:       append([]string(nil), req.RoutePath...),
+			AutoRouteCandidates: routeTraceCandidates(req, autoRouteCandidates),
+			SelectedChunkIDs:    collectChunkIDs(hits),
+		}, nil
+	}
+
 	chunks, err := r.Store.List(ctx, req.Namespace, store.Filter(req.Filters), store.Filter(req.SecurityFilters))
 	if err != nil {
 		return nil, Trace{}, err
 	}
-	tokens := tokenize(req.Query)
-	hits := make([]store.Hit, 0, len(chunks))
+	routed := make([]store.StoredChunk, 0, len(chunks))
 	for _, chunk := range chunks {
 		if !chunkInRoute(chunk, req.RoutePath) {
 			continue
 		}
-		score := lexicalScore(tokens, chunk.Content)
-		if score <= 0 {
+		routed = append(routed, chunk)
+	}
+	scores := bm25Scores(tokenize(req.Query), routed, r.Params)
+	hits := make([]store.Hit, 0, len(routed))
+	for _, chunk := range routed {
+		score, ok := scores[chunk.ID]
+		if !ok || score <= 0 {
 			continue
 		}
 		hits = append(hits, store.Hit{
@@ -594,7 +724,12 @@ func (r LexicalRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hi
 			Score: score,
 		})
 	}
-	sort.SliceStable(hits, func(i, j int) bool { return hits[i].Score > hits[j].Score })
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].Score != hits[j].Score {
+			return hits[i].Score > hits[j].Score
+		}
+		return hits[i].Chunk.ID < hits[j].Chunk.ID
+	})
 	if req.TopK > 0 && len(hits) > req.TopK {
 		hits = hits[:req.TopK]
 	}
@@ -773,6 +908,9 @@ type HybridRetriever struct {
 	Dense     Retriever
 	Lexical   Retriever
 	Structure Retriever
+	// RRFConstant is the k constant in the reciprocal rank fusion formula
+	// 1/(k + rank). Zero resolves to the standard default of 60.
+	RRFConstant float64
 }
 
 func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
@@ -797,17 +935,27 @@ func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit
 	fused := make(map[string]store.Hit, len(denseHits)+len(lexHits))
 	rrfScores := make(map[string]float64, len(denseHits)+len(lexHits)+len(structureHits))
 
-	apply := func(hits []store.Hit) {
+	k := r.RRFConstant
+	if k == 0 {
+		k = 60
+	}
+	denseRank := make(map[string]int, len(denseHits))
+	lexRank := make(map[string]int, len(lexHits))
+	structRank := make(map[string]int, len(structureHits))
+	apply := func(hits []store.Hit, ranks map[string]int) {
 		for i, hit := range hits {
 			if _, ok := fused[hit.Chunk.ID]; !ok {
 				fused[hit.Chunk.ID] = hit
 			}
-			rrfScores[hit.Chunk.ID] += 1.0 / float64(i+1+60)
+			if _, seen := ranks[hit.Chunk.ID]; !seen {
+				ranks[hit.Chunk.ID] = i + 1
+			}
+			rrfScores[hit.Chunk.ID] += 1.0 / (k + float64(i+1))
 		}
 	}
-	apply(denseHits)
-	apply(lexHits)
-	apply(structureHits)
+	apply(denseHits, denseRank)
+	apply(lexHits, lexRank)
+	apply(structureHits, structRank)
 
 	out := make([]store.Hit, 0, len(fused))
 	for id, hit := range fused {
@@ -818,6 +966,24 @@ func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit
 	if req.TopK > 0 && len(out) > req.TopK {
 		out = out[:req.TopK]
 	}
+
+	fusion := make([]FusionAttribution, 0, len(fused))
+	for id := range fused {
+		fusion = append(fusion, FusionAttribution{
+			ChunkID:       id,
+			DenseRank:     denseRank[id],
+			LexicalRank:   lexRank[id],
+			StructureRank: structRank[id],
+			RRFScore:      rrfScores[id],
+		})
+	}
+	sort.SliceStable(fusion, func(i, j int) bool {
+		if fusion[i].RRFScore != fusion[j].RRFScore {
+			return fusion[i].RRFScore > fusion[j].RRFScore
+		}
+		return fusion[i].ChunkID < fusion[j].ChunkID
+	})
+
 	return out, Trace{
 		OriginalQuery:       req.Query,
 		EffectiveQuery:      denseTrace.EffectiveQuery,
@@ -830,6 +996,7 @@ func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit
 		ExpandedSections:    append([]string(nil), structureTrace.ExpandedSections...),
 		ExpandedChunkIDs:    append([]string(nil), structureTrace.ExpandedChunkIDs...),
 		SelectedChunkIDs:    collectChunkIDs(out),
+		Fusion:              fusion,
 	}, nil
 }
 

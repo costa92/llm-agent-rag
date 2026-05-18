@@ -5,7 +5,9 @@ import (
 
 	"github.com/costa92/llm-agent-rag/embed"
 	"github.com/costa92/llm-agent-rag/generate"
+	"github.com/costa92/llm-agent-rag/guard"
 	"github.com/costa92/llm-agent-rag/ingest"
+	"github.com/costa92/llm-agent-rag/obs"
 	"github.com/costa92/llm-agent-rag/pack"
 	"github.com/costa92/llm-agent-rag/prompt"
 	"github.com/costa92/llm-agent-rag/rerank"
@@ -41,6 +43,9 @@ type Diagnostics struct {
 	AutoRouteCandidates []retrieve.RouteCandidate
 	RoutePolicy         retrieve.RoutePolicyTrace
 	SearchTrajectory    []retrieve.TrajectoryStep
+	RerankScores        []rerank.RerankScore
+	Metrics             obs.Metrics
+	InjectionFindings   []InjectionFinding
 }
 
 type Trace struct {
@@ -76,6 +81,10 @@ type System struct {
 	packer   pack.Packer
 	maxChars int
 	observer Observer
+	redactor guard.Redactor
+
+	injectionScanner guard.InjectionScanner
+	sanitizeMode     guard.SanitizeMode
 }
 
 func New(opts Options) *System {
@@ -87,6 +96,17 @@ func New(opts Options) *System {
 	if st == nil {
 		st = store.NewInMemoryStore(emb.Dimension())
 	}
+	// Wrap the embedder and model in counting decorators so model calls
+	// nested inside the default retriever/preprocessor wiring are recorded
+	// by the obs.Counter on the call context. A caller-supplied Retriever
+	// or Preprocessor holds whatever embedder/model the caller passed and
+	// is left as-is. A nil model stays nil so Ask still returns
+	// ErrModelRequired.
+	emb = countingEmbedder{inner: emb}
+	var model generate.Model
+	if opts.Model != nil {
+		model = countingModel{inner: opts.Model}
+	}
 	splitter := opts.Splitter
 	if splitter == nil {
 		splitter = ingest.CharSplitter{Overlap: 50}
@@ -97,7 +117,7 @@ func New(opts Options) *System {
 	}
 	pre := opts.Preprocessor
 	if pre == nil {
-		pre = retrieve.LLMExpansionPreprocessor{Model: opts.Model}
+		pre = retrieve.LLMExpansionPreprocessor{Model: model}
 	}
 	ret := opts.Retriever
 	if ret == nil {
@@ -125,7 +145,7 @@ func New(opts Options) *System {
 		splitter: splitter,
 		embedder: emb,
 		store:    st,
-		model:    opts.Model,
+		model:    model,
 		template: tpl,
 		pre:      pre,
 		ret:      ret,
@@ -133,6 +153,10 @@ func New(opts Options) *System {
 		packer:   pk,
 		maxChars: maxChars,
 		observer: opts.Observer,
+		redactor: opts.Redactor,
+
+		injectionScanner: opts.InjectionScanner,
+		sanitizeMode:     opts.SanitizeMode,
 	}
 }
 

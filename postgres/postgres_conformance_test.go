@@ -26,12 +26,14 @@ const liveEnvVar = "LLM_AGENT_RAG_PG_URL"
 // Each subtest gets its own fresh table (named from t.Name() + a random
 // suffix) so subtests cannot pollute each other; t.Cleanup drops the
 // table when the subtest finishes.
-func TestPostgresStoreConformance(t *testing.T) {
+// openTestPool dials the live Postgres named by LLM_AGENT_RAG_PG_URL, skips
+// the test when the env var is unset, and registers pool cleanup.
+func openTestPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
 	dsn := os.Getenv(liveEnvVar)
 	if dsn == "" {
 		t.Skipf("set %s to run this test (e.g. postgres://localhost/llm_agent_rag_test?sslmode=disable)", liveEnvVar)
 	}
-	ctx := context.Background()
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatalf("ParseConfig: %v", err)
@@ -39,13 +41,18 @@ func TestPostgresStoreConformance(t *testing.T) {
 	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
 		return postgres.RegisterTypes(ctx, conn)
 	}
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("pgxpool.NewWithConfig: %v", err)
 	}
 	t.Cleanup(pool.Close)
+	return pool
+}
 
-	storetest.RunConformance(t, func(t *testing.T) store.Store {
+// newTableStore returns a Factory that builds a postgres.Store on a fresh,
+// uniquely named table and drops it on subtest cleanup.
+func newTableStore(ctx context.Context, pool *pgxpool.Pool) storetest.Factory {
+	return func(t *testing.T) store.Store {
 		table := sanitizeTableName(t.Name())
 		s, err := postgres.New(pool, postgres.Config{Table: table, Dimension: 2})
 		if err != nil {
@@ -60,7 +67,19 @@ func TestPostgresStoreConformance(t *testing.T) {
 			}
 		})
 		return s
-	}, storetest.WithDimensionStrict())
+	}
+}
+
+func TestPostgresStoreConformance(t *testing.T) {
+	pool := openTestPool(t)
+	storetest.RunConformance(t, newTableStore(context.Background(), pool), storetest.WithDimensionStrict())
+}
+
+// TestPostgresLexicalConformance runs the lexical-search conformance suite
+// against a live Postgres, exercising the tsvector / ts_rank_cd path.
+func TestPostgresLexicalConformance(t *testing.T) {
+	pool := openTestPool(t)
+	storetest.RunLexicalConformance(t, newTableStore(context.Background(), pool))
 }
 
 // sanitizeTableName builds a safe ASCII identifier from t.Name(). t.Name()

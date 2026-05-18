@@ -30,6 +30,9 @@ type Config struct {
 	// Dimension is the vector dimension. Required. Must match the embedding
 	// model used by callers; mismatched upserts return store.ErrDimensionMismatch.
 	Dimension int
+	// TextSearchConfig is the PostgreSQL text-search configuration used for
+	// the full-text lexical index and queries. Defaults to "english".
+	TextSearchConfig string
 }
 
 // Store is a PostgreSQL + pgvector implementation of store.Store.
@@ -38,8 +41,20 @@ type Store struct {
 	cfg  Config
 }
 
-// Compile-time check that *Store satisfies store.Store.
-var _ store.Store = (*Store)(nil)
+// Compile-time check that *Store satisfies store.Store and store.LexicalSearcher.
+var (
+	_ store.Store           = (*Store)(nil)
+	_ store.LexicalSearcher = (*Store)(nil)
+)
+
+// textSearchConfig returns the configured text-search configuration, or the
+// "english" default when unset.
+func (s *Store) textSearchConfig() string {
+	if s.cfg.TextSearchConfig == "" {
+		return "english"
+	}
+	return s.cfg.TextSearchConfig
+}
 
 // New constructs a Store using the provided pool. The caller owns the pool
 // lifecycle. The pool's AfterConnect hook should call RegisterTypes so each
@@ -57,6 +72,9 @@ func New(pool *pgxpool.Pool, cfg Config) (*Store, error) {
 	if !isSafeIdent(cfg.Table) {
 		return nil, fmt.Errorf("postgres: invalid table name %q", cfg.Table)
 	}
+	if cfg.TextSearchConfig != "" && !isSafeIdent(cfg.TextSearchConfig) {
+		return nil, fmt.Errorf("postgres: invalid text search config %q", cfg.TextSearchConfig)
+	}
 	return &Store{pool: pool, cfg: cfg}, nil
 }
 
@@ -67,9 +85,9 @@ func RegisterTypes(ctx context.Context, conn *pgx.Conn) error {
 	return pgvector_pgx.RegisterTypes(ctx, conn)
 }
 
-// Migrate creates the pgvector extension (idempotent), the chunks table, and
-// a default ivfflat index on the embedding column. Safe to call on every
-// startup.
+// Migrate creates the pgvector extension (idempotent), the chunks table, a
+// default index on the namespace column, and a generated tsvector column +
+// GIN index backing full-text lexical search. Safe to call on every startup.
 func (s *Store) Migrate(ctx context.Context) error {
 	stmts := []string{
 		`CREATE EXTENSION IF NOT EXISTS vector`,
@@ -87,6 +105,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 			embedding     vector(%d)
 		)`, s.cfg.Table, s.cfg.Dimension),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_namespace_idx ON %s (namespace)`, s.cfg.Table, s.cfg.Table),
+		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS content_tsv tsvector
+			GENERATED ALWAYS AS (to_tsvector('%s', content)) STORED`, s.cfg.Table, s.textSearchConfig()),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_content_tsv_idx ON %s USING GIN (content_tsv)`, s.cfg.Table, s.cfg.Table),
 	}
 	for _, stmt := range stmts {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
@@ -190,6 +211,52 @@ func (s *Store) Search(ctx context.Context, q store.Query) ([]store.Hit, error) 
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("postgres: search rows: %w", err)
+	}
+	return out, nil
+}
+
+// LexicalSearch ranks chunks in q.Namespace against q.Text using PostgreSQL
+// full-text search: websearch_to_tsquery parses the query and ts_rank_cd
+// scores cover density against the generated content_tsv column. Results are
+// constrained by q.Filters and q.SecurityFilters exactly as Search is.
+// Implements store.LexicalSearcher.
+func (s *Store) LexicalSearch(ctx context.Context, q store.Query) ([]store.Hit, error) {
+	if strings.TrimSpace(q.Text) == "" {
+		return []store.Hit{}, nil
+	}
+	whereSQL, args := buildWhere(q.Namespace, q.Filters, q.SecurityFilters)
+	args = append(args, q.Text)
+	queryArgIdx := len(args)
+	topK := q.TopK
+	if topK <= 0 {
+		topK = 10
+	}
+	args = append(args, topK)
+	limitArgIdx := len(args)
+	cfg := s.textSearchConfig()
+	stmt := fmt.Sprintf(`
+		SELECT id, namespace, doc_id, title, section_id, section_path, heading, heading_level, content, metadata, embedding,
+			ts_rank_cd(content_tsv, websearch_to_tsquery('%s', $%d)) AS score
+		FROM %s
+		%s AND content_tsv @@ websearch_to_tsquery('%s', $%d)
+		ORDER BY score DESC
+		LIMIT $%d
+	`, cfg, queryArgIdx, s.cfg.Table, whereSQL, cfg, queryArgIdx, limitArgIdx)
+	rows, err := s.pool.Query(ctx, stmt, args...)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: lexical search: %w", err)
+	}
+	defer rows.Close()
+	out := make([]store.Hit, 0, topK)
+	for rows.Next() {
+		chunk, score, err := scanChunkWithDistance(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, store.Hit{Chunk: chunk, Score: score})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: lexical search rows: %w", err)
 	}
 	return out, nil
 }

@@ -1,5 +1,10 @@
 package ingest
 
+import (
+	"github.com/costa92/llm-agent-rag/guard"
+	"github.com/costa92/llm-agent-rag/obs"
+)
+
 type Document struct {
 	ID               string
 	Title            string
@@ -22,7 +27,9 @@ type Chunk struct {
 }
 
 type ImportResult struct {
-	Documents int
-	Chunks    int
-	ChunkIDs  []string
+	Documents  int
+	Chunks     int
+	ChunkIDs   []string
+	Metrics    obs.Metrics
+	Redactions []guard.Redaction
 }

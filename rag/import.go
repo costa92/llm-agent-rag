@@ -3,8 +3,12 @@ package rag
 import (
 	"context"
 	"fmt"
+	"sort"
+	"time"
 
+	"github.com/costa92/llm-agent-rag/guard"
 	"github.com/costa92/llm-agent-rag/ingest"
+	"github.com/costa92/llm-agent-rag/obs"
 	"github.com/costa92/llm-agent-rag/store"
 )
 
@@ -21,7 +25,19 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 	var res ingest.ImportResult
 	embedCount := 0
 	removedChunks := 0
+	redactionCounts := map[string]int{}
+	importStart := time.Now()
+	embedStart := time.Now()
 	for _, doc := range docs {
+		// Redact PII before splitting so chunks, vectors, and the store
+		// never see raw PII. A nil redactor leaves content untouched.
+		if s.redactor != nil {
+			rr := s.redactor.Redact(doc.Content)
+			doc.Content = rr.Text
+			for _, red := range rr.Redactions {
+				redactionCounts[red.Kind] += red.Count
+			}
+		}
 		if opts.ReplaceSource && doc.SourceID != "" {
 			removed, err := s.store.RemoveByFilter(ctx, opts.Namespace, store.Filter{
 				ingest.MetadataSourceIDKey: doc.SourceID,
@@ -56,9 +72,22 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 			res.ChunkIDs = append(res.ChunkIDs, chunk.ID)
 		}
 	}
+	embedDuration := time.Since(embedStart)
+	upsertStart := time.Now()
 	if err := s.store.Upsert(ctx, chunks); err != nil {
 		return ingest.ImportResult{}, fmt.Errorf("rag: upsert: %w", err)
 	}
+	upsertDuration := time.Since(upsertStart)
+	metrics := obs.Metrics{
+		TotalDuration: time.Since(importStart),
+		Stages: []obs.StageTiming{
+			{Stage: "embed", Duration: embedDuration},
+			{Stage: "upsert", Duration: upsertDuration},
+		},
+		Calls: obs.CallCounts{Embed: embedCount},
+	}
+	res.Metrics = metrics
+	res.Redactions = redactionSummary(redactionCounts)
 	if s.observer.OnImport != nil {
 		s.observer.OnImport(ctx, ImportTrace{
 			Namespace:     opts.Namespace,
@@ -68,6 +97,8 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 			EmbedCount:    embedCount,
 			ReplaceSource: opts.ReplaceSource,
 			RemovedChunks: removedChunks,
+			Metrics:       metrics,
+			Redactions:    append([]guard.Redaction(nil), res.Redactions...),
 		})
 	}
 	return res, nil
@@ -79,6 +110,20 @@ func (s *System) ImportFrom(ctx context.Context, src ingest.Source, opts ingest.
 		return ingest.ImportResult{}, err
 	}
 	return s.Import(ctx, docs, opts)
+}
+
+// redactionSummary turns per-kind redaction counts into a deterministic
+// (kind-sorted) slice for ImportResult/ImportTrace.
+func redactionSummary(counts map[string]int) []guard.Redaction {
+	if len(counts) == 0 {
+		return nil
+	}
+	out := make([]guard.Redaction, 0, len(counts))
+	for kind, n := range counts {
+		out = append(out, guard.Redaction{Kind: kind, Count: n})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Kind < out[j].Kind })
+	return out
 }
 
 func buildSectionID(namespace string, chunk ingest.Chunk) string {

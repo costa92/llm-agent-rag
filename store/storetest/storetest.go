@@ -60,7 +60,35 @@ func RunConformance(t *testing.T, factory Factory, opts ...Option) {
 	}
 }
 
+// RunLexicalConformance executes lexical-search conformance subtests against
+// the factory's store. If the store does not implement store.LexicalSearcher
+// the whole suite is skipped, so callers can invoke it unconditionally.
+func RunLexicalConformance(t *testing.T, factory Factory) {
+	t.Helper()
+	if _, ok := factory(t).(store.LexicalSearcher); !ok {
+		t.Skip("store does not implement store.LexicalSearcher")
+	}
+	t.Run("Lexical_keyword_match", func(t *testing.T) { testLexicalMatch(t, factory) })
+	t.Run("Lexical_ranks_term_frequency", func(t *testing.T) { testLexicalTermFrequency(t, factory) })
+	t.Run("Lexical_respects_namespace", func(t *testing.T) { testLexicalNamespace(t, factory) })
+	t.Run("Lexical_security_filter_trims", func(t *testing.T) { testLexicalSecurityFilter(t, factory) })
+	t.Run("Lexical_empty_query_returns_nothing", func(t *testing.T) { testLexicalEmpty(t, factory) })
+}
+
 func ctx() context.Context { return context.Background() }
+
+func mustLexical(t *testing.T, s store.Store, q store.Query) []store.Hit {
+	t.Helper()
+	ls, ok := s.(store.LexicalSearcher)
+	if !ok {
+		t.Fatalf("store does not implement store.LexicalSearcher")
+	}
+	hits, err := ls.LexicalSearch(ctx(), q)
+	if err != nil {
+		t.Fatalf("LexicalSearch: %v", err)
+	}
+	return hits
+}
 
 func mustUpsert(t *testing.T, s store.Store, chunks []store.StoredChunk) {
 	t.Helper()
@@ -292,5 +320,77 @@ func testDimensionMismatch(t *testing.T, factory Factory) {
 	})
 	if !errors.Is(err, store.ErrDimensionMismatch) {
 		t.Fatalf("Upsert with bad dim err = %v, want store.ErrDimensionMismatch", err)
+	}
+}
+
+func testLexicalMatch(t *testing.T, factory Factory) {
+	s := factory(t)
+	mustUpsert(t, s, []store.StoredChunk{
+		{ID: "db-doc", Namespace: "n", DocID: "d", Content: "database replication and sharding strategy", Vector: embed.Vector{1, 0}},
+		{ID: "fe-doc", Namespace: "n", DocID: "d", Content: "frontend rendering pipeline tutorial", Vector: embed.Vector{0, 1}},
+	})
+	hits := mustLexical(t, s, store.Query{Namespace: "n", Text: "replication", TopK: 5})
+	if len(hits) != 1 || hits[0].Chunk.ID != "db-doc" {
+		t.Fatalf("lexical hits = %+v, want only db-doc", hits)
+	}
+}
+
+func testLexicalTermFrequency(t *testing.T, factory Factory) {
+	s := factory(t)
+	mustUpsert(t, s, []store.StoredChunk{
+		{ID: "heavy", Namespace: "n", DocID: "d", Content: "kafka kafka kafka kafka streaming", Vector: embed.Vector{1, 0}},
+		{ID: "light", Namespace: "n", DocID: "d", Content: "kafka introduction guide notes", Vector: embed.Vector{0, 1}},
+	})
+	hits := mustLexical(t, s, store.Query{Namespace: "n", Text: "kafka", TopK: 5})
+	if len(hits) != 2 {
+		t.Fatalf("lexical hits = %+v, want both chunks", hits)
+	}
+	if hits[0].Chunk.ID != "heavy" {
+		t.Fatalf("top hit = %q, want heavy (more occurrences should rank higher)", hits[0].Chunk.ID)
+	}
+}
+
+func testLexicalNamespace(t *testing.T, factory Factory) {
+	s := factory(t)
+	mustUpsert(t, s, []store.StoredChunk{
+		{ID: "ns-a", Namespace: "a", DocID: "d", Content: "elasticsearch cluster configuration", Vector: embed.Vector{1, 0}},
+		{ID: "ns-b", Namespace: "b", DocID: "d", Content: "elasticsearch cluster configuration", Vector: embed.Vector{1, 0}},
+	})
+	hits := mustLexical(t, s, store.Query{Namespace: "a", Text: "elasticsearch", TopK: 5})
+	for _, hit := range hits {
+		if hit.Chunk.Namespace != "a" {
+			t.Fatalf("hit %+v leaked from namespace %q", hit, hit.Chunk.Namespace)
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("lexical hits len = %d, want 1 (only namespace a)", len(hits))
+	}
+}
+
+func testLexicalSecurityFilter(t *testing.T, factory Factory) {
+	s := factory(t)
+	mustUpsert(t, s, []store.StoredChunk{
+		{ID: "sec-a", Namespace: "n", DocID: "d", Content: "postgres performance tuning", Vector: embed.Vector{1, 0}, Metadata: map[string]any{"tenant": "a"}},
+		{ID: "sec-b", Namespace: "n", DocID: "d", Content: "postgres performance tuning", Vector: embed.Vector{1, 0}, Metadata: map[string]any{"tenant": "b"}},
+	})
+	hits := mustLexical(t, s, store.Query{
+		Namespace:       "n",
+		Text:            "postgres",
+		TopK:            5,
+		SecurityFilters: store.Filter{"tenant": "a"},
+	})
+	if len(hits) != 1 || hits[0].Chunk.ID != "sec-a" {
+		t.Fatalf("security-filtered lexical hits = %+v, want only sec-a", hits)
+	}
+}
+
+func testLexicalEmpty(t *testing.T, factory Factory) {
+	s := factory(t)
+	mustUpsert(t, s, []store.StoredChunk{
+		{ID: "a", Namespace: "n", DocID: "d", Content: "kafka streaming pipeline", Vector: embed.Vector{1, 0}},
+	})
+	hits := mustLexical(t, s, store.Query{Namespace: "n", Text: "", TopK: 5})
+	if len(hits) != 0 {
+		t.Fatalf("empty-query lexical hits = %+v, want none", hits)
 	}
 }

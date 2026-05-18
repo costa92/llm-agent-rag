@@ -3,6 +3,8 @@ package rag
 import (
 	"context"
 
+	"github.com/costa92/llm-agent-rag/guard"
+	"github.com/costa92/llm-agent-rag/obs"
 	"github.com/costa92/llm-agent-rag/retrieve"
 )
 
@@ -17,6 +19,8 @@ type ImportTrace struct {
 	EmbedCount    int
 	ReplaceSource bool
 	RemovedChunks int
+	Metrics       obs.Metrics
+	Redactions    []guard.Redaction
 }
 
 // Observer holds optional callbacks that fire after each top-level rag
