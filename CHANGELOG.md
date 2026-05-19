@@ -6,6 +6,46 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [v0.6.0] - 2026-05-20
+
+Minor release closing the v0.9 GraphRAG refinements milestone (Phases
+26-27). Builds on v0.7 Tier-1 and v0.8 Tier-3 GraphRAG with path-ranked
+subgraph evidence and DRIFT hybrid search. Additive and opt-in — default
+behavior is unchanged. No new dependencies and no graph database; the
+`postgres` subpackage remains the only non-stdlib island.
+
+### Added
+
+- path-ranking and subgraph-as-evidence (Phase 26):
+  - new `graph.RankedPath` type and `graph.PathRanker` seam
+  - `graph.WeightedPathRanker` — a deterministic pure-stdlib ranker of
+    multi-hop simple paths within a `Subgraph` (bounded-DFS enumeration;
+    composite score over path length, `Relation.Weight`, and provenance
+    overlap; total entity-ID-sequence tie-break)
+  - an opt-in `PathRanker` field on `retrieve.GraphRetriever`;
+    `retrieve.GraphTrace` gains additive `Paths` and `EvidenceSubgraph`
+    fields, surfaced through `rag.Diagnostics`. With path mode off,
+    `GraphRetriever.Retrieve` is byte-identical to v0.7/v0.8.
+- DRIFT search (Phase 27):
+  - `rag.System.AskDrift` — a hybrid answer path: a global "primer" pass
+    for broad orientation, a hard-bounded local follow-up loop
+    (round cap 3, terminating on no new follow-up entities), and a
+    synthesis step. A separate answer path — it is not a `Retriever` and
+    not a mode flag on `Ask`/`AskGlobal`.
+  - `rag.DriftOptions` and a `Diagnostics.Drift` block (primer communities,
+    rounds run, per-round entity IDs, consulted reports)
+  - `eval.DriftEvaluator` — a DRIFT-answer evaluation harness over the
+    RAG-Triad / `LLMJudge` path (groundedness, answer-relevance)
+  - `docs/graphrag.md` finalized for the full GraphRAG spectrum
+
+### Notes
+
+- Incremental community maintenance remains deferred to v1.0+ — v0.8's
+  full re-detection on re-ingest is correct and fast at this SDK's scale;
+  revisit only if profiling shows community detection dominating re-ingest.
+- Deferred to v1.0+: incremental community maintenance, claim/covariate
+  extraction, a dedicated graph database.
+
 ## [v0.5.0] - 2026-05-20
 
 Minor release closing the v0.8 GraphRAG Tier-3 milestone (Phases 23-25).
