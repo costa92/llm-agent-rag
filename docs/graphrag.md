@@ -10,6 +10,11 @@ v0.8 adds **Tier-3 GraphRAG** on top of that foundation: hierarchical
 map-reduce **global search** for whole-corpus "sense-making" questions, and
 opt-in **fuzzy entity resolution**.
 
+v0.9 finishes the picture with two **GraphRAG refinements**: opt-in
+**path-ranked evidence** (`GraphRetriever.PathRanker`) and **DRIFT search**
+(`System.AskDrift`) — the hybrid answer path that opens with a global primer
+pass and then runs a bounded local follow-up loop over the graph.
+
 Every piece of GraphRAG is **opt-in and additive** — with none of it wired,
 the SDK behaves exactly as before. Tier-3 sits behind seams that default to
 no-ops; an SDK that wires only Tier-1 (or nothing) is byte-identical to v0.7.
@@ -75,6 +80,68 @@ the store also carries detected communities (Tier-3 below), the trace adds
 See `examples/graphrag_example_test.go` for a complete, deterministic
 wiring, and `eval.RunGraphAB` for measuring the graph signal's effect on
 retrieval recall.
+
+#### Path-ranked evidence (`GraphRetriever.PathRanker`)
+
+By default `GraphRetriever` scores **provenance chunks** by graph
+proximity — it answers "which chunks are near the query's entities?" but
+says nothing about *how* those entities connect. v0.9 adds an opt-in
+**path-ranking** mode that surfaces the connecting structure itself as a
+ranked evidence artifact.
+
+Set `GraphRetriever.PathRanker` to a `graph.PathRanker`:
+
+- `graph.WeightedPathRanker{LengthDecay: d}` — the default deterministic,
+  pure-stdlib ranker. For every unordered pair of linked seed entities it
+  enumerates the simple paths between them (a bounded DFS, ≤ 2 edges,
+  relations treated undirected) and scores each path by a composite of
+  three signals already in the graph: a **length** decay
+  (`LengthDecay^(edges-1)` — shorter paths score higher; `LengthDecay ≤ 0`
+  is treated as `0.5`), the **product of edge weights**, and a small
+  **provenance-overlap** bonus when consecutive relations cite a shared
+  `SourceChunkID` (co-attested hops rank above scattered ones). The
+  returned `[]graph.RankedPath` is sorted by `Score` descending, ties
+  broken by the joined entity-ID sequence — a total, reproducible order
+  (keystones KG4-4, KG4-6).
+
+When a `PathRanker` is set, `Retrieve` records two extra fields on the
+trace:
+
+- `GraphTrace.Paths` — the `[]graph.RankedPath` connecting the query's seed
+  entities, in deterministic descending-score order. Each `graph.RankedPath`
+  carries `EntityIDs` (the ordered traversal), `RelationIDs` (the edges
+  between consecutive entities), and a composite `Score`.
+- `GraphTrace.EvidenceSubgraph` — the `*graph.Subgraph` the retriever
+  traversed (reached entities, the relations among them, and each entity's
+  hop `Depth`), surfaced as the structured evidence object.
+
+Both ride through `Answer.Diagnostics.GraphTrace` for free — the same way
+`GraphTrace.CommunityIDs` does.
+
+**Path mode is opt-in and additive.** When `PathRanker` is nil (the
+default), `Paths` and `EvidenceSubgraph` stay nil and graph retrieval is
+**byte-identical to v0.7/v0.8** — chunk hits, their scores, and every other
+trace field are untouched. Path mode only *adds* trace output; it never
+changes what `Retrieve` returns as hits.
+
+```go
+ret := retrieve.GraphRetriever{
+    Store:      st,
+    MaxDepth:   2,
+    PathRanker: graph.WeightedPathRanker{}, // path mode on; omit for off
+}
+// ... wire ret (directly, or as HybridRetriever.Graph), run a query ...
+gt := ans.Diagnostics.GraphTrace
+if len(gt.Paths) > 0 {
+    top := gt.Paths[0] // highest-scored connecting path
+    fmt.Println("path:", top.EntityIDs, "score:", top.Score)
+    fmt.Println("evidence entities:", len(gt.EvidenceSubgraph.Entities))
+}
+```
+
+See `examples/graphrag_path_example_test.go` for a complete, fully
+deterministic end-to-end wiring (a `DictionaryEntityExtractor` gazetteer, an
+in-memory store, and a `WeightedPathRanker` — no live model).
 
 ---
 
@@ -339,32 +406,167 @@ project's standard deterministic-evaluation discipline.
 
 ---
 
-## Deferred to v0.9
+## DRIFT search — the hybrid answer path (`System.AskDrift`)
 
-v0.8 delivers the first half of v0.7's "Deferred to v0.8" list — community
-detection, community summaries, map-reduce global search, fuzzy entity
-resolution. The remainder is explicitly **not** in v0.8:
+`Ask` (+ `GraphRetriever`) answers **local** questions — anchored to a
+query, retrieved by neighborhood traversal. `AskGlobal` answers **global**
+whole-corpus questions — map-reduce over community reports. Many real
+questions sit between the two: they need a broad sense of the corpus *and*
+the specific detail only graph traversal surfaces. v0.9 adds a third answer
+path for exactly that — **DRIFT search** (Dynamic Reasoning and Inference
+with Flexible Traversal).
 
-- **DRIFT search** — the query-adaptive blend of local entity traversal and
-  global community context. v0.8 ships `Ask` (local) and `AskGlobal`
-  (global) as two distinct paths; DRIFT's dynamic routing between them is a
-  v0.9 item.
-- **Incremental community maintenance** — v0.8 does **full per-namespace
-  re-detection** on every re-ingest (`UpsertCommunities` is replace-all).
-  Incrementally updating only the communities a re-ingest actually touched
-  — and selectively invalidating only their reports — is deferred.
-- **Path-ranking / subgraph-as-evidence** — ranking and returning a
-  structured subgraph (a chain of relations) as an evidence artifact,
-  rather than scoring provenance chunks. Still a v0.9 item, unchanged from
-  the v0.7 deferral.
+`System.AskDrift(ctx, question, DriftOptions)` is a **separate answer path**,
+not a mode flag on `Ask` or `AskGlobal` and not a `Retriever`. It never
+calls retrieve, the reranker, or the packer pipeline; instead it
+orchestrates `AskGlobal`'s primer pieces and direct graph traversal. The
+flow is *primer → bounded local follow-up loop → synthesis*:
+
+1. **Primer** — a global pass: select the coarsest-level communities, resolve
+   their reports (the same lazy `CommunityStore` cache as `AskGlobal`), and
+   run the map step — one model call per report for a scored partial answer.
+   The member entities of the communities the map step scored above zero
+   become the local loop's **round-0 seed entities**. (When the store is not
+   a `CommunityStore`, or the namespace has no communities, the primer is
+   simply empty — DRIFT degrades to a local-only answer, no error.)
+2. **Local follow-up loop** — hard-bounded. For each round, DRIFT traverses
+   the 1-hop neighborhood of the current seed entities, packs their
+   provenance chunks into context, asks the model for a partial answer plus a
+   short list of **follow-up entity names**, and resolves those names into
+   the next round's seeds. The loop terminates on the first of: the round cap
+   is hit; the model emits no new follow-up entities; no new entities are
+   reachable. It is **bounded by construction** — it cannot run away.
+3. **Synthesis** — one model call folds the primer partials and every local
+   round's partial answer into the final `Answer.Text` — structurally
+   `AskGlobal`'s reduce step.
+
+### The budget and the round cap
+
+`DriftOptions` is small and every knob is bounded:
+
+```go
+type DriftOptions struct {
+    Namespace      string // which namespace's communities + graph to search
+    MaxCommunities int    // primer breadth; <= 0 -> default 8
+    Rounds         int    // local follow-up rounds; <= 0 -> default 2, hard cap 3
+    TopK           int    // provenance chunks packed per local round; <= 0 -> default 8
+}
+```
+
+`Rounds` is clamped into `[1, 3]` *before* the loop runs — a value of `0`
+becomes the default `2`, a value above `3` is pinned to the hard cap `3`.
+The local loop therefore can never exceed three iterations regardless of
+what the caller (or the model's follow-ups) ask for. This is deliberate:
+DRIFT's local loop is model-driven, and an unbounded model-driven loop is a
+cost and latency hazard. The total LLM budget for one `AskDrift` is
+`MaxCommunities` primer-map calls + at most `Rounds` local-round calls + 1
+synthesis call — all counted by the run's `obs.Counter`.
+
+### Diagnostics — `Answer.Diagnostics.Drift`
+
+`Answer.Diagnostics.Drift` (a `rag.DriftDiagnostics`) attributes the run:
+
+- `PrimerCommunityIDs` — the communities the primer mapped over;
+- `Rounds` — the number of local rounds actually run (≤ the clamped cap);
+- `RoundEntityIDs` — the seed entity IDs each round traversed from, in order
+  (each list sorted and deduped — the orchestration is golden-testable);
+- `ConsultedReports` — the primer's community reports, the grounding context
+  an evaluator reads off the `Answer` (mirroring
+  `Diagnostics.Global.ConsultedReports`).
+
+### Wiring DRIFT search
+
+```go
+sys := rag.New(rag.Options{
+    Store:               st, // an InMemoryStore / postgres.Store — a CommunityStore + GraphStore
+    Model:               model,
+    EntityExtractor:     graph.DictionaryEntityExtractor{Terms: gazetteer},
+    CommunityDetector:   graph.LouvainDetector{},                     // detect at Import
+    CommunitySummarizer: graph.LLMCommunitySummarizer{Model: model},  // primer reports
+})
+
+// Import builds the graph and detects the community hierarchy.
+if _, err := sys.Import(ctx, docs, ingest.ImportOptions{Namespace: "kb"}); err != nil {
+    return err
+}
+
+// DRIFT search — a primer pass, a bounded local loop, and a synthesis step.
+answer, err := sys.AskDrift(ctx, "how did mechanical computing begin",
+    rag.DriftOptions{Namespace: "kb", MaxCommunities: 8, Rounds: 2})
+if err != nil {
+    return err
+}
+fmt.Println(answer.Text)
+fmt.Println("primer communities:", len(answer.Diagnostics.Drift.PrimerCommunityIDs))
+fmt.Println("local rounds run:", answer.Diagnostics.Drift.Rounds)
+```
+
+A nil model returns `rag.ErrModelRequired`; a cache miss with no configured
+summarizer returns `rag.ErrCommunitySummarizerRequired`.
+
+See `examples/graphrag_drift_example_test.go` for a complete, fully
+deterministic end-to-end wiring (a `DictionaryEntityExtractor` gazetteer, a
+`LouvainDetector`, and a single scripted `generate.Model` serving the
+summarizer, the primer map step, every local round, and the synthesis).
+
+### Evaluating DRIFT search (`eval.DriftEvaluator`)
+
+DRIFT, like global search, synthesizes an answer with **no gold chunk set**,
+so chunk recall@k is meaningless for it. v0.9 adds a generation-side harness
+mirroring `GlobalEvaluator`:
+
+- `eval.DriftAsker` — the seam `*rag.System` satisfies via `AskDrift`; the
+  DRIFT counterpart of `eval.GlobalAsker` and `eval.Asker`.
+- `eval.DriftEvaluator{Asker, Judge, MaxCommunities, Rounds}` — runs a
+  `Dataset` of whole-corpus questions through `AskDrift` and scores each
+  answer with the RAG-Triad `Judge`. The judge's grounding context is the
+  primer's consulted community reports
+  (`Answer.Diagnostics.Drift.ConsultedReports`), so DRIFT groundedness reads
+  as "is the answer grounded in the community reports the primer read";
+  answer relevance is question-vs-answer.
+- `eval.DriftEvalResult` — carries `MeanGroundedness`, `MeanAnswerRelevance`,
+  and per-example detail. Like `GlobalEvalResult` it deliberately carries
+  **no** chunk recall@k / precision@k.
+
+The harness is exercised by a scripted-model + scripted-judge CI gate — the
+project's standard deterministic-evaluation discipline.
+
+---
+
+## Deferred to v1.0+
+
+v0.9 closes out the GraphRAG-refinements milestone: **path-ranked evidence**
+(`GraphRetriever.PathRanker`) and **DRIFT search** (`System.AskDrift`) — the
+two items v0.8 explicitly deferred — both ship above. With them, all three
+answer paths exist: `Ask` (local), `AskGlobal` (global), and `AskDrift` (the
+hybrid). The remainder is explicitly **not** in v0.9 and is carried to v1.0+:
+
+- **Incremental community maintenance** — every re-ingest still does **full
+  per-namespace re-detection** (`UpsertCommunities` is replace-all), and
+  `AskGlobal`'s `ContentHash` cache then re-summarizes every community whose
+  membership shifted. Incrementally updating only the communities a re-ingest
+  actually touched — and selectively invalidating only their reports — is
+  deferred. **Profiling trigger:** revisit this only if community detection
+  (`CommunityDetector.Detect`) measurably dominates re-ingest cost on a real
+  corpus. Until that profile exists, full re-detection is correct, simple,
+  and fast enough — incremental maintenance is added complexity with no
+  demonstrated payoff.
+- **Claim / covariate extraction** — v0.9 extracts entities and typed
+  relations only. Microsoft GraphRAG also extracts *claims* (covariates —
+  time-scoped factual statements about an entity). Adding a claim-extraction
+  seam alongside `EntityExtractor`, and surfacing claims in community reports
+  and the DRIFT primer, is a v1.0+ item.
+- **A dedicated graph database** — GraphRAG still runs entirely on the
+  existing stores: `store.InMemoryStore` for tests and small corpora,
+  `postgres.Store` (recursive-CTE traversal over `entities`/`relations`
+  tables) for production. `GraphStore` and `CommunityStore` are interfaces,
+  so a `neo4jgraph`-style subpackage — **Neo4j is a future `GraphStore`
+  implementation** — can be added later in full isolation without touching
+  any existing code. Recursive-CTE traversal over Postgres covers this SDK's
+  scale; a graph database is warranted only when traversal depth or graph
+  size outgrows it, which this milestone's scope does not.
 - **Fuzzy-resolution quality improvements** — v0.8's
   `EmbeddingEntityResolver` is deliberately conservative (high threshold,
   same-type-only, single-link clustering). Better clustering, type-aware
   thresholds, description-aware embedding, and an audit trail for merges
-  are deferred.
-
-A dedicated **graph database** (Neo4j, etc.) is still intentionally not
-used: `GraphStore` and `CommunityStore` are interfaces, so a
-`neo4jgraph`-style subpackage can be added later in full isolation without
-touching any existing code. Recursive-CTE traversal over Postgres covers
-this SDK's scale.
+  remain deferred.

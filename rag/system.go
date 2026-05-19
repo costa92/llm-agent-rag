@@ -51,6 +51,32 @@ type Diagnostics struct {
 	// Global attributes a System.AskGlobal map-reduce run. It is the zero
 	// value for an ordinary Ask — the field is additive.
 	Global GlobalDiagnostics
+	// Drift attributes a System.AskDrift run — the primer, the bounded
+	// local follow-up loop, and the synthesis. It is the zero value for an
+	// ordinary Ask or AskGlobal — the field is additive.
+	Drift DriftDiagnostics
+}
+
+// DriftDiagnostics attributes one System.AskDrift run: which communities the
+// primer mapped, how many local follow-up rounds actually ran, the seed
+// entity IDs propagated into each round, and the primer's consulted reports.
+type DriftDiagnostics struct {
+	// PrimerCommunityIDs are the communities the primer pass mapped over,
+	// in selection order. It is empty when the store has no community
+	// capability or the namespace has no communities.
+	PrimerCommunityIDs []string
+	// Rounds is the number of local follow-up rounds actually run. It never
+	// exceeds the hard cap (driftMaxRounds) — the loop terminates early
+	// when no new follow-up entities surface.
+	Rounds int
+	// RoundEntityIDs are the seed entity IDs each local round traversed
+	// from, sorted and deduped, indexed by round (len == Rounds).
+	RoundEntityIDs [][]string
+	// ConsultedReports are the primer's community reports — the answer's
+	// grounding context. It mirrors GlobalDiagnostics.ConsultedReports so
+	// eval.DriftEvaluator can read grounding off the Answer without store
+	// plumbing.
+	ConsultedReports []graph.CommunityReport
 }
 
 // GlobalDiagnostics attributes one System.AskGlobal run: which communities

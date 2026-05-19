@@ -25,6 +25,17 @@ type GraphTrace struct {
 	// otherwise it is nil — a store without a community hierarchy degrades
 	// gracefully, no behavior change.
 	CommunityIDs []string
+	// Paths holds the ranked simple paths connecting the query's seed
+	// entities, in deterministic descending-score order. It is populated
+	// only when the GraphRetriever has a non-nil PathRanker (path mode);
+	// otherwise it is nil — with path mode off, graph retrieval is
+	// byte-identical to v0.7/v0.8.
+	Paths []graph.RankedPath
+	// EvidenceSubgraph is the structured evidence object — the bounded
+	// neighborhood the retriever traversed, surfaced as a graph.Subgraph.
+	// It is populated only in path mode (non-nil PathRanker); otherwise it
+	// is nil — no behavior change with path mode off.
+	EvidenceSubgraph *graph.Subgraph
 }
 
 // EntityLinker maps a query to seed entities in a graph store.
@@ -65,6 +76,13 @@ type GraphRetriever struct {
 	Store    store.Store // type-asserted for store.GraphStore
 	MaxDepth int          // default 1, hard cap 2
 	HopDecay float64      // proximity score decay per hop, default 0.5
+	// PathRanker, when non-nil, turns on path mode: after building the
+	// neighborhood, Retrieve ranks the simple paths connecting the linked
+	// seed entities and records them — together with the evidence
+	// subgraph — on GraphTrace. When nil (the default), path mode is off
+	// and Retrieve is byte-identical to v0.7/v0.8: chunk hits, scoring,
+	// and every other trace field are untouched.
+	PathRanker graph.PathRanker
 }
 
 // Retrieve implements Retriever.
@@ -162,12 +180,39 @@ func (r GraphRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit,
 		MaxHop:           maxHop,
 		CommunityIDs:     communitiesOf(ctx, r.Store, req.Namespace, reached),
 	}
+	// Path mode (opt-in): when a PathRanker is configured, rank the simple
+	// paths connecting the linked seed entities and surface them — plus the
+	// evidence subgraph — on the trace. This is purely extra trace output:
+	// it does not touch hits, scores, or any other trace field, so with
+	// PathRanker nil graph retrieval stays byte-identical to v0.7/v0.8.
+	if r.PathRanker != nil {
+		trace.Graph.Paths = r.PathRanker.RankPaths(sub, seedPairs(seedIDs))
+		evidence := sub
+		trace.Graph.EvidenceSubgraph = &evidence
+	}
 	selected := make([]string, 0, len(hits))
 	for _, h := range hits {
 		selected = append(selected, h.Chunk.ID)
 	}
 	trace.SelectedChunkIDs = selected
 	return hits, trace, nil
+}
+
+// seedPairs builds every unordered pair of distinct seed entity IDs, in
+// sorted order — the input to graph.PathRanker.RankPaths. seedIDs is
+// already sorted and deduped by the caller, so iterating i<j yields pairs
+// in a total, reproducible order. Fewer than two seeds yields no pairs.
+func seedPairs(seedIDs []string) [][2]string {
+	if len(seedIDs) < 2 {
+		return nil
+	}
+	pairs := make([][2]string, 0, len(seedIDs)*(len(seedIDs)-1)/2)
+	for i := 0; i < len(seedIDs); i++ {
+		for j := i + 1; j < len(seedIDs); j++ {
+			pairs = append(pairs, [2]string{seedIDs[i], seedIDs[j]})
+		}
+	}
+	return pairs
 }
 
 // communitiesOf returns, sorted and deduped, the IDs of the communities the

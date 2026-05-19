@@ -132,6 +132,66 @@ func TestGraphRetrieverCommunityIDsNil(t *testing.T) {
 	}
 }
 
+// TestGraphRetrieverPathMode verifies opt-in path mode: with a non-nil
+// PathRanker and a query linking to two connected entities, Retrieve
+// populates Trace.Graph.Paths and a non-nil EvidenceSubgraph — while the
+// chunk []store.Hit stays byte-identical to the path-mode-off run.
+func TestGraphRetrieverPathMode(t *testing.T) {
+	st := graphFixture(t)
+	// "Alpha Charlie" links to the two endpoint entities of the chain,
+	// so there is exactly one seed pair {t:alpha, t:charlie}.
+	req := Request{Query: "Alpha Charlie", Namespace: "ns", TopK: 10}
+
+	off := GraphRetriever{Store: st, MaxDepth: 2}
+	offHits, offTrace, err := off.Retrieve(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Retrieve (path mode off): %v", err)
+	}
+	if offTrace.Graph.Paths != nil || offTrace.Graph.EvidenceSubgraph != nil {
+		t.Fatalf("path mode off: Paths/EvidenceSubgraph not nil (Paths=%v, Evidence=%v)",
+			offTrace.Graph.Paths, offTrace.Graph.EvidenceSubgraph)
+	}
+
+	on := GraphRetriever{Store: st, MaxDepth: 2, PathRanker: graph.WeightedPathRanker{}}
+	onHits, onTrace, err := on.Retrieve(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Retrieve (path mode on): %v", err)
+	}
+	if len(onTrace.Graph.Paths) == 0 {
+		t.Fatalf("path mode on: Trace.Graph.Paths empty, want >= 1 ranked path")
+	}
+	if onTrace.Graph.EvidenceSubgraph == nil {
+		t.Fatalf("path mode on: Trace.Graph.EvidenceSubgraph is nil")
+	}
+	if len(onTrace.Graph.EvidenceSubgraph.Entities) != 3 {
+		t.Fatalf("EvidenceSubgraph has %d entities, want 3 (the traversed neighborhood)",
+			len(onTrace.Graph.EvidenceSubgraph.Entities))
+	}
+	// The ranked path must connect the two seeds Alpha .. Charlie.
+	p := onTrace.Graph.Paths[0]
+	if len(p.EntityIDs) < 2 || p.EntityIDs[0] != "t:alpha" ||
+		p.EntityIDs[len(p.EntityIDs)-1] != "t:charlie" {
+		t.Fatalf("ranked path = %v, want one connecting t:alpha .. t:charlie", p.EntityIDs)
+	}
+
+	// KG4-4: path mode must not disturb the chunk hits — byte-identical.
+	if len(onHits) != len(offHits) {
+		t.Fatalf("hit count differs: path mode on=%d, off=%d", len(onHits), len(offHits))
+	}
+	for i := range onHits {
+		if onHits[i].Chunk.ID != offHits[i].Chunk.ID || onHits[i].Score != offHits[i].Score {
+			t.Fatalf("hit %d differs between path modes: on=%+v off=%+v",
+				i, onHits[i], offHits[i])
+		}
+	}
+	// The rest of the trace is identical too.
+	if onTrace.Graph.MaxHop != offTrace.Graph.MaxHop ||
+		len(onTrace.Graph.SeedEntityIDs) != len(offTrace.Graph.SeedEntityIDs) ||
+		len(onTrace.Graph.ReachedEntityIDs) != len(offTrace.Graph.ReachedEntityIDs) {
+		t.Fatalf("path mode disturbed the v0.7/v0.8 trace fields")
+	}
+}
+
 func TestHybridRetrieverFusesGraphSignal(t *testing.T) {
 	st := graphFixture(t)
 	empty := &hopStubRetriever{byQuery: map[string][]store.Hit{}}

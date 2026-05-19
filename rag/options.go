@@ -57,6 +57,26 @@ type GlobalOptions struct {
 	MaxCommunities int
 }
 
+// DriftOptions configures System.AskDrift — the DRIFT hybrid-search answer
+// path: a global primer pass, a hard-bounded local follow-up loop, and a
+// synthesis step. It is a third answer path alongside Ask and AskGlobal.
+type DriftOptions struct {
+	// Namespace selects which namespace's community hierarchy and entity
+	// graph DRIFT searches.
+	Namespace string
+	// MaxCommunities caps how many coarsest-level communities the primer
+	// maps over (passed straight to selectCommunities). A value <= 0
+	// selects a sane default (driftDefaultMaxCommunities).
+	MaxCommunities int
+	// Rounds bounds the local follow-up loop. A value <= 0 defaults to
+	// driftDefaultRounds; a value above driftMaxRounds is clamped down to
+	// driftMaxRounds — the loop is hard-bounded by construction.
+	Rounds int
+	// TopK caps how many provenance chunks each local round packs into the
+	// model context. A value <= 0 selects driftDefaultTopK.
+	TopK int
+}
+
 type Options struct {
 	Splitter         ingest.Splitter
 	Embedder         embed.Embedder
