@@ -6,6 +6,57 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [v0.4.0] - 2026-05-19
+
+Minor release closing the v0.7 GraphRAG milestone (Phases 20-22). Tier-1
+lightweight GraphRAG: a knowledge graph extracted from ingested documents
+and retrieved by traversal, fused as a fourth signal alongside dense,
+lexical, and structure retrieval. Additive and opt-in — default behavior
+is unchanged. No new dependencies, and no graph database: the `postgres`
+subpackage remains the only non-stdlib island.
+
+### Added
+
+- knowledge-graph construction (Phase 20):
+  - new `graph` package — `Entity` / `Relation` / `Graph` and an
+    `EntityExtractor` seam
+  - `graph.LLMEntityExtractor` over `generate.Model` — pipe-delimited
+    extraction prompt with lenient parsing of malformed model output
+  - `graph.DictionaryEntityExtractor` — a deterministic zero-LLM extractor
+    (gazetteer terms + co-occurrence relations)
+  - `graph.Canonicalize` — exact-match `(name, type)` entity merge with
+    source-chunk provenance and relation-endpoint resolution
+  - graph extraction wired as a post-split `Import` stage, surfaced on
+    `ingest.ImportResult.Graph`
+- graph storage (Phase 21):
+  - `store.GraphStore` optional-capability interface (mirroring
+    `store.LexicalSearcher`) — `UpsertGraph`, `RemoveGraphBySource`,
+    `Neighborhood`, `FindEntities`
+  - a pure-stdlib in-memory adjacency implementation and a `postgres`
+    implementation over `entities` / `relations` tables with
+    recursive-CTE traversal — no graph database
+  - hard-bounded traversal: depth cap 2 plus a per-hop fan-out cap,
+    enforced in both implementations
+  - incremental reconciliation on `ReplaceSource` re-ingest —
+    provenance-based removal, union-merge, and garbage-collection
+  - `storetest.RunGraphConformance` shared conformance suite
+- graph-traversal retrieval (Phase 22):
+  - `retrieve.EntityLinker` seam and `LexicalEntityLinker`
+  - `retrieve.GraphRetriever` — query entity linking, bounded neighborhood
+    expansion, and proximity-decay scoring
+  - graph fused into `HybridRetriever` as a fourth RRF signal: a `Graph`
+    field, `FusionAttribution.GraphRank`, an `EnableGraph` toggle, and
+    graph attribution in `retrieve.Trace` / `rag.Diagnostics.GraphTrace`
+  - `eval.RunGraphAB` — a graph-on/off A/B over the evaluation harness
+  - a deterministic GraphRAG worked example and `docs/graphrag.md`
+
+### Notes
+
+- The `postgres` graph path is env-gated; like the v0.5 `tsvector` path it
+  is not yet exercised against a live database in CI.
+- Deferred to v0.8: MS-GraphRAG community detection / summaries,
+  global/DRIFT search, and fuzzy/embedding entity resolution.
+
 ## [v0.3.0] - 2026-05-18
 
 Minor release closing the v0.6 production-grade-retrieval milestone
