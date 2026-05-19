@@ -13,6 +13,8 @@ import (
 	"github.com/costa92/llm-agent-rag/store"
 )
 
+// Import ingests a batch of documents — splitting, embedding, optional PII
+// redaction and graph extraction, and storing the resulting chunks.
 func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest.ImportOptions) (ingest.ImportResult, error) {
 	splitter := opts.Splitter
 	if splitter == nil {
@@ -186,6 +188,8 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 	return res, nil
 }
 
+// ImportFrom reads documents from src and ingests them, the same pipeline as
+// Import but sourced from an ingest.Source rather than an in-memory slice.
 func (s *System) ImportFrom(ctx context.Context, src ingest.Source, opts ingest.ImportOptions) (ingest.ImportResult, error) {
 	docs, err := src.Documents(ctx)
 	if err != nil {

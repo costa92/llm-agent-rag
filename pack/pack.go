@@ -1,3 +1,7 @@
+// Package pack assembles retrieved chunks into a token-budgeted prompt
+// context. Packer is the central seam (GreedyTokenPacker is the built-in)
+// and TokenCounter is the tokenizer seam — SimpleCounter is the default
+// whitespace counter a caller may swap for a real tokenizer.
 package pack
 
 import (
@@ -8,12 +12,18 @@ import (
 	"github.com/costa92/llm-agent-rag/store"
 )
 
+// TokenCounter estimates the token cost of a string. It is the tokenizer
+// seam: a caller plugs in a real tokenizer by implementing it.
 type TokenCounter interface {
+	// Count returns the estimated token count of text.
 	Count(text string) int
 }
 
+// SimpleCounter is the default TokenCounter — a whitespace/CJK heuristic that
+// needs no tokenizer. A caller may swap it for a model-accurate counter.
 type SimpleCounter struct{}
 
+// Count returns SimpleCounter's heuristic token estimate for text.
 func (SimpleCounter) Count(text string) int {
 	var words int
 	var inWord bool
@@ -40,33 +50,43 @@ func (SimpleCounter) Count(text string) int {
 	return tokens
 }
 
+// Request is a context-packing request: a question and its candidate hits,
+// bounded by a token budget.
 type Request struct {
-	Question  string
-	Hits      []store.Hit
-	MaxTokens int
+	Question  string      // Question is the query the context will answer.
+	Hits      []store.Hit // Hits are the retrieved candidate chunks, best-first.
+	MaxTokens int         // MaxTokens is the token budget for the packed context.
 }
 
+// Trace records what a Packer decided for one Request.
 type Trace struct {
-	BudgetTokens      int
-	UsedTokens        int
-	SelectedChunkIDs  []string
-	DroppedChunkIDs   []string
-	TruncatedChunkIDs []string
+	BudgetTokens      int      // BudgetTokens is the token budget the packer worked against.
+	UsedTokens        int      // UsedTokens is the tokens consumed by the packed context.
+	SelectedChunkIDs  []string // SelectedChunkIDs are the chunks kept in the context.
+	DroppedChunkIDs   []string // DroppedChunkIDs are the chunks excluded for lack of budget.
+	TruncatedChunkIDs []string // TruncatedChunkIDs are the chunks kept but shortened to fit.
 }
 
+// Result is the output of a Packer: the kept hits and a packing Trace.
 type Result struct {
-	Hits  []store.Hit
-	Trace Trace
+	Hits  []store.Hit // Hits are the chunks that fit the budget.
+	Trace Trace       // Trace records the packing decisions.
 }
 
+// Packer assembles retrieved chunks into a token-budgeted context. It is the
+// context-packing seam.
 type Packer interface {
+	// Pack selects and trims hits to fit req's token budget.
 	Pack(ctx context.Context, req Request) (Result, error)
 }
 
+// GreedyTokenPacker is the built-in Packer: it greedily keeps best-first hits
+// until the budget is exhausted, truncating the final hit to fit.
 type GreedyTokenPacker struct {
-	Counter TokenCounter
+	Counter TokenCounter // Counter estimates token cost; nil defaults to SimpleCounter.
 }
 
+// Pack greedily fills req's token budget with hits, truncating the last to fit.
 func (p GreedyTokenPacker) Pack(_ context.Context, req Request) (Result, error) {
 	counter := p.Counter
 	if counter == nil {

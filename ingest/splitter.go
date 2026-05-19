@@ -5,38 +5,55 @@ import (
 	"strings"
 )
 
+// Metadata keys that splitters write onto each Chunk's Metadata map. They
+// record document provenance and section structure for downstream stages.
 const (
-	MetadataSourceIDKey         = "source_id"
-	MetadataVersionKey          = "version"
-	MetadataChecksumKey         = "checksum"
+	// MetadataSourceIDKey is the chunk-metadata key for the source document's SourceID.
+	MetadataSourceIDKey = "source_id"
+	// MetadataVersionKey is the chunk-metadata key for the source document's Version.
+	MetadataVersionKey = "version"
+	// MetadataChecksumKey is the chunk-metadata key for the source document's Checksum.
+	MetadataChecksumKey = "checksum"
+	// MetadataEmbeddingVersionKey is the chunk-metadata key for the embedding model version.
 	MetadataEmbeddingVersionKey = "embedding_version"
-	MetadataHeadingKey          = "heading"
-	MetadataHeadingLevelKey     = "heading_level"
-	MetadataSectionPathKey      = "section_path"
+	// MetadataHeadingKey is the chunk-metadata key for the chunk's section heading.
+	MetadataHeadingKey = "heading"
+	// MetadataHeadingLevelKey is the chunk-metadata key for the heading depth.
+	MetadataHeadingLevelKey = "heading_level"
+	// MetadataSectionPathKey is the chunk-metadata key for the heading breadcrumb.
+	MetadataSectionPathKey = "section_path"
 )
 
+// Splitter divides a Document into Chunks. It is the chunking seam: the
+// built-ins are CharSplitter and MarkdownSplitter.
 type Splitter interface {
+	// Split divides doc into chunks no larger than maxChars.
 	Split(doc Document, maxChars int) []Chunk
 }
 
+// CharSplitter splits a document into fixed-size character windows.
 type CharSplitter struct {
-	MaxChars int
-	Overlap int
+	MaxChars int // MaxChars is the default chunk size in characters.
+	Overlap  int // Overlap is the number of characters shared between adjacent chunks.
 }
 
+// MarkdownSplitter splits a Markdown document along its heading structure.
 type MarkdownSplitter struct {
-	MaxChars int
-	Overlap int
+	MaxChars int // MaxChars is the default chunk size in characters.
+	Overlap  int // Overlap is the number of characters shared between adjacent chunks.
 }
 
+// NewCharSplitter returns a CharSplitter with the given chunk size and overlap.
 func NewCharSplitter(maxChars, overlap int) CharSplitter {
 	return CharSplitter{MaxChars: maxChars, Overlap: overlap}
 }
 
+// NewMarkdownSplitter returns a MarkdownSplitter with the given chunk size and overlap.
 func NewMarkdownSplitter(maxChars, overlap int) MarkdownSplitter {
 	return MarkdownSplitter{MaxChars: maxChars, Overlap: overlap}
 }
 
+// Split divides doc into fixed-size character windows.
 func (c CharSplitter) Split(doc Document, maxChars int) []Chunk {
 	if maxChars <= 0 {
 		maxChars = c.MaxChars
@@ -139,6 +156,7 @@ func copyMeta(in map[string]any) map[string]any {
 	return out
 }
 
+// Split divides doc along its Markdown heading structure into chunks.
 func (m MarkdownSplitter) Split(doc Document, maxChars int) []Chunk {
 	if maxChars <= 0 {
 		maxChars = m.MaxChars

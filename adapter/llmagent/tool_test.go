@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	corellm "github.com/costa92/llm-agent/llm"
 	ragcore "github.com/costa92/llm-agent-rag/rag"
+	corellm "github.com/costa92/llm-agent/llm"
 )
 
 func TestAsToolNamespaceIsolation(t *testing.T) {

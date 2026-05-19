@@ -13,33 +13,37 @@ import (
 	"github.com/costa92/llm-agent-rag/store"
 )
 
+// SearchOptions configures System.Search — the retrieval-only path — and is
+// also embedded in AskOptions.
 type SearchOptions struct {
-	TopK                         int
-	Namespace                    string
-	Filters                      map[string]any
-	SecurityFilters              map[string]any
-	RoutePath                    []string
-	EnableAutoRoute              bool
-	AutoRouteMinScore            float64
-	AutoRouteMaxCandidates       int
-	AutoRouteConfidenceThreshold float64
-	AutoRouteFanout              int
-	AutoRouteConfidenceGap       float64
-	EnableMQE                    bool
-	EnableHyDE                   bool
-	MQECount                     int
-	EnableRerank                 bool
-	EnableStructure              bool
-	EnableGraph                  bool
-	EnableTreeExpansion          bool
-	ExpansionDepth               int
+	TopK                         int            // TopK caps the number of hits returned.
+	Namespace                    string         // Namespace scopes the search to one namespace.
+	Filters                      map[string]any // Filters restricts results by chunk metadata.
+	SecurityFilters              map[string]any // SecurityFilters applies caller-enforced access control.
+	RoutePath                    []string       // RoutePath pins retrieval to an explicit section route.
+	EnableAutoRoute              bool           // EnableAutoRoute turns on automatic section routing.
+	AutoRouteMinScore            float64        // AutoRouteMinScore is the minimum score for an auto-route candidate.
+	AutoRouteMaxCandidates       int            // AutoRouteMaxCandidates caps how many route candidates are considered.
+	AutoRouteConfidenceThreshold float64        // AutoRouteConfidenceThreshold is the minimum confidence to keep a candidate.
+	AutoRouteFanout              int            // AutoRouteFanout caps how many routes are searched in parallel.
+	AutoRouteConfidenceGap       float64        // AutoRouteConfidenceGap converges to top-1 when its lead exceeds this.
+	EnableMQE                    bool           // EnableMQE turns on multi-query expansion.
+	EnableHyDE                   bool           // EnableHyDE turns on hypothetical-document expansion.
+	MQECount                     int            // MQECount is the number of expansion queries to generate.
+	EnableRerank                 bool           // EnableRerank turns on reranking of retrieved hits.
+	EnableStructure              bool           // EnableStructure turns on structure-aware retrieval.
+	EnableGraph                  bool           // EnableGraph turns on graph retrieval.
+	EnableTreeExpansion          bool           // EnableTreeExpansion turns on document-tree neighbor expansion.
+	ExpansionDepth               int            // ExpansionDepth bounds tree-expansion depth.
 }
 
+// AskOptions configures System.Ask — the standard retrieve-pack-generate
+// answer path.
 type AskOptions struct {
-	Search    SearchOptions
-	Template  prompt.Template
-	Metadata  map[string]any
-	MaxTokens int
+	Search    SearchOptions   // Search configures the retrieval stage.
+	Template  prompt.Template // Template overrides the prompt template; nil uses the System default.
+	Metadata  map[string]any  // Metadata is caller-supplied passthrough sent to the model.
+	MaxTokens int             // MaxTokens caps the packed context token budget.
 }
 
 // GlobalOptions configures System.AskGlobal — the map-reduce global-search
@@ -77,22 +81,24 @@ type DriftOptions struct {
 	TopK int
 }
 
+// Options is the construction config for a System — every dependency New
+// wires together. Unset fields fall back to the SDK's built-in defaults.
 type Options struct {
-	Splitter         ingest.Splitter
-	Embedder         embed.Embedder
-	Store            store.Store
-	Model            generate.Model
-	Template         prompt.Template
-	Preprocessor     retrieve.QueryPreprocessor
-	Retriever        retrieve.Retriever
-	Reranker         rerank.Reranker
-	Packer           pack.Packer
-	MaxChars         int
-	Observer         Observer
-	Redactor         guard.Redactor
-	InjectionScanner guard.InjectionScanner
-	SanitizeMode     guard.SanitizeMode
-	EntityExtractor  graph.EntityExtractor
+	Splitter         ingest.Splitter            // Splitter is the chunking strategy; nil defaults to a CharSplitter.
+	Embedder         embed.Embedder             // Embedder produces vectors; nil defaults to a HashEmbedder.
+	Store            store.Store                // Store is the storage backend; nil defaults to an InMemoryStore.
+	Model            generate.Model             // Model is the generation model; nil disables the answer paths.
+	Template         prompt.Template            // Template is the prompt template; nil defaults to DefaultQATemplate.
+	Preprocessor     retrieve.QueryPreprocessor // Preprocessor shapes queries; nil defaults to LLMExpansionPreprocessor.
+	Retriever        retrieve.Retriever         // Retriever fetches candidates; nil defaults to the hybrid retriever.
+	Reranker         rerank.Reranker            // Reranker re-scores hits; nil defaults to HeuristicReranker.
+	Packer           pack.Packer                // Packer builds the context; nil defaults to GreedyTokenPacker.
+	MaxChars         int                        // MaxChars is the default chunk size; <= 0 defaults to 500.
+	Observer         Observer                   // Observer receives per-run trace callbacks.
+	Redactor         guard.Redactor             // Redactor removes PII during ingest.
+	InjectionScanner guard.InjectionScanner     // InjectionScanner screens retrieved content for prompt injection.
+	SanitizeMode     guard.SanitizeMode         // SanitizeMode controls how flagged content is handled.
+	EntityExtractor  graph.EntityExtractor      // EntityExtractor extracts the knowledge graph during ingest.
 	// EntityResolver, when set, runs as an opt-in pre-pass in Import that
 	// merges near-duplicate entities (e.g. "Acme" / "Acme Corp") by
 	// embedding similarity before graph.Canonicalize's exact-match merge.

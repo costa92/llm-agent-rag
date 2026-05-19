@@ -8,9 +8,9 @@ import (
 // InjectionFinding records one retrieved chunk that the injection scanner
 // flagged, and how Ask handled it.
 type InjectionFinding struct {
-	ChunkID  string
-	Patterns []string
-	Action   string // "neutralized" or "dropped"
+	ChunkID  string   // ChunkID identifies the flagged chunk.
+	Patterns []string // Patterns names the injection patterns that matched.
+	Action   string   // Action is how Ask handled the chunk: "neutralized" or "dropped".
 }
 
 // sanitizeHits screens packed hits for prompt-injection content before

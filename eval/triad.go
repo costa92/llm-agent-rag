@@ -13,39 +13,40 @@ import (
 
 // Asker runs the full retrieve+generate pipeline. *rag.System satisfies it.
 type Asker interface {
+	// Ask runs the full retrieve-and-generate pipeline for question.
 	Ask(ctx context.Context, question string, opts rag.AskOptions) (rag.Answer, error)
 }
 
 // GenerationMetrics is the generation-side scoreboard — legs 2 and 3 of the
 // RAG Triad, averaged over a dataset.
 type GenerationMetrics struct {
-	MeanGroundedness    float64 `json:"mean_groundedness"`
-	MeanAnswerRelevance float64 `json:"mean_answer_relevance"`
-	Examples            int     `json:"examples"`
+	MeanGroundedness    float64 `json:"mean_groundedness"`     // MeanGroundedness is the mean groundedness over the dataset.
+	MeanAnswerRelevance float64 `json:"mean_answer_relevance"` // MeanAnswerRelevance is the mean answer relevance over the dataset.
+	Examples            int     `json:"examples"`              // Examples is the number of examples scored.
 }
 
 // TriadExampleResult is the per-example detail behind a TriadResult.
 type TriadExampleResult struct {
-	Example      Example   `json:"example"`
-	Answer       string    `json:"answer"`
-	RetrievedIDs []string  `json:"retrieved_ids"`
-	Judgement    Judgement `json:"judgement"`
+	Example      Example   `json:"example"`       // Example is the labeled query.
+	Answer       string    `json:"answer"`        // Answer is the generated answer text.
+	RetrievedIDs []string  `json:"retrieved_ids"` // RetrievedIDs are the chunk IDs retrieved for the answer.
+	Judgement    Judgement `json:"judgement"`     // Judgement is the judge's verdict on the answer.
 }
 
 // TriadResult carries retrieval and generation metrics for one dataset run.
 type TriadResult struct {
-	Dataset    Dataset              `json:"dataset"`
-	Retrieval  Metrics              `json:"retrieval"`
-	Generation GenerationMetrics    `json:"generation"`
-	PerExample []TriadExampleResult `json:"per_example"`
+	Dataset    Dataset              `json:"dataset"`     // Dataset is the dataset that was evaluated.
+	Retrieval  Metrics              `json:"retrieval"`   // Retrieval is the retrieval-side scoreboard.
+	Generation GenerationMetrics    `json:"generation"`  // Generation is the generation-side scoreboard.
+	PerExample []TriadExampleResult `json:"per_example"` // PerExample is the per-example detail.
 }
 
 // TriadEvaluator runs a Dataset through the full Ask pipeline and scores
 // both retrieval quality and generation quality (via Judge) in one pass.
 type TriadEvaluator struct {
-	Asker   Asker
-	Judge   Judge
-	Options rag.AskOptions
+	Asker   Asker          // Asker runs the answer pipeline under evaluation.
+	Judge   Judge          // Judge scores each generated answer.
+	Options rag.AskOptions // Options is the base AskOptions applied to every Ask call.
 }
 
 // Run executes the triad evaluation. It errors only on Asker or Judge

@@ -7,10 +7,15 @@ import (
 	"strings"
 )
 
+// HashEmbedder is a deterministic, dependency-free Embedder that hashes tokens
+// into a fixed-dimension bag-of-words vector. It is the default embedder for
+// tests and offline runs — it needs no model and produces stable output.
 type HashEmbedder struct {
-	Dim int
+	Dim int // Dim is the embedding dimension (vector length).
 }
 
+// NewHashEmbedder returns a HashEmbedder producing vectors of the given
+// dimension. A dim <= 0 selects a sane default (32).
 func NewHashEmbedder(dim int) *HashEmbedder {
 	if dim <= 0 {
 		dim = 32
@@ -18,8 +23,10 @@ func NewHashEmbedder(dim int) *HashEmbedder {
 	return &HashEmbedder{Dim: dim}
 }
 
+// Dimension reports the embedding dimension.
 func (h *HashEmbedder) Dimension() int { return h.Dim }
 
+// Embed returns the deterministic hash-bucket embedding of text.
 func (h *HashEmbedder) Embed(_ context.Context, text string) (Vector, error) {
 	v := make(Vector, h.Dim)
 	for _, tok := range tokenize(text) {
@@ -30,6 +37,8 @@ func (h *HashEmbedder) Embed(_ context.Context, text string) (Vector, error) {
 	return v, nil
 }
 
+// CosineSimilarity returns the cosine similarity of a and b, clamped to
+// [0, 1]. Mismatched lengths, empty vectors, or zero-magnitude vectors yield 0.
 func CosineSimilarity(a, b Vector) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return 0

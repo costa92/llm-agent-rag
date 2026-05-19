@@ -10,15 +10,16 @@ import (
 // RelationIDs holds the n edges between consecutive entities. Score is a
 // deterministic composite — higher means a stronger connecting path.
 type RankedPath struct {
-	EntityIDs   []string // ordered: path[0]..path[n], the traversal
-	RelationIDs []string // ordered edges between consecutive entities
-	Score       float64  // deterministic composite; higher = stronger
+	EntityIDs   []string // EntityIDs is the ordered traversal path[0]..path[n].
+	RelationIDs []string // RelationIDs are the ordered edges between consecutive entities.
+	Score       float64  // Score is the deterministic composite; higher means stronger.
 }
 
 // PathRanker ranks simple paths within a Subgraph between seed entity
 // pairs. Implementations are deterministic: the same Subgraph and the same
 // seedPairs always yield the same []RankedPath, byte-for-byte.
 type PathRanker interface {
+	// RankPaths ranks the simple paths within sub connecting the seed pairs.
 	RankPaths(sub Subgraph, seedPairs [][2]string) []RankedPath
 }
 

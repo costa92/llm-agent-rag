@@ -14,6 +14,8 @@ import (
 	"github.com/costa92/llm-agent-rag/store"
 )
 
+// Ask runs the standard retrieve-pack-generate answer path: it retrieves
+// context for question, packs it into a prompt, and generates an Answer.
 func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Answer, error) {
 	if s.model == nil {
 		return Answer{}, ErrModelRequired

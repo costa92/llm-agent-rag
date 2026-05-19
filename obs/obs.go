@@ -13,33 +13,33 @@ import (
 // StageTiming is the wall-clock duration of one named stage of a RAG
 // operation, e.g. "retrieve", "rerank", "pack", "generate", "embed".
 type StageTiming struct {
-	Stage    string
-	Duration time.Duration
+	Stage    string        // Stage is the stage name, e.g. "retrieve" or "generate".
+	Duration time.Duration // Duration is the stage's wall-clock time.
 }
 
 // CallCounts counts external model calls made during one RAG operation.
 type CallCounts struct {
-	Embed    int
-	Generate int
+	Embed    int // Embed is the number of embedding calls.
+	Generate int // Generate is the number of generation calls.
 }
 
 // TokenUsage is the token accounting for one RAG operation. Estimated is
 // true when the counts were derived from a token counter rather than
 // reported by the model. Populated by token accounting (slice 17-02).
 type TokenUsage struct {
-	PromptTokens     int
-	CompletionTokens int
-	TotalTokens      int
-	Estimated        bool
+	PromptTokens     int  // PromptTokens is the number of prompt tokens.
+	CompletionTokens int  // CompletionTokens is the number of completion tokens.
+	TotalTokens      int  // TotalTokens is the combined token count.
+	Estimated        bool // Estimated is true when counts came from a token counter, not the model.
 }
 
 // Metrics is the cost-and-latency record for one RAG operation. Stages are
 // in execution order; TotalDuration is the end-to-end wall clock.
 type Metrics struct {
-	TotalDuration time.Duration
-	Stages        []StageTiming
-	Calls         CallCounts
-	Tokens        TokenUsage
+	TotalDuration time.Duration // TotalDuration is the end-to-end wall clock.
+	Stages        []StageTiming // Stages are the per-stage timings in execution order.
+	Calls         CallCounts    // Calls is the external model-call accounting.
+	Tokens        TokenUsage    // Tokens is the token accounting for the operation.
 }
 
 // Counter accumulates model-call counts for one operation. It is safe for

@@ -13,14 +13,16 @@ import (
 // QueryDecomposer splits a (possibly compound) query into sub-queries. A
 // non-compound query decomposes to itself.
 type QueryDecomposer interface {
+	// Decompose splits query into sub-queries; a non-compound query
+	// decomposes to itself.
 	Decompose(ctx context.Context, query string) ([]string, error)
 }
 
 // HopAttribution records one sub-query of a multi-hop retrieval and how
 // many hits it returned.
 type HopAttribution struct {
-	SubQuery string
-	HitCount int
+	SubQuery string // SubQuery is the decomposed sub-query searched in this hop.
+	HitCount int    // HitCount is the number of hits the hop returned.
 }
 
 var conjunctionRe = regexp.MustCompile(`(?i)\s+and\s+`)
@@ -65,8 +67,8 @@ const decomposeSystemPrompt = "You decompose a user's question into " +
 // generate.Model. MaxSubQueries caps the result (<= 0 → 5). A nil Model
 // decomposes a query to itself.
 type LLMDecomposer struct {
-	Model         generate.Model
-	MaxSubQueries int
+	Model         generate.Model // Model generates the sub-question decomposition.
+	MaxSubQueries int            // MaxSubQueries caps the number of sub-queries; <= 0 means 5.
 }
 
 // Decompose prompts the model and parses one sub-query per line.
@@ -118,8 +120,8 @@ func parseSubQueries(text string) []string {
 // non-compound query decomposes to itself, so it costs a single
 // Base.Retrieve call — multi-hop is then a transparent pass-through.
 type MultiHopRetriever struct {
-	Base       Retriever
-	Decomposer QueryDecomposer
+	Base       Retriever       // Base is the retriever run once per sub-query.
+	Decomposer QueryDecomposer // Decomposer splits the query into sub-queries.
 }
 
 // Retrieve runs one Base retrieval per sub-query and merges the results

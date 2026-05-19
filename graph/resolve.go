@@ -27,6 +27,8 @@ const defaultResolverThreshold = 0.92
 // A resolver is an opt-in pre-pass: with NoopEntityResolver (the default)
 // ingestion behaves exactly as before fuzzy resolution existed.
 type EntityResolver interface {
+	// Resolve rewrites near-duplicate entity names and their relation
+	// endpoints to a shared canonical form.
 	Resolve(ctx context.Context, entities []Entity, relations []Relation) ([]Entity, []Relation, error)
 }
 

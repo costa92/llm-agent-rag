@@ -27,70 +27,74 @@ import (
 
 // Example is one labeled query in a Dataset.
 type Example struct {
-	Query        string   `json:"query"`
-	Namespace    string   `json:"namespace,omitempty"`
-	GoldDocIDs   []string `json:"gold_doc_ids,omitempty"`
-	GoldChunkIDs []string `json:"gold_chunk_ids,omitempty"`
-	Notes        string   `json:"notes,omitempty"`
+	Query        string   `json:"query"`                    // Query is the labeled query.
+	Namespace    string   `json:"namespace,omitempty"`      // Namespace overrides the evaluator namespace for this example.
+	GoldDocIDs   []string `json:"gold_doc_ids,omitempty"`   // GoldDocIDs are the document IDs a correct retrieval should return.
+	GoldChunkIDs []string `json:"gold_chunk_ids,omitempty"` // GoldChunkIDs are the chunk IDs a correct retrieval should return.
+	Notes        string   `json:"notes,omitempty"`          // Notes is free-form annotation for the example.
 }
 
 // Dataset is a named collection of Examples with a fixed TopK.
 type Dataset struct {
-	Name     string    `json:"name"`
-	TopK     int       `json:"top_k"`
-	Examples []Example `json:"examples"`
+	Name     string    `json:"name"`     // Name identifies the dataset.
+	TopK     int       `json:"top_k"`    // TopK is the retrieval cutoff every example is scored at.
+	Examples []Example `json:"examples"` // Examples are the labeled queries.
 }
 
 // Metrics is the headline scoreboard for a Dataset run.
 type Metrics struct {
-	PrecisionAtK float64
-	RecallAtK    float64
-	MRR          float64
-	GroundingAtK float64
-	Examples     int
-	TopK         int
+	PrecisionAtK float64 // PrecisionAtK is the mean precision at the dataset TopK.
+	RecallAtK    float64 // RecallAtK is the mean recall at the dataset TopK.
+	MRR          float64 // MRR is the mean reciprocal rank of the first gold document.
+	GroundingAtK float64 // GroundingAtK is the fraction of examples with a gold chunk retrieved.
+	Examples     int     // Examples is the number of examples scored.
+	TopK         int     // TopK is the retrieval cutoff the metrics were computed at.
 }
 
 // ExampleResult is the per-example detail behind the aggregated Metrics.
 type ExampleResult struct {
-	Example            Example
-	RetrievedIDs       []string
-	RetrievedDocs      []string
-	RankOfFirstGoldDoc int // 1-based; 0 means not found
-	GroundingHit       bool
+	Example            Example  // Example is the labeled query this result is for.
+	RetrievedIDs       []string // RetrievedIDs are the chunk IDs retrieved.
+	RetrievedDocs      []string // RetrievedDocs are the document IDs retrieved.
+	RankOfFirstGoldDoc int      // RankOfFirstGoldDoc is the 1-based rank of the first gold doc; 0 means not found.
+	GroundingHit       bool     // GroundingHit is true when at least one gold chunk was retrieved.
 }
 
-// Result wraps Metrics with the per-example trace useful for debugging
-// regressions.
-type Result struct {
-	Dataset    Dataset
-	Metrics    Metrics
-	PerExample []ExampleResult
+// RetrievalResult wraps Metrics with the per-example trace useful for
+// debugging retrieval regressions.
+type RetrievalResult struct {
+	Dataset    Dataset         // Dataset is the dataset that was evaluated.
+	Metrics    Metrics         // Metrics is the aggregated scoreboard.
+	PerExample []ExampleResult // PerExample is the per-example detail.
 }
 
 // Retriever is the subset of rag.System eval needs. *rag.System satisfies
 // this naturally; tests can provide a stub for synthetic scoring.
 type Retriever interface {
+	// Retrieve returns the hits for query under opts.
 	Retrieve(ctx context.Context, query string, opts rag.SearchOptions) ([]store.Hit, error)
 }
 
-// Evaluator runs a Dataset against a Retriever using Options as the base
-// SearchOptions for every Retrieve call. Each example's Namespace
+// RetrievalEvaluator runs a Dataset against a Retriever using Options as
+// the base SearchOptions for every Retrieve call. Each example's Namespace
 // overlays Options.Namespace when non-empty; everything else (TopK,
-// auto-route knobs, filters) is taken from Options.
-type Evaluator struct {
-	Retriever Retriever
-	Options   rag.SearchOptions
+// auto-route knobs, filters) is taken from Options. It scores the
+// retrieval recall/MRR/precision path; the answer-side evaluators
+// (GlobalEvaluator, DriftEvaluator, TriadEvaluator) are name-prefixed in
+// the same way.
+type RetrievalEvaluator struct {
+	Retriever Retriever         // Retriever is the retrieval system under evaluation.
+	Options   rag.SearchOptions // Options is the base SearchOptions applied to every Retrieve call.
 }
 
 // Run executes the evaluation. Returns an error only on Retriever
 // failure; metric computation never errors.
-func (e Evaluator) Run(ctx context.Context, dataset Dataset) (Result, error) {
+func (e RetrievalEvaluator) Run(ctx context.Context, dataset Dataset) (RetrievalResult, error) {
 	if e.Retriever == nil {
-		return Result{}, errors.New("eval: Retriever is required")
+		return RetrievalResult{}, errors.New("eval: Retriever is required")
 	}
 	if dataset.TopK <= 0 {
-		return Result{}, fmt.Errorf("eval: dataset %q has TopK <= 0", dataset.Name)
+		return RetrievalResult{}, fmt.Errorf("eval: dataset %q has TopK <= 0", dataset.Name)
 	}
 	per := make([]ExampleResult, 0, len(dataset.Examples))
 	var (
@@ -106,7 +110,7 @@ func (e Evaluator) Run(ctx context.Context, dataset Dataset) (Result, error) {
 		}
 		hits, err := e.Retriever.Retrieve(ctx, ex.Query, opts)
 		if err != nil {
-			return Result{}, fmt.Errorf("eval: retrieve %q: %w", ex.Query, err)
+			return RetrievalResult{}, fmt.Errorf("eval: retrieve %q: %w", ex.Query, err)
 		}
 		retrievedIDs := make([]string, 0, len(hits))
 		retrievedDocs := make([]string, 0, len(hits))
@@ -154,7 +158,7 @@ func (e Evaluator) Run(ctx context.Context, dataset Dataset) (Result, error) {
 	if recallExamples > 0 {
 		metrics.RecallAtK = sumRecall / float64(recallExamples)
 	}
-	return Result{
+	return RetrievalResult{
 		Dataset:    dataset,
 		Metrics:    metrics,
 		PerExample: per,

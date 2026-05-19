@@ -16,14 +16,19 @@ import (
 
 // Dependency errors returned by CorrectiveAsker.
 var (
-	ErrAskerRequired        = errors.New("agentic: Asker is required")
-	ErrJudgeRequired        = errors.New("agentic: Judge is required")
+	// ErrAskerRequired is returned when a CorrectiveAsker has no Asker set.
+	ErrAskerRequired = errors.New("agentic: Asker is required")
+	// ErrJudgeRequired is returned when a CorrectiveAsker has no Judge set.
+	ErrJudgeRequired = errors.New("agentic: Judge is required")
+	// ErrReformulatorRequired is returned when a CorrectiveAsker has no Reformulator set.
 	ErrReformulatorRequired = errors.New("agentic: Reformulator is required")
 )
 
 // QueryReformulator rewrites a question into a new retrieval query after a
 // poorly-grounded answer.
 type QueryReformulator interface {
+	// Reformulate rewrites question into a better retrieval query given the
+	// previous poorly-grounded answer.
 	Reformulate(ctx context.Context, question string, prev rag.Answer) (string, error)
 }
 
@@ -34,7 +39,7 @@ const reformulateSystemPrompt = "A previous answer was poorly grounded in " +
 
 // LLMReformulator reformulates a query by prompting a generate.Model.
 type LLMReformulator struct {
-	Model generate.Model
+	Model generate.Model // Model generates the reformulated query.
 }
 
 // Reformulate prompts the model for a better retrieval query. A nil model
@@ -61,17 +66,17 @@ func (r LLMReformulator) Reformulate(ctx context.Context, question string, prev 
 
 // Attempt records one pass of the self-correcting loop.
 type Attempt struct {
-	Query           string
-	Groundedness    float64
-	AnswerRelevance float64
+	Query           string  // Query is the retrieval query used for this attempt.
+	Groundedness    float64 // Groundedness is the attempt's judged groundedness.
+	AnswerRelevance float64 // AnswerRelevance is the attempt's judged answer relevance.
 }
 
 // Result is the outcome of a self-correcting ask: the best answer by
 // groundedness, every attempt, and whether more than one attempt ran.
 type Result struct {
-	Answer    rag.Answer
-	Attempts  []Attempt
-	Corrected bool
+	Answer    rag.Answer // Answer is the best answer by groundedness.
+	Attempts  []Attempt  // Attempts records every pass of the correction loop.
+	Corrected bool       // Corrected is true when more than one attempt ran.
 }
 
 // CorrectiveAsker runs the retrieve+generate pipeline, judges the answer's
@@ -79,11 +84,11 @@ type Result struct {
 // is below MinGrounding — reformulates the query and retries, up to a
 // bounded MaxRetries cap.
 type CorrectiveAsker struct {
-	Asker        eval.Asker
-	Judge        eval.Judge
-	Reformulator QueryReformulator
-	MinGrounding float64 // grounding threshold; <= 0 → 0.5
-	MaxRetries   int      // bounded retry cap; <= 0 → 2
+	Asker        eval.Asker        // Asker runs the underlying answer pipeline.
+	Judge        eval.Judge        // Judge scores each answer's groundedness.
+	Reformulator QueryReformulator // Reformulator rewrites the query between retries.
+	MinGrounding float64           // MinGrounding is the grounding threshold; <= 0 means 0.5.
+	MaxRetries   int               // MaxRetries is the bounded retry cap; <= 0 means 2.
 }
 
 // AskWithCorrection runs the self-correcting loop and returns the full

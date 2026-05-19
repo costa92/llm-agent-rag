@@ -12,11 +12,11 @@ import (
 // level and the cluster's members, so a given graph always yields the same
 // hierarchy — community detection is reproducible, golden-testable output.
 type Community struct {
-	ID          string
-	Level       int
-	ParentID    string   // "" at the top level
-	EntityIDs   []string // member entity IDs, always sorted
-	RelationIDs []string // member relation IDs, always sorted (level 0 only)
+	ID          string   // ID is the deterministic community identifier.
+	Level       int      // Level is the hierarchy level; 0 is the finest partition.
+	ParentID    string   // ParentID is the enclosing community's ID; "" at the top level.
+	EntityIDs   []string // EntityIDs are the member entity IDs, always sorted.
+	RelationIDs []string // RelationIDs are the member relation IDs, always sorted (level 0 only).
 }
 
 // CommunityDetector partitions a Graph into a community hierarchy.
@@ -24,6 +24,7 @@ type Community struct {
 // []Community, byte-for-byte. LouvainDetector is the hierarchical default;
 // LabelPropagationDetector is the simpler single-level alternative.
 type CommunityDetector interface {
+	// Detect partitions g into a deterministic community hierarchy.
 	Detect(ctx context.Context, g Graph) ([]Community, error)
 }
 

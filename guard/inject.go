@@ -8,27 +8,28 @@ import (
 // InjectionVerdict is the result of scanning a piece of retrieved content
 // for prompt-injection attempts.
 type InjectionVerdict struct {
-	Suspicious bool
-	Patterns   []string // names of the injection patterns that matched
+	Suspicious bool     // Suspicious is true when an injection pattern matched.
+	Patterns   []string // Patterns names the injection patterns that matched.
 }
 
 // InjectionScanner inspects retrieved content for prompt-injection attempts
 // before it is assembled into a prompt.
 type InjectionScanner interface {
+	// Scan reports whether text contains prompt-injection signatures.
 	Scan(text string) InjectionVerdict
 }
 
 // InjectionPattern is one named injection signature.
 type InjectionPattern struct {
-	Name    string
-	Pattern *regexp.Regexp
+	Name    string         // Name identifies the injection signature.
+	Pattern *regexp.Regexp // Pattern matches the injection text.
 }
 
 // PatternScanner flags text matching any of a set of named injection
 // patterns. The exported Patterns slice is caller-configurable. The zero
 // value flags nothing; use NewPatternScanner for the built-in set.
 type PatternScanner struct {
-	Patterns []InjectionPattern
+	Patterns []InjectionPattern // Patterns is the set of injection signatures to match.
 }
 
 // Scan reports every configured pattern the text matches.

@@ -96,7 +96,7 @@ func TestSeedDatasetMeetsBaselineMetrics(t *testing.T) {
 	// Baseline eval runs hybrid retrieval without auto-route narrowing so
 	// the dataset scores the full-corpus ranking. Auto-route quality is
 	// covered by unit tests in retrieve/ and rag/.
-	ev := eval.Evaluator{
+	ev := eval.RetrievalEvaluator{
 		Retriever: sys,
 		Options:   rag.SearchOptions{},
 	}
@@ -140,15 +140,15 @@ func TestSeedDatasetMeetsBaselineMetrics(t *testing.T) {
 	}
 }
 
-func TestEvaluatorRunRejectsNilRetriever(t *testing.T) {
-	_, err := eval.Evaluator{}.Run(context.Background(), eval.Dataset{TopK: 1})
+func TestRetrievalEvaluatorRunRejectsNilRetriever(t *testing.T) {
+	_, err := eval.RetrievalEvaluator{}.Run(context.Background(), eval.Dataset{TopK: 1})
 	if err == nil {
 		t.Fatalf("expected error for nil retriever")
 	}
 }
 
-func TestEvaluatorRunRejectsZeroTopK(t *testing.T) {
-	_, err := eval.Evaluator{Retriever: stubRetriever{}}.Run(context.Background(), eval.Dataset{Name: "empty"})
+func TestRetrievalEvaluatorRunRejectsZeroTopK(t *testing.T) {
+	_, err := eval.RetrievalEvaluator{Retriever: stubRetriever{}}.Run(context.Background(), eval.Dataset{Name: "empty"})
 	if err == nil {
 		t.Fatalf("expected error for zero TopK")
 	}

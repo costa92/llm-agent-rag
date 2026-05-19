@@ -10,15 +10,20 @@ import (
 	"github.com/costa92/llm-agent-rag/graph"
 )
 
+// InMemoryStore is the built-in process-local Store. It also implements the
+// LexicalSearcher, GraphStore, and CommunityStore capability interfaces, and
+// is safe for concurrent use.
 type InMemoryStore struct {
 	mu          sync.RWMutex
 	dim         int
 	all         map[string]StoredChunk
-	graphs      map[string]*nsGraph                          // namespace -> entity/relation graph
-	communities map[string][]graph.Community                 // namespace -> detected community hierarchy
-	reports     map[string]map[string]graph.CommunityReport  // namespace -> communityID -> report
+	graphs      map[string]*nsGraph                         // namespace -> entity/relation graph
+	communities map[string][]graph.Community                // namespace -> detected community hierarchy
+	reports     map[string]map[string]graph.CommunityReport // namespace -> communityID -> report
 }
 
+// NewInMemoryStore returns an empty InMemoryStore with the given embedding
+// dimension. A dim <= 0 selects a sane default (32).
 func NewInMemoryStore(dim int) *InMemoryStore {
 	if dim <= 0 {
 		dim = 32
@@ -32,6 +37,8 @@ func NewInMemoryStore(dim int) *InMemoryStore {
 	}
 }
 
+// Upsert inserts or replaces chunks by ID, rejecting any with a vector whose
+// length does not match the store dimension.
 func (s *InMemoryStore) Upsert(_ context.Context, chunks []StoredChunk) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -44,6 +51,7 @@ func (s *InMemoryStore) Upsert(_ context.Context, chunks []StoredChunk) error {
 	return nil
 }
 
+// Search returns the top-K chunks ranked by cosine similarity to q.Vector.
 func (s *InMemoryStore) Search(_ context.Context, q Query) ([]Hit, error) {
 	if len(q.Vector) != s.dim {
 		return nil, ErrDimensionMismatch
@@ -76,6 +84,7 @@ func (s *InMemoryStore) Search(_ context.Context, q Query) ([]Hit, error) {
 	return hits, nil
 }
 
+// Get returns the chunk with the given ID, or ErrNotFound.
 func (s *InMemoryStore) Get(_ context.Context, id string) (StoredChunk, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -86,6 +95,7 @@ func (s *InMemoryStore) Get(_ context.Context, id string) (StoredChunk, error) {
 	return chunk, nil
 }
 
+// List returns every chunk in a namespace matching the given filters.
 func (s *InMemoryStore) List(_ context.Context, namespace string, filters Filter, securityFilters Filter) ([]StoredChunk, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -105,6 +115,7 @@ func (s *InMemoryStore) List(_ context.Context, namespace string, filters Filter
 	return out, nil
 }
 
+// Remove deletes the chunk with the given ID, or returns ErrNotFound.
 func (s *InMemoryStore) Remove(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -115,6 +126,8 @@ func (s *InMemoryStore) Remove(_ context.Context, id string) error {
 	return nil
 }
 
+// RemoveByFilter deletes every chunk in a namespace matching filters and
+// returns the number removed.
 func (s *InMemoryStore) RemoveByFilter(_ context.Context, namespace string, filters Filter) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -132,6 +145,7 @@ func (s *InMemoryStore) RemoveByFilter(_ context.Context, namespace string, filt
 	return removed, nil
 }
 
+// Stats returns chunk-count and dimension statistics for a namespace.
 func (s *InMemoryStore) Stats(_ context.Context, namespace string) (Stats, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

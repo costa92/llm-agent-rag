@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
-	corellm "github.com/costa92/llm-agent/llm"
 	"github.com/costa92/llm-agent-rag/generate"
+	corellm "github.com/costa92/llm-agent/llm"
 )
 
 func TestModelAdapterGenerate(t *testing.T) {

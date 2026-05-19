@@ -1,0 +1,882 @@
+# llm-agent-rag v1 exported API snapshot — generated, do not hand-edit.
+package github.com/costa92/llm-agent-rag
+package github.com/costa92/llm-agent-rag/adapter/llmagent
+func AsTool(r *ragcore.System) agents.Tool
+method (ModelAdapter) Generate(ctx context.Context, req generate.Request) (generate.Response, error)
+type ModelAdapter struct
+	field Inner corellm.ChatModel
+package github.com/costa92/llm-agent-rag/advanced
+func ExpandQuery(ctx context.Context, model generate.Model, query string, n int) ([]string, error)
+func GenerateHypothetical(ctx context.Context, model generate.Model, query string) (string, error)
+var ErrModelRequired = errors.New("advanced: generator required")
+package github.com/costa92/llm-agent-rag/agentic
+method (CorrectiveAsker) Ask(ctx context.Context, question string, opts rag.AskOptions) (rag.Answer, error)
+method (CorrectiveAsker) AskWithCorrection(ctx context.Context, question string, opts rag.AskOptions) (Result, error)
+method (LLMReformulator) Reformulate(ctx context.Context, question string, prev rag.Answer) (string, error)
+type Attempt struct
+	field AnswerRelevance float64
+	field Groundedness float64
+	field Query string
+type CorrectiveAsker struct
+	field Asker eval.Asker
+	field Judge eval.Judge
+	field MaxRetries int
+	field MinGrounding float64
+	field Reformulator QueryReformulator
+type LLMReformulator struct
+	field Model generate.Model
+type QueryReformulator interface
+	method Reformulate(ctx context.Context, question string, prev rag.Answer) (string, error)
+type Result struct
+	field Answer rag.Answer
+	field Attempts []Attempt
+	field Corrected bool
+var ErrAskerRequired = errors.New("agentic: Asker is required")
+var ErrJudgeRequired = errors.New("agentic: Judge is required")
+var ErrReformulatorRequired = errors.New("agentic: Reformulator is required")
+package github.com/costa92/llm-agent-rag/embed
+func CosineSimilarity(a, b Vector) float64
+method (*HashEmbedder) Dimension() int
+method (*HashEmbedder) Embed(_ context.Context, text string) (Vector, error)
+func NewHashEmbedder(dim int) *HashEmbedder
+type Embedder interface
+	method Dimension() int
+	method Embed(ctx context.Context, text string) (Vector, error)
+type HashEmbedder struct
+	field Dim int
+type Vector []float32
+package github.com/costa92/llm-agent-rag/eval
+method (DriftEvalResult) Summary() string
+method (DriftEvaluator) Run(ctx context.Context, dataset Dataset) (DriftEvalResult, error)
+method (GlobalEvalResult) Summary() string
+method (GlobalEvaluator) Run(ctx context.Context, dataset Dataset) (GlobalEvalResult, error)
+method (LLMJudge) Judge(ctx context.Context, req JudgeRequest) (Judgement, error)
+func LoadJSONL(path string) (Dataset, error)
+method (RetrievalEvaluator) Run(ctx context.Context, dataset Dataset) (RetrievalResult, error)
+func RunGraphAB(ctx context.Context, retriever Retriever, base rag.SearchOptions, dataset Dataset) (GraphABResult, error)
+method (TriadEvaluator) Run(ctx context.Context, dataset Dataset) (TriadResult, error)
+method (TriadResult) Summary() string
+func WriteJSONL(w io.Writer, r TriadResult) error
+type Asker interface
+	method Ask(ctx context.Context, question string, opts rag.AskOptions) (rag.Answer, error)
+type Dataset struct
+	field Examples []Example
+	field Name string
+	field TopK int
+type DriftAsker interface
+	method AskDrift(ctx context.Context, question string, opts rag.DriftOptions) (rag.Answer, error)
+type DriftEvalResult struct
+	field Examples int
+	field MeanAnswerRelevance float64
+	field MeanGroundedness float64
+	field PerExample []DriftExampleResult
+type DriftEvaluator struct
+	field Asker DriftAsker
+	field Judge Judge
+	field MaxCommunities int
+	field Rounds int
+type DriftExampleResult struct
+	field Answer string
+	field Example Example
+	field Judgement Judgement
+	field PrimerCommunityIDs []string
+	field Rounds int
+type Example struct
+	field GoldChunkIDs []string
+	field GoldDocIDs []string
+	field Namespace string
+	field Notes string
+	field Query string
+type ExampleResult struct
+	field Example Example
+	field GroundingHit bool
+	field RankOfFirstGoldDoc int
+	field RetrievedDocs []string
+	field RetrievedIDs []string
+type GenerationMetrics struct
+	field Examples int
+	field MeanAnswerRelevance float64
+	field MeanGroundedness float64
+type GlobalAsker interface
+	method AskGlobal(ctx context.Context, question string, opts rag.GlobalOptions) (rag.Answer, error)
+type GlobalEvalResult struct
+	field Examples int
+	field MeanAnswerRelevance float64
+	field MeanGroundedness float64
+	field PerExample []GlobalExampleResult
+type GlobalEvaluator struct
+	field Asker GlobalAsker
+	field Judge Judge
+	field MaxCommunities int
+type GlobalExampleResult struct
+	field Answer string
+	field CommunityIDs []string
+	field Example Example
+	field Judgement Judgement
+type GraphABResult struct
+	field GraphOff Metrics
+	field GraphOn Metrics
+	field MRRDelta float64
+	field RecallDelta float64
+type Judge interface
+	method Judge(ctx context.Context, req JudgeRequest) (Judgement, error)
+type JudgeRequest struct
+	field Answer string
+	field Context []string
+	field Query string
+type Judgement struct
+	field AnswerRelevance float64
+	field Groundedness float64
+	field Rationale string
+type LLMJudge struct
+	field Model generate.Model
+type Metrics struct
+	field Examples int
+	field GroundingAtK float64
+	field MRR float64
+	field PrecisionAtK float64
+	field RecallAtK float64
+	field TopK int
+type RetrievalEvaluator struct
+	field Options rag.SearchOptions
+	field Retriever Retriever
+type RetrievalResult struct
+	field Dataset Dataset
+	field Metrics Metrics
+	field PerExample []ExampleResult
+type Retriever interface
+	method Retrieve(ctx context.Context, query string, opts rag.SearchOptions) ([]store.Hit, error)
+type TriadEvaluator struct
+	field Asker Asker
+	field Judge Judge
+	field Options rag.AskOptions
+type TriadExampleResult struct
+	field Answer string
+	field Example Example
+	field Judgement Judgement
+	field RetrievedIDs []string
+type TriadResult struct
+	field Dataset Dataset
+	field Generation GenerationMetrics
+	field PerExample []TriadExampleResult
+	field Retrieval Metrics
+var ErrJudgeModelRequired = errors.New("eval: judge model required")
+package github.com/costa92/llm-agent-rag/feedback
+func BuildExample(trace rag.Trace, goldDocIDs, goldChunkIDs []string, notes string) eval.Example
+func NewRecorder(out io.Writer) *Recorder
+func OpenFile(path string) (*Recorder, func() error, error)
+method (*Recorder) Capture(ex eval.Example) error
+type Recorder struct
+package github.com/costa92/llm-agent-rag/generate
+type Message struct
+	field Content string
+	field Role string
+type Model interface
+	method Generate(ctx context.Context, req Request) (Response, error)
+type Request struct
+	field Messages []Message
+	field Metadata map[string]any
+	field SystemPrompt string
+type Response struct
+	field Text string
+	field Usage Usage
+type Usage struct
+	field CompletionTokens int
+	field PromptTokens int
+	field TotalTokens int
+package github.com/costa92/llm-agent-rag/graph
+func Canonicalize(entities []Entity, relations []Relation) Graph
+func CommunityContentHash(c Community) string
+method (DictionaryEntityExtractor) Extract(_ context.Context, chunkID, text string) ([]Entity, []Relation, error)
+method (EmbeddingEntityResolver) Resolve(ctx context.Context, entities []Entity, relations []Relation) ([]Entity, []Relation, error)
+method (LLMCommunitySummarizer) Summarize(ctx context.Context, c Community, g Graph) (CommunityReport, error)
+method (LLMEntityExtractor) Extract(ctx context.Context, chunkID, text string) ([]Entity, []Relation, error)
+method (LabelPropagationDetector) Detect(_ context.Context, g Graph) ([]Community, error)
+method (LouvainDetector) Detect(_ context.Context, g Graph) ([]Community, error)
+method (NoopEntityResolver) Resolve(_ context.Context, entities []Entity, relations []Relation) ([]Entity, []Relation, error)
+func NormalizeName(name string) string
+method (WeightedPathRanker) RankPaths(sub Subgraph, seedPairs [][2]string) []RankedPath
+type Community struct
+	field EntityIDs []string
+	field ID string
+	field Level int
+	field ParentID string
+	field RelationIDs []string
+type CommunityDetector interface
+	method Detect(ctx context.Context, g Graph) ([]Community, error)
+type CommunityReport struct
+	field CommunityID string
+	field ContentHash string
+	field Summary string
+	field Title string
+type CommunitySummarizer interface
+	method Summarize(ctx context.Context, c Community, g Graph) (CommunityReport, error)
+type DictionaryEntityExtractor struct
+	field Terms map[string]string
+type EmbeddingEntityResolver struct
+	field Embedder embed.Embedder
+	field Threshold float64
+type Entity struct
+	field Description string
+	field ID string
+	field Metadata map[string]any
+	field Name string
+	field SourceChunkIDs []string
+	field Type string
+type EntityExtractor interface
+	method Extract(ctx context.Context, chunkID, text string) ([]Entity, []Relation, error)
+type EntityResolver interface
+	method Resolve(ctx context.Context, entities []Entity, relations []Relation) ([]Entity, []Relation, error)
+type Graph struct
+	field Communities []Community
+	field Entities []Entity
+	field Relations []Relation
+type LLMCommunitySummarizer struct
+	field Model generate.Model
+type LLMEntityExtractor struct
+	field Model generate.Model
+type LabelPropagationDetector struct
+type LouvainDetector struct
+	field Resolution float64
+type NoopEntityResolver struct
+type PathRanker interface
+	method RankPaths(sub Subgraph, seedPairs [][2]string) []RankedPath
+type RankedPath struct
+	field EntityIDs []string
+	field RelationIDs []string
+	field Score float64
+type Relation struct
+	field Description string
+	field ID string
+	field Relation string
+	field Source string
+	field SourceChunkIDs []string
+	field Target string
+	field Weight float64
+type Subgraph struct
+	field Depth map[string]int
+	field Entities []Entity
+	field Relations []Relation
+type WeightedPathRanker struct
+	field LengthDecay float64
+var ErrCommunitySummarizerModelRequired = errors.New("graph: community summarizer requires a generate.Model")
+var ErrEntityExtractorModelRequired = errors.New("graph: entity extractor requires a generate.Model")
+var ErrEntityResolverEmbedderRequired = errors.New("graph: embedding entity resolver requires an embed.Embedder")
+package github.com/costa92/llm-agent-rag/guard
+const Drop
+const Neutralize SanitizeMode = iota
+func NeutralizeText(text string) string
+func NewPIIRedactor() PIIRedactor
+func NewPatternScanner() PatternScanner
+method (PIIRedactor) Redact(text string) RedactResult
+method (PatternScanner) Scan(text string) InjectionVerdict
+type InjectionPattern struct
+	field Name string
+	field Pattern *regexp.Regexp
+type InjectionScanner interface
+	method Scan(text string) InjectionVerdict
+type InjectionVerdict struct
+	field Patterns []string
+	field Suspicious bool
+type PIIRedactor struct
+	field Rules []Rule
+type PatternScanner struct
+	field Patterns []InjectionPattern
+type RedactResult struct
+	field Redactions []Redaction
+	field Text string
+type Redaction struct
+	field Count int
+	field Kind string
+type Redactor interface
+	method Redact(text string) RedactResult
+type Rule struct
+	field Kind string
+	field Pattern *regexp.Regexp
+	field Placeholder string
+type SanitizeMode int
+package github.com/costa92/llm-agent-rag/ingest
+const MetadataChecksumKey = "checksum"
+const MetadataEmbeddingVersionKey = "embedding_version"
+const MetadataHeadingKey = "heading"
+const MetadataHeadingLevelKey = "heading_level"
+const MetadataSectionPathKey = "section_path"
+const MetadataSourceIDKey = "source_id"
+const MetadataVersionKey = "version"
+method (CharSplitter) Split(doc Document, maxChars int) []Chunk
+func Collect(ctx context.Context, src StreamingSource) ([]Document, error)
+func ImportFrom(ctx context.Context, src StreamingSource, opts ImportOptions) ([]Chunk, ImportResult, error)
+method (*Importer) Import(ctx context.Context) ([]Chunk, ImportResult, error)
+method (MarkdownSplitter) Split(doc Document, maxChars int) []Chunk
+func NewCharSplitter(maxChars, overlap int) CharSplitter
+func NewImporter(src Source, splitter Splitter) *Importer
+func NewMarkdownSplitter(maxChars, overlap int) MarkdownSplitter
+method (SourceFunc) Documents(ctx context.Context) ([]Document, error)
+func StaticSource(docs ...Document) Source
+type CharSplitter struct
+	field MaxChars int
+	field Overlap int
+type Chunk struct
+	field Content string
+	field DocID string
+	field ID string
+	field Index int
+	field Metadata map[string]any
+	field Title string
+	field Total int
+type Document struct
+	field Checksum string
+	field Content string
+	field EmbeddingVersion string
+	field ID string
+	field Metadata map[string]any
+	field SourceID string
+	field Title string
+	field Version string
+type ImportOptions struct
+	field MaxChars int
+	field Namespace string
+	field ReplaceSource bool
+	field Splitter Splitter
+type ImportResult struct
+	field ChunkIDs []string
+	field Chunks int
+	field Documents int
+	field Graph *graph.Graph
+	field Metrics obs.Metrics
+	field Redactions []guard.Redaction
+type Importer struct
+	field MaxChars int
+	field Source Source
+	field Splitter Splitter
+type MarkdownSplitter struct
+	field MaxChars int
+	field Overlap int
+type Source interface
+	method Documents(ctx context.Context) ([]Document, error)
+type SourceFunc func(ctx context.Context) ([]Document, error)
+type Splitter interface
+	method Split(doc Document, maxChars int) []Chunk
+type StreamingSource interface
+	method Next(ctx context.Context) (Document, error)
+var ErrNilSource = errors.New("ingest: source is required")
+var ErrNilSplitter = errors.New("ingest: splitter is required")
+package github.com/costa92/llm-agent-rag/obs
+method (*Counter) AddEmbed(n int)
+method (*Counter) AddGenerate(n int)
+method (*Counter) Counts() CallCounts
+func CounterFrom(ctx context.Context) *Counter
+func NewCounter() *Counter
+func WithCounter(ctx context.Context, c *Counter) context.Context
+type CallCounts struct
+	field Embed int
+	field Generate int
+type Counter struct
+type Metrics struct
+	field Calls CallCounts
+	field Stages []StageTiming
+	field Tokens TokenUsage
+	field TotalDuration time.Duration
+type StageTiming struct
+	field Duration time.Duration
+	field Stage string
+type TokenUsage struct
+	field CompletionTokens int
+	field Estimated bool
+	field PromptTokens int
+	field TotalTokens int
+package github.com/costa92/llm-agent-rag/pack
+method (GreedyTokenPacker) Pack(_ context.Context, req Request) (Result, error)
+method (SimpleCounter) Count(text string) int
+type GreedyTokenPacker struct
+	field Counter TokenCounter
+type Packer interface
+	method Pack(ctx context.Context, req Request) (Result, error)
+type Request struct
+	field Hits []store.Hit
+	field MaxTokens int
+	field Question string
+type Result struct
+	field Hits []store.Hit
+	field Trace Trace
+type SimpleCounter struct
+type TokenCounter interface
+	method Count(text string) int
+type Trace struct
+	field BudgetTokens int
+	field DroppedChunkIDs []string
+	field SelectedChunkIDs []string
+	field TruncatedChunkIDs []string
+	field UsedTokens int
+package github.com/costa92/llm-agent-rag/postgres
+func New(pool *pgxpool.Pool, cfg Config) (*Store, error)
+func RegisterTypes(ctx context.Context, conn *pgx.Conn) error
+method (*Store) Communities(ctx context.Context, namespace string) ([]graph.Community, error)
+method (*Store) CommunityReport(ctx context.Context, namespace, communityID string) (graph.CommunityReport, bool, error)
+method (*Store) FindEntities(ctx context.Context, namespace string, names []string) ([]graph.Entity, error)
+method (*Store) Get(ctx context.Context, id string) (store.StoredChunk, error)
+method (*Store) GraphSnapshot(ctx context.Context, namespace string) (graph.Graph, error)
+method (*Store) LexicalSearch(ctx context.Context, q store.Query) ([]store.Hit, error)
+method (*Store) List(ctx context.Context, namespace string, filters store.Filter, securityFilters store.Filter) ([]store.StoredChunk, error)
+method (*Store) Migrate(ctx context.Context) error
+method (*Store) Neighborhood(ctx context.Context, namespace string, seedIDs []string, depth int) (graph.Subgraph, error)
+method (*Store) PutCommunityReport(ctx context.Context, namespace string, report graph.CommunityReport) error
+method (*Store) Remove(ctx context.Context, id string) error
+method (*Store) RemoveByFilter(ctx context.Context, namespace string, filters store.Filter) (int, error)
+method (*Store) RemoveGraphBySource(ctx context.Context, namespace string, chunkIDs []string) error
+method (*Store) Search(ctx context.Context, q store.Query) ([]store.Hit, error)
+method (*Store) Stats(ctx context.Context, namespace string) (store.Stats, error)
+method (*Store) Upsert(ctx context.Context, chunks []store.StoredChunk) error
+method (*Store) UpsertCommunities(ctx context.Context, namespace string, communities []graph.Community) error
+method (*Store) UpsertGraph(ctx context.Context, namespace string, g graph.Graph) error
+type Config struct
+	field Dimension int
+	field Table string
+	field TextSearchConfig string
+type Store struct
+package github.com/costa92/llm-agent-rag/prompt
+method (DefaultQATemplate) Render(_ context.Context, rc RenderContext) (generate.Request, error)
+type DefaultQATemplate struct
+	field Instructions string
+	field SystemPrompt string
+type RenderContext struct
+	field Hits []store.Hit
+	field Metadata map[string]any
+	field Namespace string
+	field Question string
+type Template interface
+	method Render(ctx context.Context, rc RenderContext) (generate.Request, error)
+package github.com/costa92/llm-agent-rag/rag
+func New(opts Options) *System
+method (*System) Ask(ctx context.Context, question string, opts AskOptions) (Answer, error)
+method (*System) AskDrift(ctx context.Context, question string, opts DriftOptions) (Answer, error)
+method (*System) AskGlobal(ctx context.Context, question string, opts GlobalOptions) (Answer, error)
+method (*System) Import(ctx context.Context, docs []ingest.Document, opts ingest.ImportOptions) (ingest.ImportResult, error)
+method (*System) ImportFrom(ctx context.Context, src ingest.Source, opts ingest.ImportOptions) (ingest.ImportResult, error)
+method (*System) Model() generate.Model
+method (*System) PrewarmCommunityReports(ctx context.Context, namespace string) (int, error)
+method (*System) Remove(ctx context.Context, id string) error
+method (*System) Retrieve(ctx context.Context, query string, opts SearchOptions) ([]store.Hit, error)
+method (*System) Stats(ctx context.Context, namespace string) (store.Stats, error)
+type Answer struct
+	field Citations []Citation
+	field Diagnostics Diagnostics
+	field Hits []store.Hit
+	field Prompt generate.Request
+	field Text string
+	field Trace Trace
+type AskOptions struct
+	field MaxTokens int
+	field Metadata map[string]any
+	field Search SearchOptions
+	field Template prompt.Template
+type Citation struct
+	field ChunkID string
+	field DocID string
+	field Namespace string
+	field Score float64
+	field SectionID string
+	field SectionPath []string
+	field Title string
+type Diagnostics struct
+	field AutoRouteCandidates []retrieve.RouteCandidate
+	field Drift DriftDiagnostics
+	field ExpandedChunkIDs []string
+	field Global GlobalDiagnostics
+	field GraphTrace retrieve.GraphTrace
+	field HitCount int
+	field InjectionFindings []InjectionFinding
+	field MatchedSections []string
+	field Metrics obs.Metrics
+	field PromptChunkIDs []string
+	field RerankScores []rerank.RerankScore
+	field ReturnedChunkIDs []string
+	field RoutePolicy retrieve.RoutePolicyTrace
+	field SearchTrajectory []retrieve.TrajectoryStep
+type DriftDiagnostics struct
+	field ConsultedReports []graph.CommunityReport
+	field PrimerCommunityIDs []string
+	field RoundEntityIDs [][]string
+	field Rounds int
+type DriftOptions struct
+	field MaxCommunities int
+	field Namespace string
+	field Rounds int
+	field TopK int
+type GlobalDiagnostics struct
+	field CommunityIDs []string
+	field ConsultedReports []graph.CommunityReport
+	field MapCalls int
+	field MapScores map[string]int
+	field ReduceCalls int
+type GlobalOptions struct
+	field MaxCommunities int
+	field Namespace string
+type ImportTrace struct
+	field ChunkIDs []string
+	field Chunks int
+	field Documents int
+	field EmbedCount int
+	field Metrics obs.Metrics
+	field Namespace string
+	field Redactions []guard.Redaction
+	field RemovedChunks int
+	field ReplaceSource bool
+type InjectionFinding struct
+	field Action string
+	field ChunkID string
+	field Patterns []string
+type Observer struct
+	field OnAsk func(ctx context.Context, trace Trace)
+	field OnImport func(ctx context.Context, trace ImportTrace)
+	field OnRetrieve func(ctx context.Context, trace retrieve.Trace)
+type Options struct
+	field CommunityDetector graph.CommunityDetector
+	field CommunitySummarizer graph.CommunitySummarizer
+	field Embedder embed.Embedder
+	field EntityExtractor graph.EntityExtractor
+	field EntityResolver graph.EntityResolver
+	field InjectionScanner guard.InjectionScanner
+	field MaxChars int
+	field Model generate.Model
+	field Observer Observer
+	field Packer pack.Packer
+	field Preprocessor retrieve.QueryPreprocessor
+	field Redactor guard.Redactor
+	field Reranker rerank.Reranker
+	field Retriever retrieve.Retriever
+	field SanitizeMode guard.SanitizeMode
+	field Splitter ingest.Splitter
+	field Store store.Store
+	field Template prompt.Template
+type SearchOptions struct
+	field AutoRouteConfidenceGap float64
+	field AutoRouteConfidenceThreshold float64
+	field AutoRouteFanout int
+	field AutoRouteMaxCandidates int
+	field AutoRouteMinScore float64
+	field EnableAutoRoute bool
+	field EnableGraph bool
+	field EnableHyDE bool
+	field EnableMQE bool
+	field EnableRerank bool
+	field EnableStructure bool
+	field EnableTreeExpansion bool
+	field ExpansionDepth int
+	field Filters map[string]any
+	field MQECount int
+	field Namespace string
+	field RoutePath []string
+	field SecurityFilters map[string]any
+	field TopK int
+type System struct
+type Trace struct
+	field AutoRouteCandidates []retrieve.RouteCandidate
+	field AutoRoutePath []string
+	field DroppedChunkIDs []string
+	field ExpandedChunkIDs []string
+	field ExpandedSections []string
+	field Filters map[string]any
+	field MatchedSections []string
+	field Namespace string
+	field PackedChunkIDs []string
+	field Question string
+	field RerankedChunkIDs []string
+	field RoutePath []string
+	field RoutePolicy retrieve.RoutePolicyTrace
+	field SearchPath []string
+	field SearchTrajectory []retrieve.TrajectoryStep
+	field SecurityFilters map[string]any
+	field SelectedChunkIDs []string
+	field TopK int
+var ErrCommunitySummarizerRequired = errors.New("rag: community summarizer required for global search")
+var ErrEmptyQuery = errors.New("rag: query is required")
+var ErrImporterRequired = errors.New("rag: importer required for this operation")
+var ErrModelRequired = errors.New("rag: generator required for this operation")
+var ErrRetrieverRequired = errors.New("rag: retriever required for this operation")
+var ErrSourceRequired = errors.New("rag: import source is required")
+package github.com/costa92/llm-agent-rag/rerank
+method (HTTPScoringModel) Score(ctx context.Context, query string, documents []string) ([]float64, error)
+method (HeuristicReranker) Rerank(_ context.Context, req Request) ([]store.Hit, Trace, error)
+method (ModelReranker) Rerank(ctx context.Context, req Request) ([]store.Hit, Trace, error)
+method (NoopReranker) Rerank(_ context.Context, req Request) ([]store.Hit, Trace, error)
+type HTTPScoringModel struct
+	field Client *http.Client
+	field Endpoint string
+	field Model string
+	field Token string
+type HeuristicReranker struct
+type ModelReranker struct
+	field Model ScoringModel
+	field TopN int
+type NoopReranker struct
+type Request struct
+	field Hits []store.Hit
+	field Query string
+type RerankScore struct
+	field ChunkID string
+	field InputRank int
+	field InputScore float64
+	field OutputRank int
+	field OutputScore float64
+	field RankDelta int
+type Reranker interface
+	method Rerank(ctx context.Context, req Request) ([]store.Hit, Trace, error)
+type ScoringModel interface
+	method Score(ctx context.Context, query string, documents []string) ([]float64, error)
+type Trace struct
+	field InputChunkIDs []string
+	field OutputChunkIDs []string
+	field Scores []RerankScore
+var ErrScoringModelRequired = errors.New("rerank: scoring model required")
+package github.com/costa92/llm-agent-rag/retrieve
+method (DenseRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error)
+method (GapAwareSectionPlanner) Plan(_ context.Context, req Request, candidates []RouteCandidate) (SectionPlannerDecision, error)
+method (GraphRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error)
+method (HeuristicDecomposer) Decompose(_ context.Context, query string) ([]string, error)
+method (HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error)
+method (LLMDecomposer) Decompose(ctx context.Context, query string) ([]string, error)
+method (LLMExpansionPreprocessor) Process(ctx context.Context, req Request) (PreprocessResult, error)
+method (LexicalEntityLinker) Link(ctx context.Context, query, namespace string, gs store.GraphStore) ([]graph.Entity, error)
+method (LexicalRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error)
+method (MultiHopRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error)
+method (NoopPreprocessor) Process(_ context.Context, req Request) (PreprocessResult, error)
+method (StructureRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error)
+method (VariantRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error)
+type BM25Params struct
+	field B float64
+	field K1 float64
+type DenseRetriever struct
+	field Embedder QueryEmbedder
+	field Store store.Store
+type EntityLinker interface
+	method Link(ctx context.Context, query, namespace string, gs store.GraphStore) ([]graph.Entity, error)
+type FusionAttribution struct
+	field ChunkID string
+	field DenseRank int
+	field GraphRank int
+	field LexicalRank int
+	field RRFScore float64
+	field StructureRank int
+type GapAwareSectionPlanner struct
+type GraphRetriever struct
+	field HopDecay float64
+	field Linker EntityLinker
+	field MaxDepth int
+	field PathRanker graph.PathRanker
+	field Store store.Store
+type GraphTrace struct
+	field CommunityIDs []string
+	field EvidenceSubgraph *graph.Subgraph
+	field MaxHop int
+	field Paths []graph.RankedPath
+	field ReachedEntityIDs []string
+	field SeedEntityIDs []string
+type HeuristicDecomposer struct
+type HopAttribution struct
+	field HitCount int
+	field SubQuery string
+type HybridRetriever struct
+	field Dense Retriever
+	field Graph Retriever
+	field Lexical Retriever
+	field RRFConstant float64
+	field Structure Retriever
+type LLMDecomposer struct
+	field MaxSubQueries int
+	field Model generate.Model
+type LLMExpansionPreprocessor struct
+	field Model generate.Model
+type LexicalEntityLinker struct
+type LexicalRetriever struct
+	field Params BM25Params
+	field Store store.Store
+type MultiHopRetriever struct
+	field Base Retriever
+	field Decomposer QueryDecomposer
+type NoopPreprocessor struct
+type PreprocessResult struct
+	field QueryVariants []string
+	field Trace Trace
+type QueryDecomposer interface
+	method Decompose(ctx context.Context, query string) ([]string, error)
+type QueryEmbedder interface
+	method Embed(ctx context.Context, text string) (embed.Vector, error)
+type QueryPreprocessor interface
+	method Process(ctx context.Context, req Request) (PreprocessResult, error)
+type Request struct
+	field AutoRouteConfidenceGap float64
+	field AutoRouteConfidenceThreshold float64
+	field AutoRouteFanout int
+	field AutoRouteMaxCandidates int
+	field AutoRouteMinScore float64
+	field EnableAutoRoute bool
+	field EnableGraph bool
+	field EnableHyDE bool
+	field EnableMQE bool
+	field EnableStructure bool
+	field EnableTreeExpansion bool
+	field ExpansionDepth int
+	field Filters map[string]any
+	field MQECount int
+	field Namespace string
+	field Query string
+	field QueryVariants []string
+	field RoutePath []string
+	field SecurityFilters map[string]any
+	field TopK int
+type Retriever interface
+	method Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error)
+type RouteCandidate struct
+	field Confidence float64
+	field Path []string
+	field Queries []string
+	field Reason string
+	field Score float64
+	field Selected bool
+	field Signals []string
+type RoutePolicyTrace struct
+	field CandidateCount int
+	field ConfidenceGap float64
+	field ConfidenceThreshold float64
+	field Fanout int
+	field Gap float64
+	field Mode string
+	field Rationale []string
+	field SelectedCount int
+type SectionPlanner interface
+	method Plan(ctx context.Context, req Request, candidates []RouteCandidate) (SectionPlannerDecision, error)
+type SectionPlannerDecision struct
+	field Fanout int
+	field Gap float64
+	field Mode string
+	field Rationale []string
+	field Selected []RouteCandidate
+type StructureRetriever struct
+	field Store store.Store
+type Trace struct
+	field AutoRouteCandidates []RouteCandidate
+	field AutoRoutePath []string
+	field EffectiveQuery string
+	field ExpandedChunkIDs []string
+	field ExpandedSections []string
+	field Fusion []FusionAttribution
+	field Graph GraphTrace
+	field Hops []HopAttribution
+	field MatchedSections []string
+	field Metrics obs.Metrics
+	field OriginalQuery string
+	field QueryVariants []string
+	field RoutePath []string
+	field RoutePolicy RoutePolicyTrace
+	field SearchPath []string
+	field SearchTrajectory []TrajectoryStep
+	field SelectedChunkIDs []string
+type TrajectoryStep struct
+	field Confidence float64
+	field ExpandedSections []string
+	field HitCount int
+	field HitIDs []string
+	field MatchedSections []string
+	field Mode string
+	field Rationale string
+	field Route []string
+type VariantRetriever struct
+	field Base Retriever
+	field Planner SectionPlanner
+var ErrBaseRetrieverRequired = errors.New("retrieve: base retriever required")
+package github.com/costa92/llm-agent-rag/store
+method (*InMemoryStore) Communities(_ context.Context, namespace string) ([]graph.Community, error)
+method (*InMemoryStore) CommunityReport(_ context.Context, namespace, communityID string) (graph.CommunityReport, bool, error)
+method (*InMemoryStore) FindEntities(_ context.Context, namespace string, names []string) ([]graph.Entity, error)
+method (*InMemoryStore) Get(_ context.Context, id string) (StoredChunk, error)
+method (*InMemoryStore) GraphSnapshot(_ context.Context, namespace string) (graph.Graph, error)
+method (*InMemoryStore) List(_ context.Context, namespace string, filters Filter, securityFilters Filter) ([]StoredChunk, error)
+method (*InMemoryStore) Neighborhood(_ context.Context, namespace string, seedIDs []string, depth int) (graph.Subgraph, error)
+method (*InMemoryStore) PutCommunityReport(_ context.Context, namespace string, report graph.CommunityReport) error
+method (*InMemoryStore) Remove(_ context.Context, id string) error
+method (*InMemoryStore) RemoveByFilter(_ context.Context, namespace string, filters Filter) (int, error)
+method (*InMemoryStore) RemoveGraphBySource(_ context.Context, namespace string, chunkIDs []string) error
+method (*InMemoryStore) Search(_ context.Context, q Query) ([]Hit, error)
+method (*InMemoryStore) Stats(_ context.Context, namespace string) (Stats, error)
+method (*InMemoryStore) Upsert(_ context.Context, chunks []StoredChunk) error
+method (*InMemoryStore) UpsertCommunities(_ context.Context, namespace string, communities []graph.Community) error
+method (*InMemoryStore) UpsertGraph(_ context.Context, namespace string, g graph.Graph) error
+func NewInMemoryStore(dim int) *InMemoryStore
+type CommunityStore interface
+	method Communities(ctx context.Context, namespace string) ([]graph.Community, error)
+	method CommunityReport(ctx context.Context, namespace, communityID string) (graph.CommunityReport, bool, error)
+	method GraphSnapshot(ctx context.Context, namespace string) (graph.Graph, error)
+	method PutCommunityReport(ctx context.Context, namespace string, report graph.CommunityReport) error
+	method UpsertCommunities(ctx context.Context, namespace string, communities []graph.Community) error
+type Filter map[string]any
+type GraphStore interface
+	method FindEntities(ctx context.Context, namespace string, names []string) ([]graph.Entity, error)
+	method Neighborhood(ctx context.Context, namespace string, seedIDs []string, depth int) (graph.Subgraph, error)
+	method RemoveGraphBySource(ctx context.Context, namespace string, chunkIDs []string) error
+	method UpsertGraph(ctx context.Context, namespace string, g graph.Graph) error
+type Hit struct
+	field Chunk StoredChunk
+	field Score float64
+type InMemoryStore struct
+type LexicalSearcher interface
+	method LexicalSearch(ctx context.Context, q Query) ([]Hit, error)
+type Query struct
+	field Filters Filter
+	field Namespace string
+	field SecurityFilters Filter
+	field Text string
+	field TopK int
+	field Vector embed.Vector
+type Stats struct
+	field Count int
+	field Dim int
+type Store interface
+	method Get(ctx context.Context, id string) (StoredChunk, error)
+	method List(ctx context.Context, namespace string, filters Filter, securityFilters Filter) ([]StoredChunk, error)
+	method Remove(ctx context.Context, id string) error
+	method RemoveByFilter(ctx context.Context, namespace string, filters Filter) (int, error)
+	method Search(ctx context.Context, q Query) ([]Hit, error)
+	method Stats(ctx context.Context, namespace string) (Stats, error)
+	method Upsert(ctx context.Context, chunks []StoredChunk) error
+type StoredChunk struct
+	field Content string
+	field DocID string
+	field Heading string
+	field HeadingLevel int
+	field ID string
+	field Metadata map[string]any
+	field Namespace string
+	field SectionID string
+	field SectionPath []string
+	field Title string
+	field Vector embed.Vector
+var ErrDimensionMismatch = errors.New("store: vector dimension mismatch")
+var ErrNotFound = errors.New("store: chunk not found")
+package github.com/costa92/llm-agent-rag/store/storetest
+func RunCommunityConformance(t *testing.T, factory Factory)
+func RunConformance(t *testing.T, factory Factory, opts ...Option)
+func RunGraphConformance(t *testing.T, factory Factory)
+func RunLexicalConformance(t *testing.T, factory Factory)
+func WithDimensionStrict() Option
+type Factory func(t *testing.T) store.Store
+type Option func(*config)
+package github.com/costa92/llm-agent-rag/tree
+func Build(doc ingest.Document, chunks []ingest.Chunk) *DocumentTree
+func BuildStored(docID, title string, chunks []store.StoredChunk) *DocumentTree
+method (*DocumentTree) Find(id string) (*Node, bool)
+method (*DocumentTree) Leaves() []*Node
+method (*DocumentTree) Sections() []*Node
+type DocumentTree struct
+	field DocID string
+	field Root *Node
+type Node struct
+	field Children []*Node
+	field Content string
+	field DocID string
+	field Heading string
+	field ID string
+	field Level int
+	field Parent *Node
+	field Path []string
+	field Title string

@@ -45,7 +45,10 @@ package are the only places that pull external deps in.
 
 ## Status
 
-Current status: production-ready core, evolving ecosystem.
+Current status: stable — v1.0. The public API is frozen under an
+additive-only compatibility promise for the `v1.x` series; see
+[docs/compatibility.md](docs/compatibility.md) for the import-compatibility
+rule, semver policy, and the `/v2` procedure for breaking changes.
 
 Implemented:
 
@@ -148,8 +151,6 @@ Not implemented yet:
 
 - HTTP service layer
 - CLI
-- online-to-offline production-feedback workflow (planned in slice 13-03)
-- cross-repo contract-drift CI gates (planned in slice 13-04)
 
 ## Optional adapter
 

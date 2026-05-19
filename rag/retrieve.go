@@ -10,6 +10,8 @@ import (
 	"github.com/costa92/llm-agent-rag/store"
 )
 
+// Retrieve runs the retrieval stage directly, returning the hits for query
+// under opts without packing or generating an answer.
 func (s *System) Retrieve(ctx context.Context, query string, opts SearchOptions) ([]store.Hit, error) {
 	hits, _, err := s.retrieve(ctx, query, opts)
 	return hits, err

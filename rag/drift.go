@@ -505,4 +505,3 @@ func sortedKeys(set map[string]struct{}) []string {
 	sort.Strings(out)
 	return out
 }
-

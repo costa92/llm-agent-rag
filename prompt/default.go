@@ -8,11 +8,15 @@ import (
 	"github.com/costa92/llm-agent-rag/generate"
 )
 
+// DefaultQATemplate is the built-in question-answering Template. It lays the
+// retrieved context out as bracketed chunks followed by the question; empty
+// fields fall back to sensible defaults.
 type DefaultQATemplate struct {
-	SystemPrompt string
-	Instructions string
+	SystemPrompt string // SystemPrompt overrides the default system instruction when set.
+	Instructions string // Instructions overrides the default answer instructions when set.
 }
 
+// Render builds the QA prompt request from rc.
 func (t DefaultQATemplate) Render(_ context.Context, rc RenderContext) (generate.Request, error) {
 	system := t.SystemPrompt
 	if system == "" {

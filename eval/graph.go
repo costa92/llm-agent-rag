@@ -9,10 +9,10 @@ import (
 // GraphABResult compares retrieval metrics with the GraphRAG signal off
 // versus on, so the graph's effect on recall is measurable.
 type GraphABResult struct {
-	GraphOff    Metrics
-	GraphOn     Metrics
-	RecallDelta float64 // GraphOn.RecallAtK - GraphOff.RecallAtK
-	MRRDelta    float64 // GraphOn.MRR - GraphOff.MRR
+	GraphOff    Metrics // GraphOff is the retrieval scoreboard with the graph signal off.
+	GraphOn     Metrics // GraphOn is the retrieval scoreboard with the graph signal on.
+	RecallDelta float64 // RecallDelta is GraphOn.RecallAtK - GraphOff.RecallAtK.
+	MRRDelta    float64 // MRRDelta is GraphOn.MRR - GraphOff.MRR.
 }
 
 // RunGraphAB scores dataset twice through retriever — once with
@@ -23,13 +23,13 @@ type GraphABResult struct {
 func RunGraphAB(ctx context.Context, retriever Retriever, base rag.SearchOptions, dataset Dataset) (GraphABResult, error) {
 	off := base
 	off.EnableGraph = false
-	offRes, err := Evaluator{Retriever: retriever, Options: off}.Run(ctx, dataset)
+	offRes, err := RetrievalEvaluator{Retriever: retriever, Options: off}.Run(ctx, dataset)
 	if err != nil {
 		return GraphABResult{}, err
 	}
 	on := base
 	on.EnableGraph = true
-	onRes, err := Evaluator{Retriever: retriever, Options: on}.Run(ctx, dataset)
+	onRes, err := RetrievalEvaluator{Retriever: retriever, Options: on}.Run(ctx, dataset)
 	if err != nil {
 		return GraphABResult{}, err
 	}

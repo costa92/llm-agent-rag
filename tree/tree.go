@@ -1,3 +1,7 @@
+// Package tree builds a document's hierarchical structure. DocumentTree is
+// the section/heading tree of a Document made of Node values; Build
+// constructs one from a Document and its chunks, and BuildStored constructs
+// one from chunks already held in a store.
 package tree
 
 import (
@@ -7,24 +11,29 @@ import (
 	"github.com/costa92/llm-agent-rag/store"
 )
 
+// Node is one node in a DocumentTree — either a section heading (no content)
+// or a leaf chunk (with content).
 type Node struct {
-	ID       string
-	DocID    string
-	Title    string
-	Heading  string
-	Level    int
-	Path     []string
-	Content  string
-	Parent   *Node
-	Children []*Node
+	ID       string   // ID uniquely identifies the node within its document.
+	DocID    string   // DocID is the ID of the document the node belongs to.
+	Title    string   // Title is the document title.
+	Heading  string   // Heading is the node's section heading.
+	Level    int      // Level is the node's heading depth (0 = document root).
+	Path     []string // Path is the heading breadcrumb from the root to the node.
+	Content  string   // Content is the chunk text; empty for section nodes.
+	Parent   *Node    // Parent is the enclosing node; nil for the root.
+	Children []*Node  // Children are the node's direct child nodes.
 }
 
+// DocumentTree is the section/heading hierarchy of a single document, built
+// from its chunks and rooted at a synthetic document node.
 type DocumentTree struct {
-	DocID string
-	Root  *Node
+	DocID string // DocID is the ID of the document this tree describes.
+	Root  *Node  // Root is the synthetic document-level root node.
 	index map[string]*Node
 }
 
+// Build constructs a DocumentTree from a document and its ingest chunks.
 func Build(doc ingest.Document, chunks []ingest.Chunk) *DocumentTree {
 	stored := make([]store.StoredChunk, 0, len(chunks))
 	for _, chunk := range chunks {
@@ -41,6 +50,7 @@ func Build(doc ingest.Document, chunks []ingest.Chunk) *DocumentTree {
 	return BuildStored(doc.ID, doc.Title, stored)
 }
 
+// BuildStored constructs a DocumentTree from chunks already held in a store.
 func BuildStored(docID, title string, chunks []store.StoredChunk) *DocumentTree {
 	root := &Node{
 		ID:      docID + ":root",
@@ -107,6 +117,7 @@ func BuildStored(docID, title string, chunks []store.StoredChunk) *DocumentTree 
 	return tree
 }
 
+// Find returns the node with the given ID, and whether it was found.
 func (t *DocumentTree) Find(id string) (*Node, bool) {
 	if t == nil || t.index == nil {
 		return nil, false
@@ -115,6 +126,8 @@ func (t *DocumentTree) Find(id string) (*Node, bool) {
 	return node, ok
 }
 
+// Sections returns every section node (heading nodes with no content) in
+// pre-order.
 func (t *DocumentTree) Sections() []*Node {
 	if t == nil || t.Root == nil {
 		return nil
@@ -136,6 +149,7 @@ func (t *DocumentTree) Sections() []*Node {
 	return out
 }
 
+// Leaves returns every leaf node (nodes carrying chunk content) in pre-order.
 func (t *DocumentTree) Leaves() []*Node {
 	if t == nil || t.Root == nil {
 		return nil

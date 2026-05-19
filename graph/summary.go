@@ -20,16 +20,17 @@ var ErrCommunitySummarizerModelRequired = errors.New("graph: community summarize
 // community the report was built from, so a re-detected community with the
 // same membership reuses its cached report and a changed one misses.
 type CommunityReport struct {
-	CommunityID string
-	Title       string
-	Summary     string
-	ContentHash string // CommunityContentHash of the source community
+	CommunityID string // CommunityID is the community the report describes.
+	Title       string // Title is a short title naming the community's theme.
+	Summary     string // Summary is a paragraph summarizing the community.
+	ContentHash string // ContentHash is the CommunityContentHash of the source community.
 }
 
 // CommunitySummarizer writes a report for one community. Implementations may
 // be LLM-backed or deterministic; callers supply their own so the package
 // stays vendor-neutral — the same seam pattern as EntityExtractor.
 type CommunitySummarizer interface {
+	// Summarize writes a report for community c within graph g.
 	Summarize(ctx context.Context, c Community, g Graph) (CommunityReport, error)
 }
 
@@ -74,7 +75,7 @@ No markdown, no fences, no commentary.`
 // leniently — a malformed response is never fatal, mirroring
 // LLMEntityExtractor.
 type LLMCommunitySummarizer struct {
-	Model generate.Model
+	Model generate.Model // Model generates the community report text.
 }
 
 // Summarize implements CommunitySummarizer. The returned report always carries

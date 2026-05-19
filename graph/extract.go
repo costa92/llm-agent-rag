@@ -25,7 +25,7 @@ No commentary, no numbering, no markdown.`
 // prompting a generate.Model. Its output is parsed leniently — malformed
 // lines are dropped, never fatal.
 type LLMEntityExtractor struct {
-	Model generate.Model
+	Model generate.Model // Model generates the entity/relation extraction.
 }
 
 // Extract implements EntityExtractor. Extracted entities are pre-canonical

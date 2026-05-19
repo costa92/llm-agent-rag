@@ -15,15 +15,16 @@ import (
 // (the local retrieve+generate path) — kept a separate seam because global
 // search has no gold chunk set and is scored only on its generation side.
 type GlobalAsker interface {
+	// AskGlobal runs the map-reduce global-search answer path for question.
 	AskGlobal(ctx context.Context, question string, opts rag.GlobalOptions) (rag.Answer, error)
 }
 
 // GlobalExampleResult is the per-example detail behind a GlobalEvalResult.
 type GlobalExampleResult struct {
-	Example      Example   `json:"example"`
-	Answer       string    `json:"answer"`
-	CommunityIDs []string  `json:"community_ids"`
-	Judgement    Judgement `json:"judgement"`
+	Example      Example   `json:"example"`       // Example is the labeled query.
+	Answer       string    `json:"answer"`        // Answer is the generated answer text.
+	CommunityIDs []string  `json:"community_ids"` // CommunityIDs are the communities the answer consulted.
+	Judgement    Judgement `json:"judgement"`     // Judgement is the judge's verdict on the answer.
 }
 
 // GlobalEvalResult is the global-search scoreboard for one dataset run. Global
@@ -31,10 +32,10 @@ type GlobalExampleResult struct {
 // TriadResult — it carries NO chunk recall@k / precision@k: only the two
 // generation-side legs of the RAG Triad, groundedness and answer relevance.
 type GlobalEvalResult struct {
-	MeanGroundedness    float64               `json:"mean_groundedness"`
-	MeanAnswerRelevance float64               `json:"mean_answer_relevance"`
-	Examples            int                   `json:"examples"`
-	PerExample          []GlobalExampleResult `json:"per_example"`
+	MeanGroundedness    float64               `json:"mean_groundedness"`     // MeanGroundedness is the mean groundedness over the dataset.
+	MeanAnswerRelevance float64               `json:"mean_answer_relevance"` // MeanAnswerRelevance is the mean answer relevance over the dataset.
+	Examples            int                   `json:"examples"`              // Examples is the number of examples scored.
+	PerExample          []GlobalExampleResult `json:"per_example"`           // PerExample is the per-example detail.
 }
 
 // GlobalEvaluator runs a Dataset of whole-corpus questions through the
@@ -45,8 +46,8 @@ type GlobalEvalResult struct {
 // reports it read"; answer relevance is question-vs-answer.
 //
 // The gold chunk/doc fields of Example (GoldDocIDs, GoldChunkIDs) are unused —
-// global search has no chunk-recall notion. RunGraphAB / Evaluator measure
-// that for the local path; GlobalEvaluator does not.
+// global search has no chunk-recall notion. RunGraphAB / RetrievalEvaluator
+// measure that for the local path; GlobalEvaluator does not.
 type GlobalEvaluator struct {
 	// Asker is the global-search path under evaluation.
 	Asker GlobalAsker

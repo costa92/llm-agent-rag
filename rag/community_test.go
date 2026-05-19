@@ -157,9 +157,9 @@ func TestImportNoDetectorLeavesCommunitiesEmpty(t *testing.T) {
 func TestImportNoCommunityStoreDegradesGracefully(t *testing.T) {
 	st := plainStore{Store: store.NewInMemoryStore(32)}
 	sys := New(Options{
-		Model:           fakeModel{},
-		Store:           st,
-		EntityExtractor: graph.DictionaryEntityExtractor{Terms: map[string]string{"Paris": "city"}},
+		Model:             fakeModel{},
+		Store:             st,
+		EntityExtractor:   graph.DictionaryEntityExtractor{Terms: map[string]string{"Paris": "city"}},
 		CommunityDetector: graph.LouvainDetector{},
 	})
 	res, err := sys.Import(context.Background(), []ingest.Document{

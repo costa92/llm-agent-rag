@@ -8,34 +8,35 @@ import "regexp"
 
 // Redaction is a count of one kind of PII removed from a piece of text.
 type Redaction struct {
-	Kind  string
-	Count int
+	Kind  string // Kind names the category of PII removed, e.g. "email".
+	Count int    // Count is how many matches of that kind were removed.
 }
 
 // RedactResult is redacted text plus a per-kind tally of what was removed.
 type RedactResult struct {
-	Text       string
-	Redactions []Redaction
+	Text       string      // Text is the content with PII replaced by placeholders.
+	Redactions []Redaction // Redactions tallies what was removed, per kind.
 }
 
 // Redactor removes sensitive content from text before it is chunked,
 // embedded, and stored. Implementations must be deterministic.
 type Redactor interface {
+	// Redact returns text with PII removed and a tally of what was removed.
 	Redact(text string) RedactResult
 }
 
 // Rule is one named PII pattern and the placeholder its matches collapse to.
 type Rule struct {
-	Kind        string
-	Pattern     *regexp.Regexp
-	Placeholder string
+	Kind        string         // Kind names the PII category this rule detects.
+	Pattern     *regexp.Regexp // Pattern matches the sensitive substrings.
+	Placeholder string         // Placeholder is the text matches are replaced with.
 }
 
 // PIIRedactor applies an ordered set of Rules. The exported Rules slice is
 // the configuration surface — callers append or replace rules. The zero
 // value redacts nothing; use NewPIIRedactor for the built-in rule set.
 type PIIRedactor struct {
-	Rules []Rule
+	Rules []Rule // Rules is the ordered set of redaction rules to apply.
 }
 
 // Redact applies each rule in order, replacing matches with the rule's

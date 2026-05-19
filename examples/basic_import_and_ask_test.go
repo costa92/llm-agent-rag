@@ -1,3 +1,7 @@
+// Package examples holds the worked, runnable examples for the
+// llm-agent-rag SDK — one per primary answer path (Ask, AskGlobal,
+// AskDrift, graph, path). They are test-only and compile and run as
+// `go test`, doubling as executable documentation.
 package examples
 
 import (

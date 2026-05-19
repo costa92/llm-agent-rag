@@ -1,3 +1,7 @@
+// Package rerank re-scores retrieved candidates before they are packed
+// into the answer context. Reranker is the central seam — HeuristicReranker,
+// ModelReranker, and NoopReranker are the built-ins — and ScoringModel is
+// the model-scoring seam (HTTPScoringModel calls an external rerank API).
 package rerank
 
 import (
@@ -10,27 +14,30 @@ import (
 	"github.com/costa92/llm-agent-rag/store"
 )
 
+// Request is a rerank request: a query and the hits to re-score.
 type Request struct {
-	Query string
-	Hits  []store.Hit
+	Query string      // Query is the question the hits are scored against.
+	Hits  []store.Hit // Hits are the retrieved candidates to rerank.
 }
 
+// Trace records a rerank pass: the input and output ordering and per-chunk
+// scores.
 type Trace struct {
-	InputChunkIDs  []string
-	OutputChunkIDs []string
-	Scores         []RerankScore
+	InputChunkIDs  []string      // InputChunkIDs are the chunk IDs in pre-rerank order.
+	OutputChunkIDs []string      // OutputChunkIDs are the chunk IDs in post-rerank order.
+	Scores         []RerankScore // Scores is the per-chunk before/after explainability.
 }
 
 // RerankScore records one chunk's score and rank before and after a rerank
 // pass. RankDelta is InputRank - OutputRank: positive means the chunk was
 // promoted. An InputRank of 0 means the chunk was not in the rerank input.
 type RerankScore struct {
-	ChunkID     string
-	InputScore  float64
-	OutputScore float64
-	InputRank   int
-	OutputRank  int
-	RankDelta   int
+	ChunkID     string  // ChunkID identifies the chunk this score describes.
+	InputScore  float64 // InputScore is the chunk's score before reranking.
+	OutputScore float64 // OutputScore is the chunk's score after reranking.
+	InputRank   int     // InputRank is the chunk's 1-based rank before reranking; 0 if absent from the input.
+	OutputRank  int     // OutputRank is the chunk's 1-based rank after reranking.
+	RankDelta   int     // RankDelta is InputRank - OutputRank; positive means promoted.
 }
 
 // buildScores pairs each output hit with its pre-rerank score and rank,
@@ -65,12 +72,18 @@ func buildScores(input, output []store.Hit) []RerankScore {
 	return scores
 }
 
+// Reranker re-scores retrieved candidates before they are packed. It is the
+// reranking seam: the built-ins are HeuristicReranker, ModelReranker, and
+// NoopReranker.
 type Reranker interface {
+	// Rerank re-orders req.Hits and returns the new order with a Trace.
 	Rerank(ctx context.Context, req Request) ([]store.Hit, Trace, error)
 }
 
+// NoopReranker is a Reranker that returns its input unchanged.
 type NoopReranker struct{}
 
+// Rerank returns req.Hits unchanged.
 func (NoopReranker) Rerank(_ context.Context, req Request) ([]store.Hit, Trace, error) {
 	hits := append([]store.Hit(nil), req.Hits...)
 	return hits, Trace{
@@ -80,8 +93,11 @@ func (NoopReranker) Rerank(_ context.Context, req Request) ([]store.Hit, Trace, 
 	}, nil
 }
 
+// HeuristicReranker is the network-free default Reranker. It re-scores hits
+// by combining the retrieval score with a lexical query-overlap boost.
 type HeuristicReranker struct{}
 
+// Rerank re-orders req.Hits by retrieval score plus a lexical-overlap boost.
 func (HeuristicReranker) Rerank(_ context.Context, req Request) ([]store.Hit, Trace, error) {
 	type scoredHit struct {
 		hit   store.Hit
@@ -125,6 +141,7 @@ var ErrScoringModelRequired = errors.New("rerank: scoring model required")
 // abstract seam ModelReranker depends on; concrete implementations may call
 // a cross-encoder or a hosted rerank API.
 type ScoringModel interface {
+	// Score returns one relevance score per document, parallel to documents.
 	Score(ctx context.Context, query string, documents []string) ([]float64, error)
 }
 
@@ -132,11 +149,12 @@ type ScoringModel interface {
 // drop-in rerank.Reranker. The rag.System default stays the network-free
 // HeuristicReranker, so ModelReranker is opt-in via rag.Options.Reranker.
 type ModelReranker struct {
-	Model ScoringModel
+	Model ScoringModel // Model scores query/document relevance.
 	// TopN, if > 0, truncates the reranked output to TopN hits.
 	TopN int
 }
 
+// Rerank re-orders req.Hits by the ScoringModel's relevance scores.
 func (r ModelReranker) Rerank(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
 	if r.Model == nil {
 		return nil, Trace{}, ErrScoringModelRequired

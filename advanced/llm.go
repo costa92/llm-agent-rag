@@ -1,3 +1,8 @@
+// Package advanced provides LLM-backed query-transformation helpers that
+// improve recall before retrieval runs. ExpandQuery rewrites a query into
+// several semantically-equivalent alternatives (multi-query expansion) and
+// GenerateHypothetical synthesises a hypothetical answer document (HyDE).
+// Both take a generate.Model and are stateless helpers, not pipeline stages.
 package advanced
 
 import (

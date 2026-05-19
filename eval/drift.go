@@ -16,16 +16,17 @@ import (
 // separate seam because DRIFT, like global search, synthesizes an answer with
 // no gold chunk set and is scored only on its generation side.
 type DriftAsker interface {
+	// AskDrift runs the DRIFT hybrid-search answer path for question.
 	AskDrift(ctx context.Context, question string, opts rag.DriftOptions) (rag.Answer, error)
 }
 
 // DriftExampleResult is the per-example detail behind a DriftEvalResult.
 type DriftExampleResult struct {
-	Example            Example   `json:"example"`
-	Answer             string    `json:"answer"`
-	PrimerCommunityIDs []string  `json:"primer_community_ids"`
-	Rounds             int       `json:"rounds"`
-	Judgement          Judgement `json:"judgement"`
+	Example            Example   `json:"example"`              // Example is the labeled query.
+	Answer             string    `json:"answer"`               // Answer is the generated answer text.
+	PrimerCommunityIDs []string  `json:"primer_community_ids"` // PrimerCommunityIDs are the communities the primer consulted.
+	Rounds             int       `json:"rounds"`               // Rounds is the number of local follow-up rounds run.
+	Judgement          Judgement `json:"judgement"`            // Judgement is the judge's verdict on the answer.
 }
 
 // DriftEvalResult is the DRIFT-search scoreboard for one dataset run. DRIFT,
@@ -34,10 +35,10 @@ type DriftExampleResult struct {
 // two generation-side legs of the RAG Triad, groundedness and answer
 // relevance.
 type DriftEvalResult struct {
-	MeanGroundedness    float64              `json:"mean_groundedness"`
-	MeanAnswerRelevance float64              `json:"mean_answer_relevance"`
-	Examples            int                  `json:"examples"`
-	PerExample          []DriftExampleResult `json:"per_example"`
+	MeanGroundedness    float64              `json:"mean_groundedness"`     // MeanGroundedness is the mean groundedness over the dataset.
+	MeanAnswerRelevance float64              `json:"mean_answer_relevance"` // MeanAnswerRelevance is the mean answer relevance over the dataset.
+	Examples            int                  `json:"examples"`              // Examples is the number of examples scored.
+	PerExample          []DriftExampleResult `json:"per_example"`           // PerExample is the per-example detail.
 }
 
 // DriftEvaluator runs a Dataset of whole-corpus questions through the DRIFT
@@ -48,8 +49,9 @@ type DriftEvalResult struct {
 // answer relevance is question-vs-answer.
 //
 // The gold chunk/doc fields of Example (GoldDocIDs, GoldChunkIDs) are unused —
-// DRIFT search has no chunk-recall notion. RunGraphAB / Evaluator measure that
-// for the local path; DriftEvaluator does not. This mirrors GlobalEvaluator.
+// DRIFT search has no chunk-recall notion. RunGraphAB / RetrievalEvaluator
+// measure that for the local path; DriftEvaluator does not. This mirrors
+// GlobalEvaluator.
 type DriftEvaluator struct {
 	// Asker is the DRIFT-search path under evaluation.
 	Asker DriftAsker

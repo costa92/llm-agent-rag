@@ -16,6 +16,8 @@ import (
 	"github.com/costa92/llm-agent-rag/store"
 )
 
+// AsTool exposes a rag.System as an agents.Tool for the core llm-agent agent
+// framework, supporting the add_text, search, ask, remove, and stats actions.
 func AsTool(r *ragcore.System) agents.Tool {
 	return agents.NewFuncTool(
 		"rag",

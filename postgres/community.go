@@ -120,8 +120,8 @@ func (s *Store) CommunityReport(ctx context.Context, namespace, communityID stri
 	stmt := fmt.Sprintf(`SELECT community_id, title, summary, content_hash
 		FROM %s WHERE namespace = $1 AND community_id = $2`, s.communityReportsTable())
 	var (
-		report                       graph.CommunityReport
-		title, summary, contentHash   *string
+		report                      graph.CommunityReport
+		title, summary, contentHash *string
 	)
 	err := s.pool.QueryRow(ctx, stmt, namespace, communityID).
 		Scan(&report.CommunityID, &title, &summary, &contentHash)

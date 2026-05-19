@@ -1,3 +1,11 @@
+// Package rag — orchestration-layer overview — is the front door of the
+// llm-agent-rag SDK. System is the top-level RAG pipeline; New constructs
+// one from an Options value wiring an ingester, retriever, model, and store.
+// System exposes three answer paths: Ask is the standard retrieve-pack-
+// generate path, AskGlobal answers from GraphRAG community summaries, and
+// AskDrift runs the DRIFT global-then-local search. Search and Import expose
+// the retrieval and ingest stages directly, and Observer receives per-run
+// Trace callbacks for instrumentation.
 package rag
 
 import (
@@ -16,38 +24,43 @@ import (
 	"github.com/costa92/llm-agent-rag/store"
 )
 
+// Answer is the result of an answer-path call (Ask, AskGlobal, AskDrift):
+// the generated text plus its supporting hits, prompt, citations, and traces.
 type Answer struct {
-	Text        string
-	Hits        []store.Hit
-	Prompt      generate.Request
-	Citations   []Citation
-	Diagnostics Diagnostics
-	Trace       Trace
+	Text        string           // Text is the generated answer.
+	Hits        []store.Hit      // Hits are the retrieved chunks the answer was generated from.
+	Prompt      generate.Request // Prompt is the generation request sent to the model.
+	Citations   []Citation       // Citations link the answer back to its source chunks.
+	Diagnostics Diagnostics      // Diagnostics is the per-run diagnostic detail.
+	Trace       Trace            // Trace is the per-run trace passed to an Observer.
 }
 
+// Citation links an answer back to one source chunk and its document section.
 type Citation struct {
-	ChunkID     string
-	DocID       string
-	Namespace   string
-	Title       string
-	SectionID   string
-	SectionPath []string
-	Score       float64
+	ChunkID     string   // ChunkID identifies the cited chunk.
+	DocID       string   // DocID identifies the cited chunk's document.
+	Namespace   string   // Namespace is the cited chunk's namespace.
+	Title       string   // Title is the cited document's title.
+	SectionID   string   // SectionID identifies the chunk's section.
+	SectionPath []string // SectionPath is the heading breadcrumb to the chunk.
+	Score       float64  // Score is the chunk's retrieval relevance.
 }
 
+// Diagnostics is the per-run diagnostic detail behind an Answer — every
+// routing, rerank, injection, and graph signal the pipeline produced.
 type Diagnostics struct {
-	HitCount            int
-	ReturnedChunkIDs    []string
-	PromptChunkIDs      []string
-	MatchedSections     []string
-	ExpandedChunkIDs    []string
-	AutoRouteCandidates []retrieve.RouteCandidate
-	RoutePolicy         retrieve.RoutePolicyTrace
-	SearchTrajectory    []retrieve.TrajectoryStep
-	RerankScores        []rerank.RerankScore
-	Metrics             obs.Metrics
-	InjectionFindings   []InjectionFinding
-	GraphTrace          retrieve.GraphTrace
+	HitCount            int                       // HitCount is the number of hits retrieved.
+	ReturnedChunkIDs    []string                  // ReturnedChunkIDs are the chunk IDs the retriever returned.
+	PromptChunkIDs      []string                  // PromptChunkIDs are the chunk IDs packed into the prompt.
+	MatchedSections     []string                  // MatchedSections are the sections that matched.
+	ExpandedChunkIDs    []string                  // ExpandedChunkIDs are chunks added by tree expansion.
+	AutoRouteCandidates []retrieve.RouteCandidate // AutoRouteCandidates are the candidates auto-routing considered.
+	RoutePolicy         retrieve.RoutePolicyTrace // RoutePolicy records the routing-policy decision.
+	SearchTrajectory    []retrieve.TrajectoryStep // SearchTrajectory records each route searched.
+	RerankScores        []rerank.RerankScore      // RerankScores is the per-chunk rerank explainability.
+	Metrics             obs.Metrics               // Metrics is the cost-and-latency record for the run.
+	InjectionFindings   []InjectionFinding        // InjectionFindings records prompt-injection screening results.
+	GraphTrace          retrieve.GraphTrace       // GraphTrace records graph-retrieval traversal.
 	// Global attributes a System.AskGlobal map-reduce run. It is the zero
 	// value for an ordinary Ask — the field is additive.
 	Global GlobalDiagnostics
@@ -99,27 +112,32 @@ type GlobalDiagnostics struct {
 	ConsultedReports []graph.CommunityReport
 }
 
+// Trace is the per-run trace an Observer receives — the inputs and the
+// routing/rerank/pack pipeline decisions for one Ask.
 type Trace struct {
-	Question            string
-	Namespace           string
-	TopK                int
-	Filters             map[string]any
-	SecurityFilters     map[string]any
-	RoutePath           []string
-	AutoRoutePath       []string
-	AutoRouteCandidates []retrieve.RouteCandidate
-	RoutePolicy         retrieve.RoutePolicyTrace
-	SearchPath          []string
-	MatchedSections     []string
-	ExpandedSections    []string
-	ExpandedChunkIDs    []string
-	RerankedChunkIDs    []string
-	PackedChunkIDs      []string
-	DroppedChunkIDs     []string
-	SelectedChunkIDs    []string
-	SearchTrajectory    []retrieve.TrajectoryStep
+	Question            string                    // Question is the query that was asked.
+	Namespace           string                    // Namespace is the namespace the run searched.
+	TopK                int                       // TopK is the retrieval cutoff used.
+	Filters             map[string]any            // Filters are the metadata filters applied.
+	SecurityFilters     map[string]any            // SecurityFilters are the access-control filters applied.
+	RoutePath           []string                  // RoutePath is the pinned section route, if any.
+	AutoRoutePath       []string                  // AutoRoutePath is the route auto-routing selected.
+	AutoRouteCandidates []retrieve.RouteCandidate // AutoRouteCandidates are the candidates auto-routing considered.
+	RoutePolicy         retrieve.RoutePolicyTrace // RoutePolicy records the routing-policy decision.
+	SearchPath          []string                  // SearchPath is the route ultimately searched.
+	MatchedSections     []string                  // MatchedSections are the sections that matched.
+	ExpandedSections    []string                  // ExpandedSections are sections added by expansion.
+	ExpandedChunkIDs    []string                  // ExpandedChunkIDs are chunks added by expansion.
+	RerankedChunkIDs    []string                  // RerankedChunkIDs are the chunk IDs after reranking.
+	PackedChunkIDs      []string                  // PackedChunkIDs are the chunk IDs packed into the prompt.
+	DroppedChunkIDs     []string                  // DroppedChunkIDs are chunks dropped by the packer.
+	SelectedChunkIDs    []string                  // SelectedChunkIDs are the chunks the answer used.
+	SearchTrajectory    []retrieve.TrajectoryStep // SearchTrajectory records each route searched.
 }
 
+// System is the top-level RAG pipeline and the front door of the SDK. It is
+// constructed by New and exposes the Ask, AskGlobal, AskDrift, Search, and
+// Import operations.
 type System struct {
 	splitter ingest.Splitter
 	embedder embed.Embedder
@@ -143,6 +161,9 @@ type System struct {
 	communitySummarizer graph.CommunitySummarizer
 }
 
+// New constructs a System from opts, filling unset dependencies with the
+// SDK's built-in defaults (hash embedder, in-memory store, hybrid retriever,
+// heuristic reranker, greedy packer).
 func New(opts Options) *System {
 	emb := opts.Embedder
 	if emb == nil {
@@ -225,14 +246,17 @@ func New(opts Options) *System {
 	}
 }
 
+// Remove deletes the chunk with the given ID from the store.
 func (s *System) Remove(ctx context.Context, id string) error {
 	return s.store.Remove(ctx, id)
 }
 
+// Stats returns chunk-count and dimension statistics for a namespace.
 func (s *System) Stats(ctx context.Context, namespace string) (store.Stats, error) {
 	return s.store.Stats(ctx, namespace)
 }
 
+// Model returns the System's generation model, or nil if none was configured.
 func (s *System) Model() generate.Model {
 	return s.model
 }

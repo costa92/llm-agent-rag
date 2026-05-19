@@ -16,9 +16,9 @@ import (
 // when the store carries a detected community hierarchy — the IDs of the
 // communities those reached entities belong to.
 type GraphTrace struct {
-	SeedEntityIDs    []string
-	ReachedEntityIDs []string
-	MaxHop           int
+	SeedEntityIDs    []string // SeedEntityIDs are the entities the query linked to.
+	ReachedEntityIDs []string // ReachedEntityIDs are the entities reached by traversal.
+	MaxHop           int      // MaxHop is the deepest hop the traversal reached.
 	// CommunityIDs lists, sorted and deduped, the communities the reached
 	// entities belong to. It is populated only when the store implements
 	// store.CommunityStore and the namespace has detected communities;
@@ -40,6 +40,7 @@ type GraphTrace struct {
 
 // EntityLinker maps a query to seed entities in a graph store.
 type EntityLinker interface {
+	// Link maps query to seed entities in the graph store.
 	Link(ctx context.Context, query, namespace string, gs store.GraphStore) ([]graph.Entity, error)
 }
 
@@ -72,10 +73,10 @@ func (LexicalEntityLinker) Link(ctx context.Context, query, namespace string, gs
 // the entities' provenance chunks scored by graph proximity. A store that
 // does not implement store.GraphStore yields an empty result and no error.
 type GraphRetriever struct {
-	Linker   EntityLinker
-	Store    store.Store // type-asserted for store.GraphStore
-	MaxDepth int          // default 1, hard cap 2
-	HopDecay float64      // proximity score decay per hop, default 0.5
+	Linker   EntityLinker // Linker maps the query to seed entities.
+	Store    store.Store  // Store is type-asserted for store.GraphStore.
+	MaxDepth int          // MaxDepth is the traversal depth; default 1, hard cap 2.
+	HopDecay float64      // HopDecay is the proximity-score decay per hop; default 0.5.
 	// PathRanker, when non-nil, turns on path mode: after building the
 	// neighborhood, Retrieve ranks the simple paths connecting the linked
 	// seed entities and records them — together with the evidence

@@ -16,30 +16,31 @@ var ErrJudgeModelRequired = errors.New("eval: judge model required")
 // JudgeRequest is one answer to be scored against its query and the context
 // it was supposed to be grounded in.
 type JudgeRequest struct {
-	Query   string
-	Answer  string
-	Context []string
+	Query   string   // Query is the question the answer responds to.
+	Answer  string   // Answer is the generated answer text to score.
+	Context []string // Context is the retrieved context the answer should be grounded in.
 }
 
 // Judgement scores a generated answer. Groundedness and AnswerRelevance are
 // in [0,1]; higher is better.
 type Judgement struct {
-	Groundedness    float64
-	AnswerRelevance float64
-	Rationale       string
+	Groundedness    float64 // Groundedness is how well the answer is supported by the context, in [0,1].
+	AnswerRelevance float64 // AnswerRelevance is how well the answer addresses the query, in [0,1].
+	Rationale       string  // Rationale explains the judge's scores.
 }
 
 // Judge scores a generated answer for groundedness and answer relevance —
 // legs 2 and 3 of the RAG Triad. Implementations may be heuristic or
 // model-backed; callers supply their own so eval stays vendor-neutral.
 type Judge interface {
+	// Judge scores the answer in req for groundedness and relevance.
 	Judge(ctx context.Context, req JudgeRequest) (Judgement, error)
 }
 
 // LLMJudge is an LLM-as-judge: it scores an answer by prompting a
 // generate.Model and parsing a JSON judgement from the reply.
 type LLMJudge struct {
-	Model generate.Model
+	Model generate.Model // Model generates the judgement.
 }
 
 const judgeSystemPrompt = `You are a strict evaluator of retrieval-augmented answers. ` +

@@ -1,3 +1,8 @@
+// Package retrieve fetches candidate chunks for a query. Retriever is the
+// central seam; the package ships frozen concrete retrievers — Dense,
+// Lexical, Hybrid, Graph, MultiHop, Structure, and Variant — plus the
+// query-shaping seams QueryDecomposer, QueryPreprocessor, QueryEmbedder,
+// EntityLinker, and SectionPlanner for callers that supply their own.
 package retrieve
 
 import (
@@ -16,80 +21,97 @@ import (
 	"github.com/costa92/llm-agent-rag/tree"
 )
 
+// Request is a retrieval request: the query plus every per-call retrieval
+// knob (routing, query expansion, structure, graph, and tree expansion).
 type Request struct {
-	Query                        string
-	Namespace                    string
-	TopK                         int
-	Filters                      map[string]any
-	SecurityFilters              map[string]any
-	RoutePath                    []string
-	EnableAutoRoute              bool
-	AutoRouteMinScore            float64
-	AutoRouteMaxCandidates       int
-	AutoRouteConfidenceThreshold float64
-	AutoRouteFanout              int
-	AutoRouteConfidenceGap       float64
-	EnableMQE                    bool
-	EnableHyDE                   bool
-	MQECount                     int
-	EnableStructure              bool
-	EnableGraph                  bool
-	EnableTreeExpansion          bool
-	ExpansionDepth               int
-	QueryVariants                []string
+	Query                        string         // Query is the search query text.
+	Namespace                    string         // Namespace scopes the search to one namespace.
+	TopK                         int            // TopK caps the number of hits returned.
+	Filters                      map[string]any // Filters restricts results by chunk metadata.
+	SecurityFilters              map[string]any // SecurityFilters applies caller-enforced access control.
+	RoutePath                    []string       // RoutePath pins retrieval to an explicit section route.
+	EnableAutoRoute              bool           // EnableAutoRoute turns on automatic section routing.
+	AutoRouteMinScore            float64        // AutoRouteMinScore is the minimum score for an auto-route candidate.
+	AutoRouteMaxCandidates       int            // AutoRouteMaxCandidates caps how many route candidates are considered.
+	AutoRouteConfidenceThreshold float64        // AutoRouteConfidenceThreshold is the minimum confidence to keep a candidate.
+	AutoRouteFanout              int            // AutoRouteFanout caps how many routes are searched in parallel.
+	AutoRouteConfidenceGap       float64        // AutoRouteConfidenceGap converges to top-1 when its lead exceeds this.
+	EnableMQE                    bool           // EnableMQE turns on multi-query expansion.
+	EnableHyDE                   bool           // EnableHyDE turns on hypothetical-document expansion.
+	MQECount                     int            // MQECount is the number of expansion queries to generate.
+	EnableStructure              bool           // EnableStructure turns on structure-aware retrieval.
+	EnableGraph                  bool           // EnableGraph turns on graph retrieval.
+	EnableTreeExpansion          bool           // EnableTreeExpansion turns on document-tree neighbor expansion.
+	ExpansionDepth               int            // ExpansionDepth bounds tree-expansion depth.
+	QueryVariants                []string       // QueryVariants are pre-computed alternate queries to search.
 }
 
+// PreprocessResult is the output of a QueryPreprocessor: the query variants to
+// search and a partial Trace.
 type PreprocessResult struct {
-	QueryVariants []string
-	Trace         Trace
+	QueryVariants []string // QueryVariants are the queries to run, original first.
+	Trace         Trace    // Trace is the partial retrieval trace from preprocessing.
 }
 
+// RouteCandidate is one candidate section route considered by auto-routing.
 type RouteCandidate struct {
-	Path       []string
-	Score      float64
-	Confidence float64
-	Queries    []string
-	Signals    []string
-	Selected   bool
-	Reason     string
+	Path       []string // Path is the section route this candidate represents.
+	Score      float64  // Score is the candidate's raw routing score.
+	Confidence float64  // Confidence is the normalized routing confidence.
+	Queries    []string // Queries are the queries associated with this route.
+	Signals    []string // Signals names the routing signals that produced the candidate.
+	Selected   bool     // Selected is true when the candidate was chosen for search.
+	Reason     string   // Reason explains why the candidate was selected or rejected.
 }
 
+// RoutePolicyTrace records how the auto-route policy decided fanout vs.
+// convergence for one request.
 type RoutePolicyTrace struct {
-	Mode                string
-	ConfidenceThreshold float64
-	ConfidenceGap       float64
-	Gap                 float64
-	Fanout              int
-	CandidateCount      int
-	SelectedCount       int
-	Rationale           []string
+	Mode                string   // Mode is the policy outcome, e.g. "fanout" or "converged".
+	ConfidenceThreshold float64  // ConfidenceThreshold is the keep threshold applied to candidates.
+	ConfidenceGap       float64  // ConfidenceGap is the convergence gap threshold.
+	Gap                 float64  // Gap is the observed top-1 vs top-2 confidence gap.
+	Fanout              int      // Fanout is the number of routes searched.
+	CandidateCount      int      // CandidateCount is how many candidates were considered.
+	SelectedCount       int      // SelectedCount is how many candidates were searched.
+	Rationale           []string // Rationale explains the policy decision step by step.
 }
 
+// TrajectoryStep records one route searched during a multi-route retrieval.
 type TrajectoryStep struct {
-	Route            []string
-	Confidence       float64
-	Mode             string
-	HitCount         int
-	HitIDs           []string
-	MatchedSections  []string
-	ExpandedSections []string
-	Rationale        string
+	Route            []string // Route is the section route searched in this step.
+	Confidence       float64  // Confidence is the route's routing confidence.
+	Mode             string   // Mode is the routing mode for this step.
+	HitCount         int      // HitCount is the number of hits the step returned.
+	HitIDs           []string // HitIDs are the chunk IDs the step returned.
+	MatchedSections  []string // MatchedSections are the sections the step matched.
+	ExpandedSections []string // ExpandedSections are the sections added by expansion.
+	Rationale        string   // Rationale explains the step.
 }
 
+// SectionPlannerDecision is the output of a SectionPlanner: which route
+// candidates to search and how.
 type SectionPlannerDecision struct {
-	Selected  []RouteCandidate
-	Mode      string
-	Fanout    int
-	Gap       float64
-	Rationale []string
+	Selected  []RouteCandidate // Selected are the candidates to search.
+	Mode      string           // Mode is the planning outcome, e.g. "fanout" or "converged".
+	Fanout    int              // Fanout is how many routes will be searched.
+	Gap       float64          // Gap is the observed top-1 vs top-2 confidence gap.
+	Rationale []string         // Rationale explains the planning decision.
 }
 
+// SectionPlanner decides which route candidates to search for a request. It
+// is the section-routing seam; GapAwareSectionPlanner is the built-in.
 type SectionPlanner interface {
+	// Plan selects route candidates to search for req.
 	Plan(ctx context.Context, req Request, candidates []RouteCandidate) (SectionPlannerDecision, error)
 }
 
+// GapAwareSectionPlanner is the built-in SectionPlanner. It converges to the
+// top route when its confidence lead exceeds the request's gap threshold and
+// otherwise fans out across the strongest candidates.
 type GapAwareSectionPlanner struct{}
 
+// Plan selects route candidates for req, converging or fanning out by gap.
 func (GapAwareSectionPlanner) Plan(_ context.Context, req Request, candidates []RouteCandidate) (SectionPlannerDecision, error) {
 	if len(candidates) == 0 {
 		return SectionPlannerDecision{
@@ -142,44 +164,53 @@ func (GapAwareSectionPlanner) Plan(_ context.Context, req Request, candidates []
 	}, nil
 }
 
+// Trace is the full retrieval trace for one request — every routing,
+// expansion, fusion, and graph decision the retriever made.
 type Trace struct {
-	OriginalQuery       string
-	EffectiveQuery      string
-	QueryVariants       []string
-	RoutePath           []string
-	AutoRoutePath       []string
-	AutoRouteCandidates []RouteCandidate
-	RoutePolicy         RoutePolicyTrace
-	SearchPath          []string
-	MatchedSections     []string
-	ExpandedSections    []string
-	ExpandedChunkIDs    []string
-	SelectedChunkIDs    []string
-	SearchTrajectory    []TrajectoryStep
-	Fusion              []FusionAttribution
-	Metrics             obs.Metrics
-	Hops                []HopAttribution
-	Graph               GraphTrace
+	OriginalQuery       string              // OriginalQuery is the query as submitted.
+	EffectiveQuery      string              // EffectiveQuery is the query actually searched after preprocessing.
+	QueryVariants       []string            // QueryVariants are every query variant searched.
+	RoutePath           []string            // RoutePath is the pinned section route, if any.
+	AutoRoutePath       []string            // AutoRoutePath is the route auto-routing selected.
+	AutoRouteCandidates []RouteCandidate    // AutoRouteCandidates are the candidates auto-routing considered.
+	RoutePolicy         RoutePolicyTrace    // RoutePolicy records the routing-policy decision.
+	SearchPath          []string            // SearchPath is the route ultimately searched.
+	MatchedSections     []string            // MatchedSections are the sections that matched.
+	ExpandedSections    []string            // ExpandedSections are sections added by expansion.
+	ExpandedChunkIDs    []string            // ExpandedChunkIDs are chunks added by expansion.
+	SelectedChunkIDs    []string            // SelectedChunkIDs are the chunks returned.
+	SearchTrajectory    []TrajectoryStep    // SearchTrajectory records each route searched.
+	Fusion              []FusionAttribution // Fusion records per-chunk hybrid-fusion attribution.
+	Metrics             obs.Metrics         // Metrics is the cost-and-latency record for the retrieval.
+	Hops                []HopAttribution    // Hops records multi-hop sub-query attribution.
+	Graph               GraphTrace          // Graph records graph-retrieval traversal.
 }
 
 // FusionAttribution records how each retrieval signal ranked one chunk during
 // reciprocal rank fusion. A rank of 0 means the signal did not return the
 // chunk. RRFScore is the chunk's summed RRF contribution across all signals.
 type FusionAttribution struct {
-	ChunkID       string
-	DenseRank     int
-	LexicalRank   int
-	StructureRank int
-	GraphRank     int
-	RRFScore      float64
+	ChunkID       string  // ChunkID identifies the chunk this attribution describes.
+	DenseRank     int     // DenseRank is the chunk's rank from dense retrieval; 0 if absent.
+	LexicalRank   int     // LexicalRank is the chunk's rank from lexical retrieval; 0 if absent.
+	StructureRank int     // StructureRank is the chunk's rank from structure retrieval; 0 if absent.
+	GraphRank     int     // GraphRank is the chunk's rank from graph retrieval; 0 if absent.
+	RRFScore      float64 // RRFScore is the chunk's summed reciprocal-rank-fusion score.
 }
 
+// QueryPreprocessor shapes a query before retrieval — expansion, HyDE,
+// routing. It is the query-shaping seam; NoopPreprocessor and
+// LLMExpansionPreprocessor are the built-ins.
 type QueryPreprocessor interface {
+	// Process produces the query variants to search for req.
 	Process(ctx context.Context, req Request) (PreprocessResult, error)
 }
 
+// NoopPreprocessor is a QueryPreprocessor that passes the query through
+// unchanged.
 type NoopPreprocessor struct{}
 
+// Process returns req's query unchanged as the sole variant.
 func (NoopPreprocessor) Process(_ context.Context, req Request) (PreprocessResult, error) {
 	return PreprocessResult{
 		QueryVariants: []string{req.Query},
@@ -195,10 +226,13 @@ func (NoopPreprocessor) Process(_ context.Context, req Request) (PreprocessResul
 	}, nil
 }
 
+// LLMExpansionPreprocessor is a QueryPreprocessor that uses an LLM to expand
+// the query via multi-query expansion and HyDE when the request enables them.
 type LLMExpansionPreprocessor struct {
-	Model generate.Model
+	Model generate.Model // Model generates the expansion queries.
 }
 
+// Process expands req's query with MQE and HyDE variants when enabled.
 func (p LLMExpansionPreprocessor) Process(ctx context.Context, req Request) (PreprocessResult, error) {
 	variants := uniqueQueries(req.Query)
 	if req.EnableMQE {
@@ -242,21 +276,32 @@ func (p LLMExpansionPreprocessor) Process(ctx context.Context, req Request) (Pre
 	}, nil
 }
 
+// QueryEmbedder turns a query string into a vector. It is the query-embedding
+// seam DenseRetriever depends on.
 type QueryEmbedder interface {
+	// Embed returns the embedding vector for text.
 	Embed(ctx context.Context, text string) (embed.Vector, error)
 }
 
+// Retriever fetches candidate chunks for a request. It is the central
+// retrieval seam; the package ships the frozen concrete retrievers.
 type Retriever interface {
+	// Retrieve returns the hits for req along with a retrieval Trace.
 	Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error)
 }
 
+// ErrBaseRetrieverRequired is returned by composite retrievers when their
+// wrapped base Retriever is nil.
 var ErrBaseRetrieverRequired = errors.New("retrieve: base retriever required")
 
+// VariantRetriever runs a base Retriever across multiple section routes
+// chosen by a SectionPlanner and fuses the results.
 type VariantRetriever struct {
-	Base    Retriever
-	Planner SectionPlanner
+	Base    Retriever      // Base is the underlying retriever run per route.
+	Planner SectionPlanner // Planner selects the routes to search.
 }
 
+// Retrieve plans section routes for req and fuses the base retriever's hits.
 func (r VariantRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
 	if r.Base == nil {
 		return nil, Trace{}, ErrBaseRetrieverRequired
@@ -526,11 +571,14 @@ func maxInt(a, b int) int {
 	return b
 }
 
+// DenseRetriever is the dense-vector concrete Retriever: it embeds the query
+// and searches the store by vector similarity.
 type DenseRetriever struct {
-	Embedder QueryEmbedder
-	Store    store.Store
+	Embedder QueryEmbedder // Embedder turns the query into a vector.
+	Store    store.Store   // Store is searched by vector similarity.
 }
 
+// Retrieve embeds req's query and returns the store's nearest-vector hits.
 func (r DenseRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
 	req, autoRouteCandidates := withAutoRoute(req, r.Store)
 	vec, err := r.Embedder.Embed(ctx, req.Query)
@@ -594,8 +642,8 @@ func (r DenseRetriever) retrieveWithinRoute(ctx context.Context, req Request, ve
 // BM25Params holds the Okapi BM25 tuning constants. The zero value resolves
 // to the standard defaults (K1 1.2, B 0.75) via orDefault.
 type BM25Params struct {
-	K1 float64
-	B  float64
+	K1 float64 // K1 is the BM25 term-frequency saturation constant (default 1.2).
+	B  float64 // B is the BM25 length-normalization constant (default 0.75).
 }
 
 func (p BM25Params) orDefault() BM25Params {
@@ -677,11 +725,14 @@ func bm25Scores(queryTokens []string, corpus []store.StoredChunk, p BM25Params) 
 	return scores
 }
 
+// LexicalRetriever is the lexical concrete Retriever: it ranks chunks by
+// Okapi BM25, using the store's native LexicalSearcher when available.
 type LexicalRetriever struct {
-	Store  store.Store
-	Params BM25Params
+	Store  store.Store // Store is searched for keyword matches.
+	Params BM25Params  // Params is the BM25 tuning configuration.
 }
 
+// Retrieve returns req's BM25-ranked lexical hits.
 func (r LexicalRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
 	req, autoRouteCandidates := withAutoRoute(req, r.Store)
 
@@ -750,10 +801,13 @@ func (r LexicalRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hi
 	}, nil
 }
 
+// StructureRetriever is the structure-aware concrete Retriever: it ranks
+// chunks using document section structure and headings.
 type StructureRetriever struct {
-	Store store.Store
+	Store store.Store // Store is searched for structural matches.
 }
 
+// Retrieve returns req's structure-aware hits.
 func (r StructureRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
 	req, autoRouteCandidates := withAutoRoute(req, r.Store)
 	chunks, err := r.Store.List(ctx, req.Namespace, store.Filter(req.Filters), store.Filter(req.SecurityFilters))
@@ -910,10 +964,12 @@ func pathEqualsFold(a []string, b []string) bool {
 	return true
 }
 
+// HybridRetriever is the hybrid concrete Retriever: it fuses dense, lexical,
+// structure, and (optionally) graph signals via reciprocal rank fusion.
 type HybridRetriever struct {
-	Dense     Retriever
-	Lexical   Retriever
-	Structure Retriever
+	Dense     Retriever // Dense is the dense-vector signal.
+	Lexical   Retriever // Lexical is the BM25 lexical signal.
+	Structure Retriever // Structure is the structure-aware signal.
 	// Graph, when set and req.EnableGraph is true, contributes a fourth
 	// RRF signal from knowledge-graph traversal.
 	Graph Retriever
@@ -922,6 +978,8 @@ type HybridRetriever struct {
 	RRFConstant float64
 }
 
+// Retrieve fuses the configured retrieval signals for req via reciprocal
+// rank fusion.
 func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
 	denseHits, denseTrace, err := r.Dense.Retrieve(ctx, req)
 	if err != nil {
