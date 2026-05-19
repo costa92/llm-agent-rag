@@ -6,6 +6,59 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [v1.0.0] - 2026-05-21
+
+The v1.0 API freeze. **Not a feature release** — no new features, no
+behavior change, and no new dependency anywhere in this release. v1.0.0
+freezes the `github.com/costa92/llm-agent-rag` public API and adopts the
+Go module import-compatibility promise: within the `v1.x` series the
+exported API is **additive-only** — exported symbols are not renamed,
+removed, or re-signed, and any breaking change requires a new major
+version (`/v2`). The full policy is written in
+[`docs/compatibility.md`](docs/compatibility.md).
+
+The `postgres` subpackage remains the only non-stdlib island; everything
+else stays stdlib-only.
+
+### Changed
+
+The **final** breaking changes before the freeze — the last renames the
+API will ever take in the `v1.x` line:
+
+- `eval.Evaluator` → `eval.RetrievalEvaluator` and `eval.Result` →
+  `eval.RetrievalResult`. The retrieval-evaluation type and result are now
+  prefixed, for symmetry with the already-prefixed answer-path evaluators
+  `eval.GlobalEvaluator`, `eval.DriftEvaluator`, and `eval.TriadEvaluator`.
+  Callers update the type names; the method sets and behavior are
+  unchanged.
+- the `ragkit` root package comment (`doc.go`) was rewritten to document
+  the root as a deliberate documentation anchor — it exports no symbols;
+  callers import the sub-packages (`rag`, `retrieve`, `store`, `embed`,
+  `ingest`, `generate`, `eval`, and the rest) directly. No symbol changed;
+  noted here because the package's documented role is now explicit.
+
+### Added
+
+Additive, non-breaking v1.0 work — documentation and a stability gate, no
+runtime change:
+
+- [`docs/compatibility.md`](docs/compatibility.md) — the written Go-module
+  compatibility promise: what the `v1.x` additive-only guarantee covers,
+  what is explicitly outside it, and how a future `/v2` would be handled.
+- `docs/api-audit-v1.0.md` — the freeze-time exported-surface audit: every
+  exported symbol of every importable package (plus the build-tagged
+  `adapter/llmagent`) inventoried and classified keep / rename / unexport.
+- complete package- and exported-symbol-level doc-comment coverage across
+  the module — every importable package and every exported symbol now
+  carries documentation.
+- the `api/v1.snapshot.txt` exported-surface snapshot gate — a committed
+  baseline of the frozen v1 API, regenerated and diffed by an ordinary
+  stdlib `go test` (`internal/apisnapshot`). It fails any unintended
+  exported-API change, complementing the narrower cross-repo `contract`
+  compile-pin: `contract` pins the core-facade subset across repos, the
+  snapshot diffs the whole intra-repo surface.
+- the repository is now `gofmt`-clean.
+
 ## [v0.6.0] - 2026-05-20
 
 Minor release closing the v0.9 GraphRAG refinements milestone (Phases
