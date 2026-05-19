@@ -6,6 +6,67 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [v0.5.0] - 2026-05-20
+
+Minor release closing the v0.8 GraphRAG Tier-3 milestone (Phases 23-25).
+Builds on the v0.7 Tier-1 GraphRAG with hierarchical community detection,
+lazy community summaries, a map-reduce global-search answer path, and
+embedding-similarity fuzzy entity resolution. Additive and opt-in — default
+behavior is unchanged. No new dependencies and no graph database: community
+detection is pure stdlib, the `postgres` subpackage remains the only
+non-stdlib island.
+
+### Added
+
+- community detection (Phase 23):
+  - new `graph.Community` type and `graph.CommunityDetector` seam
+  - `graph.LouvainDetector` — a deterministic pure-stdlib Louvain detector
+    producing a community hierarchy via coarsening passes
+  - `graph.LabelPropagationDetector` — a faster single-level alternative
+  - `store.CommunityStore` optional-capability interface (sibling of
+    `store.GraphStore`) — `GraphSnapshot`, `UpsertCommunities`,
+    `Communities` — with a pure-stdlib in-memory implementation and a
+    `postgres` implementation (`_communities` table)
+  - community detection wired as a post-canonicalization `Import` stage
+    (`rag.Options.CommunityDetector`), re-detected on a `ReplaceSource`
+    re-ingest
+- community summaries (Phase 24):
+  - `graph.CommunityReport` type, `graph.CommunitySummarizer` seam, and
+    `graph.LLMCommunitySummarizer` over `generate.Model`
+  - `graph.CommunityContentHash` — a deterministic community-membership
+    hash used as the report cache key
+  - lazy report generation (LazyGraphRAG model): reports are generated at
+    query time and cached, persisted via `CommunityStore`
+    (`PutCommunityReport` / `CommunityReport`; `postgres`
+    `_community_reports` table)
+- global search (Phase 24):
+  - `rag.System.AskGlobal` — a map-reduce global-search answer path over
+    community reports (community selection, lazy reports, per-community
+    map, score-ranked reduce); a separate path from `Ask` — no retrieve,
+    rerank, or pack
+  - `rag.System.PrewarmCommunityReports` — opt-in eager report generation
+  - `Diagnostics.Global` global-search attribution; `GraphTrace.CommunityIDs`
+    local-retrieval community attribution
+- fuzzy entity resolution (Phase 25):
+  - `graph.EntityResolver` seam, `graph.NoopEntityResolver` (the default),
+    and `graph.EmbeddingEntityResolver` — embedding-similarity merge of
+    near-duplicate entities, same-type-only, run as an opt-in pre-pass
+    before `Canonicalize`
+- evaluation (Phase 25):
+  - `eval.GlobalEvaluator` — a global-search evaluation harness over the
+    RAG-Triad / `LLMJudge` path (groundedness, answer-relevance)
+  - `docs/graphrag.md` updated for Tier-3
+
+### Notes
+
+- The `postgres` `_communities` / `_community_reports` paths are env-gated;
+  like the v0.5 `tsvector` and v0.7 graph paths they are not yet exercised
+  against a live database in CI.
+- `EmbeddingEntityResolver` has documented false-positive risk; it ships
+  conservative (high threshold, same-type-only) and opt-in.
+- Deferred to v0.9: DRIFT search, incremental community maintenance, and
+  path-ranking / subgraph-as-evidence.
+
 ## [v0.4.0] - 2026-05-19
 
 Minor release closing the v0.7 GraphRAG milestone (Phases 20-22). Tier-1
