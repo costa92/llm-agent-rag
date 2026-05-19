@@ -86,8 +86,10 @@ func RegisterTypes(ctx context.Context, conn *pgx.Conn) error {
 }
 
 // Migrate creates the pgvector extension (idempotent), the chunks table, a
-// default index on the namespace column, and a generated tsvector column +
-// GIN index backing full-text lexical search. Safe to call on every startup.
+// default index on the namespace column, a generated tsvector column + GIN
+// index backing full-text lexical search, the entities/relations tables
+// backing GraphStore, and the communities + community-reports tables backing
+// CommunityStore. Safe to call on every startup.
 func (s *Store) Migrate(ctx context.Context) error {
 	stmts := []string{
 		`CREATE EXTENSION IF NOT EXISTS vector`,
@@ -132,6 +134,23 @@ func (s *Store) Migrate(ctx context.Context) error {
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_rel_source_idx ON %s_relations (namespace, source)`, s.cfg.Table, s.cfg.Table),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_rel_target_idx ON %s_relations (namespace, target)`, s.cfg.Table, s.cfg.Table),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_ent_name_idx ON %s_entities (namespace, lower(name))`, s.cfg.Table, s.cfg.Table),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s_communities (
+			namespace    TEXT NOT NULL,
+			community_id TEXT NOT NULL,
+			level        INT NOT NULL,
+			parent_id    TEXT,
+			entity_ids   TEXT[],
+			relation_ids TEXT[],
+			PRIMARY KEY (namespace, community_id)
+		)`, s.cfg.Table),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s_community_reports (
+			namespace    TEXT NOT NULL,
+			community_id TEXT NOT NULL,
+			title        TEXT,
+			summary      TEXT,
+			content_hash TEXT,
+			PRIMARY KEY (namespace, community_id)
+		)`, s.cfg.Table),
 	}
 	for _, stmt := range stmts {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {

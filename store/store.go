@@ -54,6 +54,36 @@ type GraphStore interface {
 	FindEntities(ctx context.Context, namespace string, names []string) ([]graph.Entity, error)
 }
 
+// CommunityStore is an optional capability a Store may implement to persist
+// a namespace's detected community hierarchy and to read back the whole
+// namespace graph (the input community detection needs). It is a sibling of
+// GraphStore — consumers type-assert for it and degrade gracefully when a
+// store does not implement it, exactly like LexicalSearcher and GraphStore.
+// Adding it leaves the v0.7 GraphStore interface byte-identical. The
+// community set is per-namespace.
+type CommunityStore interface {
+	// GraphSnapshot returns the full stored graph for a namespace —
+	// entities and relations in deterministic order. It is the input to
+	// community detection. An unknown namespace yields an empty graph and
+	// no error.
+	GraphSnapshot(ctx context.Context, namespace string) (graph.Graph, error)
+	// UpsertCommunities replaces the namespace's community set with
+	// communities (replace-all: detection always produces the full set).
+	UpsertCommunities(ctx context.Context, namespace string, communities []graph.Community) error
+	// Communities returns the namespace's stored community set, sorted by
+	// community ID. An unknown namespace yields nil and no error.
+	Communities(ctx context.Context, namespace string) ([]graph.Community, error)
+	// PutCommunityReport persists report under (namespace, report.CommunityID),
+	// overwriting any existing report for that community. It is the report
+	// cache's write side — community summaries are generated lazily at query
+	// time and cached here.
+	PutCommunityReport(ctx context.Context, namespace string, report graph.CommunityReport) error
+	// CommunityReport returns the stored report for a community. The bool is
+	// false (and the error nil) when no report has been persisted for that
+	// community ID — a cache miss, not an error.
+	CommunityReport(ctx context.Context, namespace, communityID string) (graph.CommunityReport, bool, error)
+}
+
 var ErrNotFound = errors.New("store: chunk not found")
 
 var ErrDimensionMismatch = errors.New("store: vector dimension mismatch")

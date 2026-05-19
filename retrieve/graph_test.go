@@ -91,6 +91,47 @@ func TestGraphRetrieverNonGraphStore(t *testing.T) {
 	}
 }
 
+// TestGraphRetrieverCommunityIDs verifies that, when the store is a
+// store.CommunityStore with detected communities, GraphRetriever.Retrieve
+// records the IDs of the communities its reached entities belong to —
+// sorted and deduped.
+func TestGraphRetrieverCommunityIDs(t *testing.T) {
+	st := graphFixture(t)
+	// Two communities partitioning the chain: {alpha,bravo} and {charlie}.
+	if err := st.UpsertCommunities(context.Background(), "ns", []graph.Community{
+		{ID: "comm-1", Level: 0, EntityIDs: []string{"t:alpha", "t:bravo"}},
+		{ID: "comm-0", Level: 0, EntityIDs: []string{"t:charlie"}},
+	}); err != nil {
+		t.Fatalf("UpsertCommunities: %v", err)
+	}
+
+	r := GraphRetriever{Store: st, MaxDepth: 2}
+	_, trace, err := r.Retrieve(context.Background(), Request{Query: "Alpha", Namespace: "ns", TopK: 10})
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	// The traversal reaches all three entities, spanning both communities.
+	want := []string{"comm-0", "comm-1"}
+	if got := trace.Graph.CommunityIDs; len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("Trace.Graph.CommunityIDs = %v, want %v (sorted, deduped)", got, want)
+	}
+}
+
+// TestGraphRetrieverCommunityIDsNil verifies graceful degradation: a store
+// that is a GraphStore but carries no detected communities yields a nil
+// CommunityIDs — no behavior change.
+func TestGraphRetrieverCommunityIDsNil(t *testing.T) {
+	st := graphFixture(t) // a GraphStore, but UpsertCommunities was never called
+	r := GraphRetriever{Store: st, MaxDepth: 2}
+	_, trace, err := r.Retrieve(context.Background(), Request{Query: "Alpha", Namespace: "ns", TopK: 10})
+	if err != nil {
+		t.Fatalf("Retrieve: %v", err)
+	}
+	if trace.Graph.CommunityIDs != nil {
+		t.Fatalf("Trace.Graph.CommunityIDs = %v, want nil (no communities detected)", trace.Graph.CommunityIDs)
+	}
+}
+
 func TestHybridRetrieverFusesGraphSignal(t *testing.T) {
 	st := graphFixture(t)
 	empty := &hopStubRetriever{byQuery: map[string][]store.Hit{}}

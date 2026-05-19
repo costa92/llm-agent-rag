@@ -62,7 +62,8 @@ func newTableStore(ctx context.Context, pool *pgxpool.Pool) storetest.Factory {
 			t.Fatalf("Migrate: %v", err)
 		}
 		t.Cleanup(func() {
-			drop := fmt.Sprintf(`DROP TABLE IF EXISTS %s, %s_entities, %s_relations`, table, table, table)
+			drop := fmt.Sprintf(`DROP TABLE IF EXISTS %s, %s_entities, %s_relations, %s_communities, %s_community_reports`,
+				table, table, table, table, table)
 			if _, err := pool.Exec(context.Background(), drop); err != nil {
 				t.Logf("cleanup drop table %s: %v", table, err)
 			}
@@ -89,6 +90,15 @@ func TestPostgresLexicalConformance(t *testing.T) {
 func TestPostgresGraphConformance(t *testing.T) {
 	pool := openTestPool(t)
 	storetest.RunGraphConformance(t, newTableStore(context.Background(), pool))
+}
+
+// TestPostgresCommunityConformance runs the community-storage conformance
+// suite against a live Postgres, exercising the _communities table, the
+// GraphSnapshot read over the entities/relations tables, and the
+// replace-all UpsertCommunities path.
+func TestPostgresCommunityConformance(t *testing.T) {
+	pool := openTestPool(t)
+	storetest.RunCommunityConformance(t, newTableStore(context.Background(), pool))
 }
 
 // sanitizeTableName builds a safe ASCII identifier from t.Name(). t.Name()

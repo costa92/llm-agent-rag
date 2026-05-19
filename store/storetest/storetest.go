@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/costa92/llm-agent-rag/embed"
@@ -89,6 +90,268 @@ func RunGraphConformance(t *testing.T, factory Factory) {
 	t.Run("UpsertGraph_union_merges", func(t *testing.T) { testGraphUnionMerge(t, factory) })
 	t.Run("RemoveGraphBySource_gcs_unreferenced", func(t *testing.T) { testGraphRemoveBySource(t, factory) })
 	t.Run("FindEntities_resolves_by_name", func(t *testing.T) { testGraphFindEntities(t, factory) })
+}
+
+// RunCommunityConformance executes community-storage conformance subtests
+// against the factory's store. If the store does not implement
+// store.CommunityStore the whole suite is skipped, so callers can invoke it
+// unconditionally.
+func RunCommunityConformance(t *testing.T, factory Factory) {
+	t.Helper()
+	if _, ok := factory(t).(store.CommunityStore); !ok {
+		t.Skip("store does not implement store.CommunityStore")
+	}
+	t.Run("GraphSnapshot_round_trips_entities_and_relations", func(t *testing.T) { testCommunitySnapshot(t, factory) })
+	t.Run("UpsertCommunities_then_Communities_round_trips", func(t *testing.T) { testCommunityRoundTrip(t, factory) })
+	t.Run("UpsertCommunities_replaces_not_appends", func(t *testing.T) { testCommunityReplace(t, factory) })
+	t.Run("Communities_are_namespace_isolated", func(t *testing.T) { testCommunityNamespaceIsolation(t, factory) })
+	t.Run("Unknown_namespace_is_empty_no_error", func(t *testing.T) { testCommunityUnknownNamespace(t, factory) })
+	t.Run("PutCommunityReport_then_CommunityReport_round_trips", func(t *testing.T) { testCommunityReportRoundTrip(t, factory) })
+	t.Run("CommunityReport_unknown_id_is_miss_no_error", func(t *testing.T) { testCommunityReportMiss(t, factory) })
+	t.Run("PutCommunityReport_overwrites", func(t *testing.T) { testCommunityReportOverwrite(t, factory) })
+	t.Run("CommunityReports_are_namespace_isolated", func(t *testing.T) { testCommunityReportNamespaceIsolation(t, factory) })
+}
+
+func communityStore(t *testing.T, s store.Store) store.CommunityStore {
+	t.Helper()
+	cs, ok := s.(store.CommunityStore)
+	if !ok {
+		t.Fatalf("store does not implement store.CommunityStore")
+	}
+	return cs
+}
+
+// sampleCommunities builds a small two-level community hierarchy: two
+// level-0 communities grouped under one level-1 community.
+func sampleCommunities() []graph.Community {
+	return []graph.Community{
+		{
+			ID:        "L1-t:a",
+			Level:     1,
+			ParentID:  "",
+			EntityIDs: []string{"t:a", "t:b", "t:c", "t:d"},
+		},
+		{
+			ID:          "L0-t:a",
+			Level:       0,
+			ParentID:    "L1-t:a",
+			EntityIDs:   []string{"t:a", "t:b"},
+			RelationIDs: []string{"t:a::r::t:b"},
+		},
+		{
+			ID:          "L0-t:c",
+			Level:       0,
+			ParentID:    "L1-t:a",
+			EntityIDs:   []string{"t:c", "t:d"},
+			RelationIDs: []string{"t:c::r::t:d"},
+		},
+	}
+}
+
+func testCommunitySnapshot(t *testing.T, factory Factory) {
+	s := factory(t)
+	cs := communityStore(t, s)
+	gs := graphStore(t, s)
+	if err := gs.UpsertGraph(ctx(), "ns", chainGraph("c1")); err != nil {
+		t.Fatalf("UpsertGraph: %v", err)
+	}
+	snap, err := cs.GraphSnapshot(ctx(), "ns")
+	if err != nil {
+		t.Fatalf("GraphSnapshot: %v", err)
+	}
+	if len(snap.Entities) != 4 {
+		t.Fatalf("snapshot entities = %d, want 4", len(snap.Entities))
+	}
+	if len(snap.Relations) != 3 {
+		t.Fatalf("snapshot relations = %d, want 3", len(snap.Relations))
+	}
+	// Deterministic, sorted-by-ID order.
+	for i := 1; i < len(snap.Entities); i++ {
+		if snap.Entities[i-1].ID >= snap.Entities[i].ID {
+			t.Fatalf("snapshot entities not sorted by ID: %v", snap.Entities)
+		}
+	}
+	for i := 1; i < len(snap.Relations); i++ {
+		if snap.Relations[i-1].ID >= snap.Relations[i].ID {
+			t.Fatalf("snapshot relations not sorted by ID: %v", snap.Relations)
+		}
+	}
+	if snap.Entities[0].ID != "t:a" || snap.Entities[0].Name != "A" {
+		t.Fatalf("snapshot first entity = %+v, want t:a/A", snap.Entities[0])
+	}
+}
+
+func testCommunityRoundTrip(t *testing.T, factory Factory) {
+	cs := communityStore(t, factory(t))
+	want := sampleCommunities()
+	if err := cs.UpsertCommunities(ctx(), "ns", want); err != nil {
+		t.Fatalf("UpsertCommunities: %v", err)
+	}
+	got, err := cs.Communities(ctx(), "ns")
+	if err != nil {
+		t.Fatalf("Communities: %v", err)
+	}
+	// Communities are returned sorted by ID; compare against the same order.
+	wantSorted := append([]graph.Community(nil), want...)
+	sort.Slice(wantSorted, func(i, j int) bool { return wantSorted[i].ID < wantSorted[j].ID })
+	if !reflect.DeepEqual(got, wantSorted) {
+		t.Fatalf("community round-trip mismatch:\n got %+v\nwant %+v", got, wantSorted)
+	}
+}
+
+func testCommunityReplace(t *testing.T, factory Factory) {
+	cs := communityStore(t, factory(t))
+	if err := cs.UpsertCommunities(ctx(), "ns", sampleCommunities()); err != nil {
+		t.Fatalf("UpsertCommunities #1: %v", err)
+	}
+	// A second upsert with a smaller set must replace, not append.
+	replacement := []graph.Community{
+		{ID: "L0-t:x", Level: 0, EntityIDs: []string{"t:x"}},
+	}
+	if err := cs.UpsertCommunities(ctx(), "ns", replacement); err != nil {
+		t.Fatalf("UpsertCommunities #2: %v", err)
+	}
+	got, err := cs.Communities(ctx(), "ns")
+	if err != nil {
+		t.Fatalf("Communities: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "L0-t:x" {
+		t.Fatalf("after replace: communities = %+v, want only L0-t:x (replace, not append)", got)
+	}
+}
+
+func testCommunityNamespaceIsolation(t *testing.T, factory Factory) {
+	cs := communityStore(t, factory(t))
+	if err := cs.UpsertCommunities(ctx(), "alpha", sampleCommunities()); err != nil {
+		t.Fatalf("UpsertCommunities alpha: %v", err)
+	}
+	beta := []graph.Community{{ID: "L0-t:z", Level: 0, EntityIDs: []string{"t:z"}}}
+	if err := cs.UpsertCommunities(ctx(), "beta", beta); err != nil {
+		t.Fatalf("UpsertCommunities beta: %v", err)
+	}
+	gotAlpha, err := cs.Communities(ctx(), "alpha")
+	if err != nil {
+		t.Fatalf("Communities alpha: %v", err)
+	}
+	if len(gotAlpha) != 3 {
+		t.Fatalf("alpha communities = %d, want 3 (beta must not leak in)", len(gotAlpha))
+	}
+	gotBeta, err := cs.Communities(ctx(), "beta")
+	if err != nil {
+		t.Fatalf("Communities beta: %v", err)
+	}
+	if len(gotBeta) != 1 || gotBeta[0].ID != "L0-t:z" {
+		t.Fatalf("beta communities = %+v, want only L0-t:z", gotBeta)
+	}
+}
+
+func testCommunityUnknownNamespace(t *testing.T, factory Factory) {
+	cs := communityStore(t, factory(t))
+	snap, err := cs.GraphSnapshot(ctx(), "missing")
+	if err != nil {
+		t.Fatalf("GraphSnapshot unknown ns: %v", err)
+	}
+	if len(snap.Entities) != 0 || len(snap.Relations) != 0 {
+		t.Fatalf("GraphSnapshot unknown ns = %+v, want empty graph", snap)
+	}
+	comms, err := cs.Communities(ctx(), "missing")
+	if err != nil {
+		t.Fatalf("Communities unknown ns: %v", err)
+	}
+	if comms != nil {
+		t.Fatalf("Communities unknown ns = %+v, want nil", comms)
+	}
+}
+
+// sampleReport builds a CommunityReport for use in the report round-trip
+// conformance subtests.
+func sampleReport(communityID string) graph.CommunityReport {
+	return graph.CommunityReport{
+		CommunityID: communityID,
+		Title:       "Early Computing Pioneers",
+		Summary:     "A community of people and machines central to the dawn of computing.",
+		ContentHash: "deadbeefcafe",
+	}
+}
+
+func testCommunityReportRoundTrip(t *testing.T, factory Factory) {
+	cs := communityStore(t, factory(t))
+	want := sampleReport("L0-t:a")
+	if err := cs.PutCommunityReport(ctx(), "ns", want); err != nil {
+		t.Fatalf("PutCommunityReport: %v", err)
+	}
+	got, found, err := cs.CommunityReport(ctx(), "ns", "L0-t:a")
+	if err != nil {
+		t.Fatalf("CommunityReport: %v", err)
+	}
+	if !found {
+		t.Fatalf("CommunityReport: found = false, want true")
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("report round-trip mismatch:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+func testCommunityReportMiss(t *testing.T, factory Factory) {
+	cs := communityStore(t, factory(t))
+	got, found, err := cs.CommunityReport(ctx(), "ns", "nonexistent")
+	if err != nil {
+		t.Fatalf("CommunityReport unknown id: %v", err)
+	}
+	if found {
+		t.Fatalf("CommunityReport unknown id: found = true, want false (a cache miss)")
+	}
+	if !reflect.DeepEqual(got, graph.CommunityReport{}) {
+		t.Fatalf("CommunityReport unknown id = %+v, want zero value", got)
+	}
+}
+
+func testCommunityReportOverwrite(t *testing.T, factory Factory) {
+	cs := communityStore(t, factory(t))
+	if err := cs.PutCommunityReport(ctx(), "ns", sampleReport("L0-t:a")); err != nil {
+		t.Fatalf("PutCommunityReport #1: %v", err)
+	}
+	updated := graph.CommunityReport{
+		CommunityID: "L0-t:a",
+		Title:       "Revised Title",
+		Summary:     "A revised summary after re-detection.",
+		ContentHash: "feedface0000",
+	}
+	if err := cs.PutCommunityReport(ctx(), "ns", updated); err != nil {
+		t.Fatalf("PutCommunityReport #2: %v", err)
+	}
+	got, found, err := cs.CommunityReport(ctx(), "ns", "L0-t:a")
+	if err != nil {
+		t.Fatalf("CommunityReport: %v", err)
+	}
+	if !found {
+		t.Fatalf("CommunityReport: found = false, want true")
+	}
+	if !reflect.DeepEqual(got, updated) {
+		t.Fatalf("second Put did not overwrite:\n got %+v\nwant %+v", got, updated)
+	}
+}
+
+func testCommunityReportNamespaceIsolation(t *testing.T, factory Factory) {
+	cs := communityStore(t, factory(t))
+	if err := cs.PutCommunityReport(ctx(), "alpha", sampleReport("L0-t:a")); err != nil {
+		t.Fatalf("PutCommunityReport alpha: %v", err)
+	}
+	// The same community ID under a different namespace must not collide.
+	_, found, err := cs.CommunityReport(ctx(), "beta", "L0-t:a")
+	if err != nil {
+		t.Fatalf("CommunityReport beta: %v", err)
+	}
+	if found {
+		t.Fatalf("CommunityReport beta: found = true, want false (alpha must not leak in)")
+	}
+	got, found, err := cs.CommunityReport(ctx(), "alpha", "L0-t:a")
+	if err != nil {
+		t.Fatalf("CommunityReport alpha: %v", err)
+	}
+	if !found || got.Title != "Early Computing Pioneers" {
+		t.Fatalf("CommunityReport alpha = %+v (found=%v), want the alpha report", got, found)
+	}
 }
 
 func graphStore(t *testing.T, s store.Store) store.GraphStore {

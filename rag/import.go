@@ -119,7 +119,16 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 	res.Metrics = metrics
 	res.Redactions = redactionSummary(redactionCounts)
 	if s.entityExtractor != nil {
-		g := graph.Canonicalize(graphEnts, graphRels)
+		// Fuzzy entity resolution runs as an opt-in pre-pass before
+		// Canonicalize's exact-match merge. It rewrites near-duplicate
+		// entity names — and the relation endpoints that reference them —
+		// to a shared canonical surface form. With the NoopEntityResolver
+		// default this is a no-op and the graph is byte-identical.
+		resolvedEnts, resolvedRels, err := s.entityResolver.Resolve(ctx, graphEnts, graphRels)
+		if err != nil {
+			return ingest.ImportResult{}, fmt.Errorf("rag: resolve entities: %w", err)
+		}
+		g := graph.Canonicalize(resolvedEnts, resolvedRels)
 		res.Graph = &g
 	}
 	// Persist the graph when the store implements store.GraphStore. On a
@@ -137,6 +146,28 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 			if err := graphStore.UpsertGraph(ctx, opts.Namespace, *res.Graph); err != nil {
 				return ingest.ImportResult{}, fmt.Errorf("rag: persist graph: %w", err)
 			}
+		}
+	}
+	// Detect communities once the namespace graph is fully persisted. Reading
+	// the snapshot *after* UpsertGraph (and after RemoveGraphBySource on a
+	// ReplaceSource re-ingest) means a re-ingest re-detects the whole
+	// namespace automatically — replace-all UpsertCommunities reconciles
+	// (KG3-7). A store that is not a CommunityStore, or no detector
+	// configured, degrades gracefully: no detection, no error.
+	if cs, ok := s.store.(store.CommunityStore); ok && s.communityDetector != nil {
+		snap, err := cs.GraphSnapshot(ctx, opts.Namespace)
+		if err != nil {
+			return ingest.ImportResult{}, fmt.Errorf("rag: detect communities: %w", err)
+		}
+		communities, err := s.communityDetector.Detect(ctx, snap)
+		if err != nil {
+			return ingest.ImportResult{}, fmt.Errorf("rag: detect communities: %w", err)
+		}
+		if err := cs.UpsertCommunities(ctx, opts.Namespace, communities); err != nil {
+			return ingest.ImportResult{}, fmt.Errorf("rag: detect communities: %w", err)
+		}
+		if res.Graph != nil {
+			res.Graph.Communities = communities
 		}
 	}
 	if s.observer.OnImport != nil {

@@ -48,6 +48,29 @@ type Diagnostics struct {
 	Metrics             obs.Metrics
 	InjectionFindings   []InjectionFinding
 	GraphTrace          retrieve.GraphTrace
+	// Global attributes a System.AskGlobal map-reduce run. It is the zero
+	// value for an ordinary Ask — the field is additive.
+	Global GlobalDiagnostics
+}
+
+// GlobalDiagnostics attributes one System.AskGlobal run: which communities
+// were consulted, the per-community helpfulness score the map step parsed,
+// and how many model calls the map and reduce steps made.
+type GlobalDiagnostics struct {
+	// CommunityIDs are the consulted communities, in selection order.
+	CommunityIDs []string
+	// MapScores is the parsed helpfulness score (0-100) per community ID.
+	MapScores map[string]int
+	// MapCalls counts the per-community map generations.
+	MapCalls int
+	// ReduceCalls counts the reduce-step generations (0 or 1).
+	ReduceCalls int
+	// ConsultedReports are the community reports AskGlobal actually mapped
+	// over — the lazily-loaded or freshly-generated reports for the selected
+	// communities, in selection order. It is the answer's grounding context:
+	// an evaluator (eval.GlobalEvaluator) reads it off the Answer and judges
+	// global-search groundedness against it, without needing store plumbing.
+	ConsultedReports []graph.CommunityReport
 }
 
 type Trace struct {
@@ -88,7 +111,10 @@ type System struct {
 	injectionScanner guard.InjectionScanner
 	sanitizeMode     guard.SanitizeMode
 
-	entityExtractor graph.EntityExtractor
+	entityExtractor     graph.EntityExtractor
+	entityResolver      graph.EntityResolver
+	communityDetector   graph.CommunityDetector
+	communitySummarizer graph.CommunitySummarizer
 }
 
 func New(opts Options) *System {
@@ -145,6 +171,10 @@ func New(opts Options) *System {
 	if maxChars <= 0 {
 		maxChars = 500
 	}
+	entityResolver := opts.EntityResolver
+	if entityResolver == nil {
+		entityResolver = graph.NoopEntityResolver{}
+	}
 	return &System{
 		splitter: splitter,
 		embedder: emb,
@@ -162,7 +192,10 @@ func New(opts Options) *System {
 		injectionScanner: opts.InjectionScanner,
 		sanitizeMode:     opts.SanitizeMode,
 
-		entityExtractor: opts.EntityExtractor,
+		entityExtractor:     opts.EntityExtractor,
+		entityResolver:      entityResolver,
+		communityDetector:   opts.CommunityDetector,
+		communitySummarizer: opts.CommunitySummarizer,
 	}
 }
 

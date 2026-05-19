@@ -42,6 +42,21 @@ type AskOptions struct {
 	MaxTokens int
 }
 
+// GlobalOptions configures System.AskGlobal — the map-reduce global-search
+// answer path over community reports. It is intentionally small: v0.8 fixes
+// global search on the coarsest community level, so the only knob is how many
+// communities to consult.
+type GlobalOptions struct {
+	// Namespace selects which namespace's community hierarchy to search.
+	Namespace string
+	// MaxCommunities caps how many coarsest-level communities feed the
+	// map-reduce. A value <= 0 selects a sane default (defaultMaxCommunities).
+	// When the coarsest level has more communities than this, AskGlobal ranks
+	// them by query-token overlap with member entity names and keeps the top
+	// MaxCommunities (ties broken by community ID).
+	MaxCommunities int
+}
+
 type Options struct {
 	Splitter         ingest.Splitter
 	Embedder         embed.Embedder
@@ -58,4 +73,22 @@ type Options struct {
 	InjectionScanner guard.InjectionScanner
 	SanitizeMode     guard.SanitizeMode
 	EntityExtractor  graph.EntityExtractor
+	// EntityResolver, when set, runs as an opt-in pre-pass in Import that
+	// merges near-duplicate entities (e.g. "Acme" / "Acme Corp") by
+	// embedding similarity before graph.Canonicalize's exact-match merge.
+	// A nil resolver defaults to graph.NoopEntityResolver{} — ingestion is
+	// then byte-identical to pre-fuzzy-resolution behavior.
+	EntityResolver graph.EntityResolver
+	// CommunitySummarizer, when set, writes the community reports that
+	// System.AskGlobal maps over. AskGlobal generates reports lazily on a
+	// cache miss (or a stale ContentHash) and persists them on the store's
+	// store.CommunityStore. A nil summarizer makes AskGlobal return
+	// ErrCommunitySummarizerRequired the first time a report must be built.
+	CommunitySummarizer graph.CommunitySummarizer
+	// CommunityDetector, when set together with a store that implements
+	// store.CommunityStore, makes Import detect a community hierarchy over
+	// the namespace graph after it is persisted. A nil detector (or a store
+	// that is not a CommunityStore) leaves communities undetected — Import
+	// behaves exactly as before.
+	CommunityDetector graph.CommunityDetector
 }

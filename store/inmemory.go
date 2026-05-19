@@ -7,13 +7,16 @@ import (
 	"sync"
 
 	"github.com/costa92/llm-agent-rag/embed"
+	"github.com/costa92/llm-agent-rag/graph"
 )
 
 type InMemoryStore struct {
-	mu     sync.RWMutex
-	dim    int
-	all    map[string]StoredChunk
-	graphs map[string]*nsGraph // namespace -> entity/relation graph
+	mu          sync.RWMutex
+	dim         int
+	all         map[string]StoredChunk
+	graphs      map[string]*nsGraph                          // namespace -> entity/relation graph
+	communities map[string][]graph.Community                 // namespace -> detected community hierarchy
+	reports     map[string]map[string]graph.CommunityReport  // namespace -> communityID -> report
 }
 
 func NewInMemoryStore(dim int) *InMemoryStore {
@@ -21,9 +24,11 @@ func NewInMemoryStore(dim int) *InMemoryStore {
 		dim = 32
 	}
 	return &InMemoryStore{
-		dim:    dim,
-		all:    make(map[string]StoredChunk),
-		graphs: make(map[string]*nsGraph),
+		dim:         dim,
+		all:         make(map[string]StoredChunk),
+		graphs:      make(map[string]*nsGraph),
+		communities: make(map[string][]graph.Community),
+		reports:     make(map[string]map[string]graph.CommunityReport),
 	}
 }
 

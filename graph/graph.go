@@ -1,7 +1,9 @@
 // Package graph builds and holds a knowledge graph — entities and typed
 // relations extracted from ingested documents — for GraphRAG retrieval.
-// It is a leaf package: it imports only the standard library and the
-// generate seam (for the LLM-backed extractor).
+// It is a near-leaf package: it imports only the standard library, the
+// generate seam (for the LLM-backed extractor), and the embed seam (for
+// the embedding-similarity entity resolver). Both seams are themselves
+// stdlib-only leaf packages, so graph adds no third-party dependency.
 package graph
 
 import "context"
@@ -33,6 +35,10 @@ type Relation struct {
 type Graph struct {
 	Entities  []Entity
 	Relations []Relation
+	// Communities is the optional detected community hierarchy. It is
+	// additive — a zero-value Graph behaves exactly as in v0.7. A
+	// CommunityDetector populates it; see community.go.
+	Communities []Community
 }
 
 // Subgraph is the result of a neighborhood traversal: the reached

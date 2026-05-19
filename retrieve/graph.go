@@ -12,11 +12,19 @@ import (
 )
 
 // GraphTrace attributes a graph-traversal retrieval: the seed entities the
-// query linked to, the entities reached by traversal, and the deepest hop.
+// query linked to, the entities reached by traversal, the deepest hop, and —
+// when the store carries a detected community hierarchy — the IDs of the
+// communities those reached entities belong to.
 type GraphTrace struct {
 	SeedEntityIDs    []string
 	ReachedEntityIDs []string
 	MaxHop           int
+	// CommunityIDs lists, sorted and deduped, the communities the reached
+	// entities belong to. It is populated only when the store implements
+	// store.CommunityStore and the namespace has detected communities;
+	// otherwise it is nil — a store without a community hierarchy degrades
+	// gracefully, no behavior change.
+	CommunityIDs []string
 }
 
 // EntityLinker maps a query to seed entities in a graph store.
@@ -148,11 +156,56 @@ func (r GraphRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit,
 	}
 	sort.Strings(reached)
 	sort.Strings(seedIDs)
-	trace.Graph = GraphTrace{SeedEntityIDs: seedIDs, ReachedEntityIDs: reached, MaxHop: maxHop}
+	trace.Graph = GraphTrace{
+		SeedEntityIDs:    seedIDs,
+		ReachedEntityIDs: reached,
+		MaxHop:           maxHop,
+		CommunityIDs:     communitiesOf(ctx, r.Store, req.Namespace, reached),
+	}
 	selected := make([]string, 0, len(hits))
 	for _, h := range hits {
 		selected = append(selected, h.Chunk.ID)
 	}
 	trace.SelectedChunkIDs = selected
 	return hits, trace, nil
+}
+
+// communitiesOf returns, sorted and deduped, the IDs of the communities the
+// given reached entities belong to. It looks the community hierarchy up via
+// store.CommunityStore; a store that does not implement that capability — or
+// a namespace with no detected communities — yields nil, so a local
+// retrieval over a graph store without communities degrades gracefully with
+// no behavior change. A community-lookup error is swallowed: community
+// attribution is a best-effort enrichment, never a retrieval failure.
+func communitiesOf(ctx context.Context, st store.Store, namespace string, reached []string) []string {
+	cs, ok := st.(store.CommunityStore)
+	if !ok {
+		return nil
+	}
+	communities, err := cs.Communities(ctx, namespace)
+	if err != nil || len(communities) == 0 {
+		return nil
+	}
+	reachedSet := make(map[string]struct{}, len(reached))
+	for _, id := range reached {
+		reachedSet[id] = struct{}{}
+	}
+	idSet := map[string]struct{}{}
+	for _, c := range communities {
+		for _, eid := range c.EntityIDs {
+			if _, ok := reachedSet[eid]; ok {
+				idSet[c.ID] = struct{}{}
+				break
+			}
+		}
+	}
+	if len(idSet) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(idSet))
+	for id := range idSet {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
