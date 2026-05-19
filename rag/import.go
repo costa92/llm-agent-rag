@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/costa92/llm-agent-rag/graph"
 	"github.com/costa92/llm-agent-rag/guard"
 	"github.com/costa92/llm-agent-rag/ingest"
 	"github.com/costa92/llm-agent-rag/obs"
@@ -26,6 +27,11 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 	embedCount := 0
 	removedChunks := 0
 	redactionCounts := map[string]int{}
+	var graphEnts []graph.Entity
+	var graphRels []graph.Relation
+	graphStore, isGraphStore := s.store.(store.GraphStore)
+	persistGraph := s.entityExtractor != nil && isGraphStore
+	var staleGraphChunkIDs []string
 	importStart := time.Now()
 	embedStart := time.Now()
 	for _, doc := range docs {
@@ -39,6 +45,20 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 			}
 		}
 		if opts.ReplaceSource && doc.SourceID != "" {
+			if persistGraph {
+				// Capture this source's prior chunk IDs so the graph can be
+				// reconciled — its stale contributions removed — before the
+				// re-extracted subgraph is merged in.
+				old, err := s.store.List(ctx, opts.Namespace, store.Filter{
+					ingest.MetadataSourceIDKey: doc.SourceID,
+				}, nil)
+				if err != nil {
+					return ingest.ImportResult{}, fmt.Errorf("rag: list existing source %s: %w", doc.SourceID, err)
+				}
+				for _, c := range old {
+					staleGraphChunkIDs = append(staleGraphChunkIDs, c.ID)
+				}
+			}
 			removed, err := s.store.RemoveByFilter(ctx, opts.Namespace, store.Filter{
 				ingest.MetadataSourceIDKey: doc.SourceID,
 			})
@@ -70,6 +90,16 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 				Metadata:     chunk.Metadata,
 			})
 			res.ChunkIDs = append(res.ChunkIDs, chunk.ID)
+			// Extract the knowledge graph post-split. A nil extractor
+			// leaves the graph unbuilt and Import behaves as before.
+			if s.entityExtractor != nil {
+				ents, rels, err := s.entityExtractor.Extract(ctx, chunk.ID, chunk.Content)
+				if err != nil {
+					return ingest.ImportResult{}, fmt.Errorf("rag: extract graph from chunk %s: %w", chunk.ID, err)
+				}
+				graphEnts = append(graphEnts, ents...)
+				graphRels = append(graphRels, rels...)
+			}
 		}
 	}
 	embedDuration := time.Since(embedStart)
@@ -88,6 +118,27 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 	}
 	res.Metrics = metrics
 	res.Redactions = redactionSummary(redactionCounts)
+	if s.entityExtractor != nil {
+		g := graph.Canonicalize(graphEnts, graphRels)
+		res.Graph = &g
+	}
+	// Persist the graph when the store implements store.GraphStore. On a
+	// ReplaceSource re-ingest, reconcile first (drop the stale
+	// contributions) then union-merge the re-extracted subgraph. A store
+	// that is not a GraphStore degrades gracefully — res.Graph is still
+	// returned, just not persisted.
+	if persistGraph {
+		if len(staleGraphChunkIDs) > 0 {
+			if err := graphStore.RemoveGraphBySource(ctx, opts.Namespace, staleGraphChunkIDs); err != nil {
+				return ingest.ImportResult{}, fmt.Errorf("rag: reconcile graph: %w", err)
+			}
+		}
+		if res.Graph != nil {
+			if err := graphStore.UpsertGraph(ctx, opts.Namespace, *res.Graph); err != nil {
+				return ingest.ImportResult{}, fmt.Errorf("rag: persist graph: %w", err)
+			}
+		}
+	}
 	if s.observer.OnImport != nil {
 		s.observer.OnImport(ctx, ImportTrace{
 			Namespace:     opts.Namespace,

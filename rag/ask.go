@@ -132,6 +132,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			RerankScores:        rerankScores,
 			Metrics:             metrics,
 			InjectionFindings:   injectionFindings,
+			GraphTrace:          retrieveTrace.Graph,
 		},
 		Trace: Trace{
 			Question:            question,

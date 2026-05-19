@@ -33,6 +33,7 @@ type Request struct {
 	EnableHyDE                   bool
 	MQECount                     int
 	EnableStructure              bool
+	EnableGraph                  bool
 	EnableTreeExpansion          bool
 	ExpansionDepth               int
 	QueryVariants                []string
@@ -158,6 +159,7 @@ type Trace struct {
 	Fusion              []FusionAttribution
 	Metrics             obs.Metrics
 	Hops                []HopAttribution
+	Graph               GraphTrace
 }
 
 // FusionAttribution records how each retrieval signal ranked one chunk during
@@ -168,6 +170,7 @@ type FusionAttribution struct {
 	DenseRank     int
 	LexicalRank   int
 	StructureRank int
+	GraphRank     int
 	RRFScore      float64
 }
 
@@ -298,6 +301,9 @@ func (r VariantRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hi
 		}
 		if trace.RoutePolicy.Mode == "" && subTrace.RoutePolicy.Mode != "" {
 			trace.RoutePolicy = subTrace.RoutePolicy
+		}
+		if len(trace.Graph.SeedEntityIDs) == 0 && len(subTrace.Graph.SeedEntityIDs) > 0 {
+			trace.Graph = subTrace.Graph
 		}
 		trace.AutoRouteCandidates = mergeRouteCandidates(trace.AutoRouteCandidates, subTrace.AutoRouteCandidates)
 		trace.SearchPath = appendUniqueStrings(trace.SearchPath, subTrace.SearchPath...)
@@ -908,6 +914,9 @@ type HybridRetriever struct {
 	Dense     Retriever
 	Lexical   Retriever
 	Structure Retriever
+	// Graph, when set and req.EnableGraph is true, contributes a fourth
+	// RRF signal from knowledge-graph traversal.
+	Graph Retriever
 	// RRFConstant is the k constant in the reciprocal rank fusion formula
 	// 1/(k + rank). Zero resolves to the standard default of 60.
 	RRFConstant float64
@@ -932,6 +941,15 @@ func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit
 		}
 	}
 
+	var graphHits []store.Hit
+	var graphTrace Trace
+	if req.EnableGraph && r.Graph != nil {
+		graphHits, graphTrace, err = r.Graph.Retrieve(ctx, req)
+		if err != nil {
+			return nil, Trace{}, err
+		}
+	}
+
 	fused := make(map[string]store.Hit, len(denseHits)+len(lexHits))
 	rrfScores := make(map[string]float64, len(denseHits)+len(lexHits)+len(structureHits))
 
@@ -942,6 +960,7 @@ func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit
 	denseRank := make(map[string]int, len(denseHits))
 	lexRank := make(map[string]int, len(lexHits))
 	structRank := make(map[string]int, len(structureHits))
+	graphRank := make(map[string]int, len(graphHits))
 	apply := func(hits []store.Hit, ranks map[string]int) {
 		for i, hit := range hits {
 			if _, ok := fused[hit.Chunk.ID]; !ok {
@@ -956,6 +975,7 @@ func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit
 	apply(denseHits, denseRank)
 	apply(lexHits, lexRank)
 	apply(structureHits, structRank)
+	apply(graphHits, graphRank)
 
 	out := make([]store.Hit, 0, len(fused))
 	for id, hit := range fused {
@@ -974,6 +994,7 @@ func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit
 			DenseRank:     denseRank[id],
 			LexicalRank:   lexRank[id],
 			StructureRank: structRank[id],
+			GraphRank:     graphRank[id],
 			RRFScore:      rrfScores[id],
 		})
 	}
@@ -997,6 +1018,7 @@ func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit
 		ExpandedChunkIDs:    append([]string(nil), structureTrace.ExpandedChunkIDs...),
 		SelectedChunkIDs:    collectChunkIDs(out),
 		Fusion:              fusion,
+		Graph:               graphTrace.Graph,
 	}, nil
 }
 

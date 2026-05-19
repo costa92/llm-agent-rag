@@ -5,6 +5,7 @@ import (
 
 	"github.com/costa92/llm-agent-rag/embed"
 	"github.com/costa92/llm-agent-rag/generate"
+	"github.com/costa92/llm-agent-rag/graph"
 	"github.com/costa92/llm-agent-rag/guard"
 	"github.com/costa92/llm-agent-rag/ingest"
 	"github.com/costa92/llm-agent-rag/obs"
@@ -46,6 +47,7 @@ type Diagnostics struct {
 	RerankScores        []rerank.RerankScore
 	Metrics             obs.Metrics
 	InjectionFindings   []InjectionFinding
+	GraphTrace          retrieve.GraphTrace
 }
 
 type Trace struct {
@@ -85,6 +87,8 @@ type System struct {
 
 	injectionScanner guard.InjectionScanner
 	sanitizeMode     guard.SanitizeMode
+
+	entityExtractor graph.EntityExtractor
 }
 
 func New(opts Options) *System {
@@ -157,6 +161,8 @@ func New(opts Options) *System {
 
 		injectionScanner: opts.InjectionScanner,
 		sanitizeMode:     opts.SanitizeMode,
+
+		entityExtractor: opts.EntityExtractor,
 	}
 }
 

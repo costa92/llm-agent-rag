@@ -62,7 +62,8 @@ func newTableStore(ctx context.Context, pool *pgxpool.Pool) storetest.Factory {
 			t.Fatalf("Migrate: %v", err)
 		}
 		t.Cleanup(func() {
-			if _, err := pool.Exec(context.Background(), fmt.Sprintf(`DROP TABLE IF EXISTS %s`, table)); err != nil {
+			drop := fmt.Sprintf(`DROP TABLE IF EXISTS %s, %s_entities, %s_relations`, table, table, table)
+			if _, err := pool.Exec(context.Background(), drop); err != nil {
 				t.Logf("cleanup drop table %s: %v", table, err)
 			}
 		})
@@ -80,6 +81,14 @@ func TestPostgresStoreConformance(t *testing.T) {
 func TestPostgresLexicalConformance(t *testing.T) {
 	pool := openTestPool(t)
 	storetest.RunLexicalConformance(t, newTableStore(context.Background(), pool))
+}
+
+// TestPostgresGraphConformance runs the graph-storage conformance suite
+// against a live Postgres, exercising the entities/relations tables and
+// the recursive-CTE Neighborhood traversal.
+func TestPostgresGraphConformance(t *testing.T) {
+	pool := openTestPool(t)
+	storetest.RunGraphConformance(t, newTableStore(context.Background(), pool))
 }
 
 // sanitizeTableName builds a safe ASCII identifier from t.Name(). t.Name()

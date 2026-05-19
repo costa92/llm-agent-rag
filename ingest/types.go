@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"github.com/costa92/llm-agent-rag/graph"
 	"github.com/costa92/llm-agent-rag/guard"
 	"github.com/costa92/llm-agent-rag/obs"
 )
@@ -32,4 +33,5 @@ type ImportResult struct {
 	ChunkIDs   []string
 	Metrics    obs.Metrics
 	Redactions []guard.Redaction
+	Graph      *graph.Graph
 }

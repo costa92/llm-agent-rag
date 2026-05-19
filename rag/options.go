@@ -3,6 +3,7 @@ package rag
 import (
 	"github.com/costa92/llm-agent-rag/embed"
 	"github.com/costa92/llm-agent-rag/generate"
+	"github.com/costa92/llm-agent-rag/graph"
 	"github.com/costa92/llm-agent-rag/guard"
 	"github.com/costa92/llm-agent-rag/ingest"
 	"github.com/costa92/llm-agent-rag/pack"
@@ -29,6 +30,7 @@ type SearchOptions struct {
 	MQECount                     int
 	EnableRerank                 bool
 	EnableStructure              bool
+	EnableGraph                  bool
 	EnableTreeExpansion          bool
 	ExpansionDepth               int
 }
@@ -55,4 +57,5 @@ type Options struct {
 	Redactor         guard.Redactor
 	InjectionScanner guard.InjectionScanner
 	SanitizeMode     guard.SanitizeMode
+	EntityExtractor  graph.EntityExtractor
 }

@@ -108,6 +108,30 @@ func (s *Store) Migrate(ctx context.Context) error {
 		fmt.Sprintf(`ALTER TABLE %s ADD COLUMN IF NOT EXISTS content_tsv tsvector
 			GENERATED ALWAYS AS (to_tsvector('%s', content)) STORED`, s.cfg.Table, s.textSearchConfig()),
 		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_content_tsv_idx ON %s USING GIN (content_tsv)`, s.cfg.Table, s.cfg.Table),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s_entities (
+			namespace        TEXT NOT NULL,
+			id               TEXT NOT NULL,
+			name             TEXT NOT NULL,
+			type             TEXT,
+			description      TEXT,
+			source_chunk_ids TEXT[],
+			metadata         JSONB,
+			PRIMARY KEY (namespace, id)
+		)`, s.cfg.Table),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s_relations (
+			namespace        TEXT NOT NULL,
+			id               TEXT NOT NULL,
+			source           TEXT NOT NULL,
+			target           TEXT NOT NULL,
+			relation         TEXT,
+			description      TEXT,
+			source_chunk_ids TEXT[],
+			weight           DOUBLE PRECISION,
+			PRIMARY KEY (namespace, id)
+		)`, s.cfg.Table),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_rel_source_idx ON %s_relations (namespace, source)`, s.cfg.Table, s.cfg.Table),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_rel_target_idx ON %s_relations (namespace, target)`, s.cfg.Table, s.cfg.Table),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s_ent_name_idx ON %s_entities (namespace, lower(name))`, s.cfg.Table, s.cfg.Table),
 	}
 	for _, stmt := range stmts {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {

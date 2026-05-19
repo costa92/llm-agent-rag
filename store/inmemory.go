@@ -10,16 +10,21 @@ import (
 )
 
 type InMemoryStore struct {
-	mu  sync.RWMutex
-	dim int
-	all map[string]StoredChunk
+	mu     sync.RWMutex
+	dim    int
+	all    map[string]StoredChunk
+	graphs map[string]*nsGraph // namespace -> entity/relation graph
 }
 
 func NewInMemoryStore(dim int) *InMemoryStore {
 	if dim <= 0 {
 		dim = 32
 	}
-	return &InMemoryStore{dim: dim, all: make(map[string]StoredChunk)}
+	return &InMemoryStore{
+		dim:    dim,
+		all:    make(map[string]StoredChunk),
+		graphs: make(map[string]*nsGraph),
+	}
 }
 
 func (s *InMemoryStore) Upsert(_ context.Context, chunks []StoredChunk) error {

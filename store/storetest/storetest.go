@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/costa92/llm-agent-rag/embed"
+	"github.com/costa92/llm-agent-rag/graph"
 	"github.com/costa92/llm-agent-rag/store"
 )
 
@@ -73,6 +74,148 @@ func RunLexicalConformance(t *testing.T, factory Factory) {
 	t.Run("Lexical_respects_namespace", func(t *testing.T) { testLexicalNamespace(t, factory) })
 	t.Run("Lexical_security_filter_trims", func(t *testing.T) { testLexicalSecurityFilter(t, factory) })
 	t.Run("Lexical_empty_query_returns_nothing", func(t *testing.T) { testLexicalEmpty(t, factory) })
+}
+
+// RunGraphConformance executes graph-storage conformance subtests against
+// the factory's store. If the store does not implement store.GraphStore
+// the whole suite is skipped, so callers can invoke it unconditionally.
+func RunGraphConformance(t *testing.T, factory Factory) {
+	t.Helper()
+	if _, ok := factory(t).(store.GraphStore); !ok {
+		t.Skip("store does not implement store.GraphStore")
+	}
+	t.Run("Upsert_then_Neighborhood_reaches_neighbors", func(t *testing.T) { testGraphUpsertNeighborhood(t, factory) })
+	t.Run("Neighborhood_depth_is_hard_bounded", func(t *testing.T) { testGraphDepthBounded(t, factory) })
+	t.Run("UpsertGraph_union_merges", func(t *testing.T) { testGraphUnionMerge(t, factory) })
+	t.Run("RemoveGraphBySource_gcs_unreferenced", func(t *testing.T) { testGraphRemoveBySource(t, factory) })
+	t.Run("FindEntities_resolves_by_name", func(t *testing.T) { testGraphFindEntities(t, factory) })
+}
+
+func graphStore(t *testing.T, s store.Store) store.GraphStore {
+	t.Helper()
+	gs, ok := s.(store.GraphStore)
+	if !ok {
+		t.Fatalf("store does not implement store.GraphStore")
+	}
+	return gs
+}
+
+// chainGraph builds a 4-entity chain A-B-C-D with all provenance from
+// chunkID.
+func chainGraph(chunkID string) graph.Graph {
+	return graph.Graph{
+		Entities: []graph.Entity{
+			{ID: "t:a", Name: "A", Type: "t", SourceChunkIDs: []string{chunkID}},
+			{ID: "t:b", Name: "B", Type: "t", SourceChunkIDs: []string{chunkID}},
+			{ID: "t:c", Name: "C", Type: "t", SourceChunkIDs: []string{chunkID}},
+			{ID: "t:d", Name: "D", Type: "t", SourceChunkIDs: []string{chunkID}},
+		},
+		Relations: []graph.Relation{
+			{ID: "t:a::r::t:b", Source: "t:a", Target: "t:b", Relation: "r", SourceChunkIDs: []string{chunkID}, Weight: 1},
+			{ID: "t:b::r::t:c", Source: "t:b", Target: "t:c", Relation: "r", SourceChunkIDs: []string{chunkID}, Weight: 1},
+			{ID: "t:c::r::t:d", Source: "t:c", Target: "t:d", Relation: "r", SourceChunkIDs: []string{chunkID}, Weight: 1},
+		},
+	}
+}
+
+func testGraphUpsertNeighborhood(t *testing.T, factory Factory) {
+	gs := graphStore(t, factory(t))
+	if err := gs.UpsertGraph(ctx(), "ns", chainGraph("c1")); err != nil {
+		t.Fatalf("UpsertGraph: %v", err)
+	}
+	sub, err := gs.Neighborhood(ctx(), "ns", []string{"t:a"}, 1)
+	if err != nil {
+		t.Fatalf("Neighborhood: %v", err)
+	}
+	if sub.Depth["t:a"] != 0 {
+		t.Fatalf("seed A depth = %d, want 0", sub.Depth["t:a"])
+	}
+	if sub.Depth["t:b"] != 1 {
+		t.Fatalf("neighbor B depth = %d, want 1", sub.Depth["t:b"])
+	}
+	if _, ok := sub.Depth["t:c"]; ok {
+		t.Fatalf("C reached at depth 1, want only A and B")
+	}
+}
+
+func testGraphDepthBounded(t *testing.T, factory Factory) {
+	gs := graphStore(t, factory(t))
+	if err := gs.UpsertGraph(ctx(), "ns", chainGraph("c1")); err != nil {
+		t.Fatalf("UpsertGraph: %v", err)
+	}
+	sub, err := gs.Neighborhood(ctx(), "ns", []string{"t:a"}, 5) // requests 5; hard cap 2
+	if err != nil {
+		t.Fatalf("Neighborhood: %v", err)
+	}
+	for id, hop := range sub.Depth {
+		if hop > 2 {
+			t.Fatalf("entity %s reached at hop %d, want <= 2 (hard cap)", id, hop)
+		}
+	}
+	if _, ok := sub.Depth["t:d"]; ok {
+		t.Fatalf("D (3 hops from A) reached despite the depth-2 cap")
+	}
+}
+
+func testGraphUnionMerge(t *testing.T, factory Factory) {
+	gs := graphStore(t, factory(t))
+	if err := gs.UpsertGraph(ctx(), "ns", chainGraph("c1")); err != nil {
+		t.Fatalf("UpsertGraph #1: %v", err)
+	}
+	g2 := graph.Graph{Entities: []graph.Entity{
+		{ID: "t:a", Name: "A", Type: "t", SourceChunkIDs: []string{"c2"}},
+	}}
+	if err := gs.UpsertGraph(ctx(), "ns", g2); err != nil {
+		t.Fatalf("UpsertGraph #2: %v", err)
+	}
+	found, err := gs.FindEntities(ctx(), "ns", []string{"A"})
+	if err != nil {
+		t.Fatalf("FindEntities: %v", err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("FindEntities(A) = %d entities, want 1 (merged, not duplicated)", len(found))
+	}
+	if len(found[0].SourceChunkIDs) != 2 {
+		t.Fatalf("A provenance = %v, want c1 and c2 unioned", found[0].SourceChunkIDs)
+	}
+}
+
+func testGraphRemoveBySource(t *testing.T, factory Factory) {
+	gs := graphStore(t, factory(t))
+	g := graph.Graph{Entities: []graph.Entity{
+		{ID: "t:a", Name: "A", Type: "t", SourceChunkIDs: []string{"c1"}},
+		{ID: "t:b", Name: "B", Type: "t", SourceChunkIDs: []string{"c1", "c2"}},
+	}}
+	if err := gs.UpsertGraph(ctx(), "ns", g); err != nil {
+		t.Fatalf("UpsertGraph: %v", err)
+	}
+	if err := gs.RemoveGraphBySource(ctx(), "ns", []string{"c1"}); err != nil {
+		t.Fatalf("RemoveGraphBySource: %v", err)
+	}
+	found, err := gs.FindEntities(ctx(), "ns", []string{"A", "B"})
+	if err != nil {
+		t.Fatalf("FindEntities: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != "t:b" {
+		t.Fatalf("after removing c1: entities = %+v, want only B (A garbage-collected)", found)
+	}
+	if len(found[0].SourceChunkIDs) != 1 || found[0].SourceChunkIDs[0] != "c2" {
+		t.Fatalf("B provenance after removal = %v, want [c2]", found[0].SourceChunkIDs)
+	}
+}
+
+func testGraphFindEntities(t *testing.T, factory Factory) {
+	gs := graphStore(t, factory(t))
+	if err := gs.UpsertGraph(ctx(), "ns", chainGraph("c1")); err != nil {
+		t.Fatalf("UpsertGraph: %v", err)
+	}
+	found, err := gs.FindEntities(ctx(), "ns", []string{"b", "MISSING"})
+	if err != nil {
+		t.Fatalf("FindEntities: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != "t:b" {
+		t.Fatalf("FindEntities([b, MISSING]) = %+v, want just B (case-insensitive)", found)
+	}
 }
 
 func ctx() context.Context { return context.Background() }
