@@ -28,6 +28,13 @@ package are the only places that pull external deps in.
 
 ## Package layout
 
+Every package listed below is part of the **frozen v1 public surface**
+unless explicitly marked otherwise — the v1.x additive-only promise
+covers all of them. The build-tagged `adapter/llmagent` and the
+`internal/` tree are the only carve-outs.
+
+**Pipeline core:**
+
 - `ingest`: documents, sources, splitters, import helpers
 - `embed`: embedder seam and default hash embedder
 - `store`: vector store seam and in-memory reference store
@@ -35,13 +42,45 @@ package are the only places that pull external deps in.
 - `postgres`: PostgreSQL + pgvector backend (opt-in deps: `pgx/v5`, `pgvector-go`)
 - `retrieve`: hybrid retrieval, structure-aware route policy, search trajectory
 - `pack`: token-budget-aware context packing
-- `rerank`: heuristic reranker
+- `rerank`: heuristic + model-scoring rerankers
 - `generate`: text-generation seam
 - `prompt`: prompt-template seam and default QA template
 - `rag`: orchestration layer for import, retrieve, ask + observer hook
-- `eval`: dataset format + metrics + JSONL loader for the CI eval gate
 - `tree`: document-tree primitives for structured markdown corpora
-- `adapter/llmagent`: optional adapter layer for `llm-agent` (build tag `llmagent`)
+
+**GraphRAG:**
+
+- `graph`: in-process Louvain + LabelPropagation community detection,
+  community summaries, weighted multi-hop path ranking, subgraph
+  evidence (used by `rag.System.AskGlobal` / `AskDrift`)
+
+**Answer-path extras (also frozen v1):**
+
+- `advanced`: stateless query-expansion helpers — MQE, HyDE
+- `agentic`: `CorrectiveAsker` — bounded retry loop wrapping `rag.Ask`
+- `feedback`: concurrent-safe JSONL writer for flagged Asks
+  (online-to-offline regression feedback loop)
+- `guard`: content-safety layer — PII redaction on ingest,
+  prompt-injection screen on retrieve (leaf package, stdlib-only)
+
+**Quality / cross-cutting:**
+
+- `eval`: retrieval metrics (precision / recall / MRR / grounding@k)
+  plus RAG-Triad answer eval, JSONL loader, used as a `go test`
+  regression gate
+- `obs`: in-process metrics + `rag.Observer` hook (consumed by
+  `llm-agent-otel`)
+- `contract`: cross-repo compile-time pin of the facade subset used by
+  `github.com/costa92/llm-agent`'s `rag` facade
+- `api`: the committed `v1.snapshot.txt` exported-symbol baseline
+  diffed by `internal/apisnapshot` (test artifact, no exported symbols)
+
+**Carve-outs:**
+
+- `adapter/llmagent`: build-tagged (`llmagent`) interop layer for
+  `github.com/costa92/llm-agent` — keeps the default build stdlib-only
+- `internal/`: non-importable, including `internal/apisnapshot` (the
+  v1 surface diff test)
 
 ## Status
 
