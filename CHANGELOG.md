@@ -6,6 +6,21 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [v1.0.1] - 2026-05-20
+
+Maintenance release. No public-API change — covered by the v1.x
+additive-only promise.
+
+### Changed
+
+- bump the build-tagged `adapter/llmagent/` back-edge to
+  `github.com/costa92/llm-agent v0.5.0`, picking up the
+  ecosystem-aligned core. The default (untagged) build remains
+  stdlib-only outside the `postgres` subpackage. (KE-2 — back-edge
+  bumps are allowed under v1.x because they are gated behind the
+  `llmagent` build tag and reach no exported symbol on the default
+  build.)
+
 ## [v1.0.0] - 2026-05-21
 
 The v1.0 API freeze. **Not a feature release** — no new features, no
