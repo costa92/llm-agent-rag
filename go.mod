@@ -3,7 +3,7 @@ module github.com/costa92/llm-agent-rag
 go 1.26.0
 
 require (
-	github.com/costa92/llm-agent v0.4.0
+	github.com/costa92/llm-agent v0.5.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/pgvector/pgvector-go v0.3.0
 )

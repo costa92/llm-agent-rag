@@ -1,7 +1,7 @@
 entgo.io/ent v0.14.3 h1:wokAV/kIlH9TeklJWGGS7AYJdVckr0DloWjIcO9iIIQ=
 entgo.io/ent v0.14.3/go.mod h1:aDPE/OziPEu8+OWbzy4UlvWmD2/kbRuWfK2A40hcxJM=
-github.com/costa92/llm-agent v0.4.0 h1:NPwchf/LMBTTzte3fhy/Wg0+VEu8gOMTF/3zxiZX0Lw=
-github.com/costa92/llm-agent v0.4.0/go.mod h1:lv2xC79aHgurUOuo+qWAIcLksh59BrCXFslmUrHdMXM=
+github.com/costa92/llm-agent v0.5.0 h1:gG9LxlMxSbJBoRcYYQwN0brAspDljfafE9Z2gX+ixQY=
+github.com/costa92/llm-agent v0.5.0/go.mod h1:4aUidXz0PsCrOSgyYg0UW6/n+TYc31vvzljkpg/vH6A=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
