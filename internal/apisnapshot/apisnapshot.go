@@ -12,7 +12,7 @@
 //
 // The snapshot gate complements the contract package. contract is the
 // narrow cross-repo compile-pin: it pins, at compile time, the subset of
-// symbols the core llm-agent/rag facade consumes, and must be coordinated
+// symbols current llm-agent integrations consume, and must be coordinated
 // with the llm-agent repo. This snapshot is the whole-surface intra-repo
 // diff: it answers "did this PR break the v1 promise for any exported
 // symbol in this module?". Both are stdlib and both run at `go test` time.

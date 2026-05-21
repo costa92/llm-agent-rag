@@ -2,7 +2,7 @@
 
 This document explains how `llm-agent-rag` (this repo) relates to
 `github.com/costa92/llm-agent` (the core agents repo), what changes
-when, and what the planned cross-repo CI gates will enforce.
+when, and what the cross-repo contract gates enforce.
 
 ## The two-repo split
 
@@ -10,9 +10,8 @@ The umbrella project has two RAG-relevant repos:
 
 - **`github.com/costa92/llm-agent`** — the agents framework. Stays
   **stdlib-only**: no non-stdlib deps in `go.mod`, no `go.sum`
-  before a release tag. The core's `rag/` package is a thin
-  compatibility facade over a pinned standalone version of this
-  repo.
+  before a release tag. Core packages that need embedding or RAG data
+  depend directly on a small, pinned subset of this repo's API.
 - **`github.com/costa92/llm-agent-rag`** — this repo. The standalone
   RAG SDK. May take dependencies (and does, since v0.2 — `pgx/v5` +
   `pgvector-go` for the postgres backend).
@@ -26,14 +25,14 @@ the core's auditability.
 
 ## Where to look for what
 
-| Looking for                                | Goes to                                          |
-| ------------------------------------------ | ------------------------------------------------ |
-| `ChatModel`, `Agent`, tool execution       | `github.com/costa92/llm-agent`                   |
-| In-memory RAG demo via the core facade     | `github.com/costa92/llm-agent/rag`               |
-| Production-grade retrieval + persistence   | `github.com/costa92/llm-agent-rag`               |
-| Provider adapters (OpenAI, Anthropic, ...) | `github.com/costa92/llm-agent-providers`         |
-| OTel observability wrappers                | `github.com/costa92/llm-agent-otel`              |
-| Reference customer-support service         | `github.com/costa92/llm-agent-customer-support`  |
+| Looking for                                 | Goes to                                          |
+| ------------------------------------------- | ------------------------------------------------ |
+| `ChatModel`, `Agent`, tool execution        | `github.com/costa92/llm-agent`                   |
+| Core helper integrations (`context`, `memory`) | `github.com/costa92/llm-agent`                |
+| RAG orchestration, retrieval, persistence   | `github.com/costa92/llm-agent-rag`               |
+| Provider adapters (OpenAI, Anthropic, ...)  | `github.com/costa92/llm-agent-providers`         |
+| OTel observability wrappers                 | `github.com/costa92/llm-agent-otel`              |
+| Reference customer-support service          | `github.com/costa92/llm-agent-customer-support`  |
 
 ## The optional adapter package
 
@@ -67,34 +66,32 @@ core checkout.
 ## Versioning expectations
 
 The standalone repo evolves independently of the core. The
-contract surface between them is small (the `store.Store` interface,
-the `rag.System` facade shape) and is intentionally stable.
+contract surface between them is small (for example `embed.Embedder`,
+`store.Hit`, `store.InMemoryStore`, `ingest.Document`, and
+`rag.System`) and is intentionally stable.
 
 - **Standalone minor bumps** add features but preserve the
-  facade surface that the core's `rag/` facade expects.
-- **Standalone major bumps** are the moments where the core
-  facade must be updated explicitly. They happen rarely.
+  subset of the API that current core integrations consume.
+- **Standalone major bumps** are the moments where core
+  integrations must be updated explicitly. They happen rarely.
 - **Core releases** pin a specific standalone version. The pin
   changes only at planned core minor/major bumps.
 
-The planned `13-04` slice adds CI gates that fail when:
+The contract gates fail when:
 
 - the standalone module exports a new public type or method that
-  the core facade reads without an updated pin
+  a pinned core integration reads without an updated pin
 - the standalone module changes the signature of a method the core
-  facade calls
-- the core's `rag/` facade tests fail against the pinned
+  integration calls
+- compile-time contract tests no longer match the pinned
   standalone version
-
-Until `13-04` lands, contract drift is caught by ad-hoc verification
-runs (`go vet ./rag/... && go test ./rag/...` in both repos after
-every standalone change).
 
 ## What does NOT cross the boundary
 
 The standalone repo's new capabilities are not automatically
-exposed through the core's `rag/` facade. The following landed in
-standalone first and are **not yet wired** into the core:
+exposed through core helper packages. The following landed in
+standalone first and are **not wired through the core packages by
+default**:
 
 - the `postgres` package (the core stays stdlib-only)
 - the `rag.Observer` hook surface
@@ -103,22 +100,21 @@ standalone first and are **not yet wired** into the core:
 - per-route `SearchTrajectory` data
 
 Consumers who want these features should import
-`github.com/costa92/llm-agent-rag` directly. The core's `rag/`
-facade is a stable, narrow surface for callers who don't need
-production-grade retrieval.
+`github.com/costa92/llm-agent-rag` directly. The core repo does not
+try to mirror the full standalone surface.
 
 ## When to bump what
 
 Rough heuristics:
 
 - **New public method on standalone `rag.System`?** Standalone
-  minor bump. Core facade is unaffected unless it explicitly
+  minor bump. Core integrations are unaffected unless they explicitly
   forwards the method.
 - **Breaking change to `store.Store`?** Standalone major bump.
   Every backend (in-memory, postgres, third-party) must update.
-  Core facade pin must update.
+  Any pinned core integration must update.
 - **New backend (Qdrant, SQLite-vec, ...) in standalone?**
-  Standalone minor bump. Core facade is unaffected; consumers opt
+  Standalone minor bump. Core packages are unaffected; consumers opt
   in by importing the new package.
 - **Change to core's `llm.ChatModel`?** Core repo concern;
   affects the `adapter/llmagent` package here, but only under

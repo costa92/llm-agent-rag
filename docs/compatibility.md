@@ -92,16 +92,15 @@ Consequences of the `/v2` rule:
 ## The `contract` sub-contract
 
 The `contract` package (`contract/contract_test.go`) is a test-only
-package that pins the exact `llm-agent-rag` surface the core
-`github.com/costa92/llm-agent/rag` facade consumes. It is a *sub*-set of
-the full `v1.x` promise: a narrow, explicitly enumerated surface that
-the core repo depends on.
+package that pins the exact `llm-agent-rag` surface current core
+integrations consume. It is a *sub*-set of the full `v1.x` promise: a
+narrow, explicitly enumerated surface that the core repo depends on.
 
-- The contract test fails if any symbol the core facade reads is
+- The contract test fails if any symbol a pinned core integration reads is
   removed, renamed, or re-signed — catching cross-repo drift before a
   release.
 - The pinned surface changes **only via coordinated PRs** with the
-  `llm-agent` repo: the core facade's pin and this repo's surface move
+  `llm-agent` repo: the core integration pin and this repo's surface move
   together.
 - The full cross-repo story — the two-repo split, which features cross
   the boundary, when to bump what — is documented in

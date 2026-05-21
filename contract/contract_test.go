@@ -1,5 +1,5 @@
 // Package contract pins, at compile time, the cross-repo surface this
-// repo exports for the core `github.com/costa92/llm-agent` rag/ facade
+// repo exports for current `github.com/costa92/llm-agent` integrations
 // to consume.
 //
 // Any rename or removal of a symbol referenced here breaks `go build`
@@ -7,8 +7,8 @@
 // — no separate workflow needed.
 //
 // Adding to this file is a deliberate act: it widens the contract
-// surface and the core facade may need a coordinated update. Removing
-// from this file is a breaking change for the core facade and requires
+// surface and core integrations may need a coordinated update. Removing
+// from this file is a breaking change for those integrations and requires
 // a coordinated PR in `github.com/costa92/llm-agent` first.
 //
 // See docs/core-compatibility.md for the higher-level discussion.
@@ -27,10 +27,10 @@ import (
 	"github.com/costa92/llm-agent-rag/store"
 )
 
-// TestContract_ConsumedByCoreFacade pins every standalone symbol the
-// core `llm-agent/rag` facade currently consumes. Compile success is
+// TestContract_ConsumedByCoreIntegrations pins every standalone symbol
+// current core integrations consume. Compile success is
 // the gate; this test has no runtime assertions.
-func TestContract_ConsumedByCoreFacade(t *testing.T) {
+func TestContract_ConsumedByCoreIntegrations(t *testing.T) {
 	// embed —
 	var (
 		_ embed.Vector

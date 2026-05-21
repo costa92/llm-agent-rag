@@ -308,7 +308,8 @@ to the `postgres` subpackage.
 - `feedback` package — concurrent-safe writer that captures flagged Asks
   as JSONL eval examples (online-to-offline regression feedback loop)
 - `contract` package — compile-time gate pinning the cross-repo surface
-  the core `llm-agent/rag` facade consumes
+  the core `llm-agent/rag` facade consumed at the time. Historical note:
+  that facade has since been removed from the current core tree.
 
 ### Fixed
 
