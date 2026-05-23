@@ -201,4 +201,9 @@ type Options struct {
 	// that is not a CommunityStore) leaves communities undetected — Import
 	// behaves exactly as before.
 	CommunityDetector graph.CommunityDetector
+	// Grader, when set, is the per-chunk Grader called during a
+	// reflection round when ReflectionOptions.EnableChunkGrading is true.
+	// A nil Grader with grading enabled falls back to NoopGrader (every
+	// chunk scores 0.5) so the wiring stays functional.
+	Grader Grader
 }

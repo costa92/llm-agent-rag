@@ -11,7 +11,20 @@ import (
 	"github.com/costa92/llm-agent-rag/store"
 )
 
-const defaultReflectionMaxRounds = 1
+const (
+	defaultReflectionMaxRounds        = 1
+	defaultAdaptiveRetrievalThreshold = 0.6
+)
+
+// effectiveAdaptiveThreshold returns the configured threshold or the
+// SDK default (0.6) when the caller left it at its zero value. The
+// default is documented on ReflectionOptions.AdaptiveRetrievalThreshold.
+func effectiveAdaptiveThreshold(opts ReflectionOptions) float64 {
+	if opts.AdaptiveRetrievalThreshold > 0 {
+		return opts.AdaptiveRetrievalThreshold
+	}
+	return defaultAdaptiveRetrievalThreshold
+}
 
 type reflectionDecisionResult struct {
 	decision   ReflectionDecision
@@ -103,6 +116,109 @@ func decideRule(roundIndex int, opts ReflectionOptions, round askRoundResult) re
 		nextQuery:  "",
 		mode:       ReflectionModeRule,
 	}
+}
+
+// gradeRound calls the configured Grader for every hit packed into the
+// round's prompt. It returns the per-chunk scores in the same order as
+// round.answer.Hits. Grading is best-effort: any per-call error
+// downgrades that chunk to a neutral 0.5 with an error reason so a
+// flaky grader never breaks the Ask call (fail-open). gradeRound also
+// returns the max relevance score seen — used by adaptive retrieval.
+func gradeRound(ctx context.Context, grader Grader, query string, round askRoundResult) ([]ChunkScore, float64) {
+	if grader == nil || len(round.answer.Hits) == 0 {
+		return nil, 0
+	}
+	scores := make([]ChunkScore, 0, len(round.answer.Hits))
+	maxRel := 0.0
+	for _, hit := range round.answer.Hits {
+		rel, relReason, err := grader.ScoreRelevance(ctx, query, hit)
+		if err != nil {
+			rel = 0.5
+			relReason = "grader error: " + err.Error()
+		}
+		sup, supReason, err := grader.ScoreSupport(ctx, round.answer.Text, hit)
+		if err != nil {
+			sup = 0.5
+			supReason = "grader error: " + err.Error()
+		}
+		if rel > maxRel {
+			maxRel = rel
+		}
+		reason := relReason
+		if supReason != "" {
+			if reason != "" {
+				reason = reason + " | " + supReason
+			} else {
+				reason = supReason
+			}
+		}
+		scores = append(scores, ChunkScore{
+			HitID:     hit.Chunk.ID,
+			Relevance: rel,
+			Support:   sup,
+			Reason:    reason,
+		})
+	}
+	return scores, maxRel
+}
+
+// roundAggregateScore returns the weighted aggregate score for a
+// reflectionRound used by SelectionModeBestByScore. The weights default
+// to 0.5/0.5 when both are <= 0. An empty ChunkScores slice yields 0.
+func roundAggregateScore(rr reflectionRound, relWeight, supWeight float64) float64 {
+	if len(rr.round.ChunkScores) == 0 {
+		return 0
+	}
+	if relWeight <= 0 && supWeight <= 0 {
+		relWeight = 0.5
+		supWeight = 0.5
+	}
+	var relSum, supSum float64
+	for _, cs := range rr.round.ChunkScores {
+		relSum += cs.Relevance
+		supSum += cs.Support
+	}
+	n := float64(len(rr.round.ChunkScores))
+	return relWeight*(relSum/n) + supWeight*(supSum/n)
+}
+
+// attachChunkScores writes scores onto both the diagnostic and trace
+// sides of a reflectionRound. Empty scores are stored as nil so the
+// zero-value contract for ungraded rounds is preserved.
+func attachChunkScores(rr reflectionRound, scores []ChunkScore) reflectionRound {
+	if len(scores) == 0 {
+		return rr
+	}
+	cloned := make([]ChunkScore, len(scores))
+	copy(cloned, scores)
+	rr.round.ChunkScores = cloned
+	// Trace gets an independent slice copy so observers can't mutate the
+	// diagnostic side by accident.
+	traceCopy := make([]ChunkScore, len(scores))
+	copy(traceCopy, scores)
+	rr.trace.ChunkScores = traceCopy
+	return rr
+}
+
+// pickBestRound selects the round with the highest weighted aggregate
+// ChunkScores. Ties are broken by earliest round index, so a degenerate
+// "all zero" case still produces a deterministic pick — matching the
+// last-round default's determinism. Returns the input as-is when there
+// is one or zero rounds.
+func pickBestRound(rounds []reflectionRound, relWeight, supWeight float64) int {
+	if len(rounds) <= 1 {
+		return len(rounds) - 1
+	}
+	bestIdx := 0
+	bestScore := roundAggregateScore(rounds[0], relWeight, supWeight)
+	for i := 1; i < len(rounds); i++ {
+		s := roundAggregateScore(rounds[i], relWeight, supWeight)
+		if s > bestScore {
+			bestScore = s
+			bestIdx = i
+		}
+	}
+	return bestIdx
 }
 
 func buildReflectionRound(mode ReflectionMode, roundIndex int, inputQuery string, round askRoundResult, decision reflectionDecisionResult) reflectionRound {

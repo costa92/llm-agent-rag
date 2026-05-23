@@ -301,6 +301,8 @@ type System struct {
 	entityResolver      graph.EntityResolver
 	communityDetector   graph.CommunityDetector
 	communitySummarizer graph.CommunitySummarizer
+
+	grader Grader
 }
 
 // New constructs a System from opts, filling unset dependencies with the
@@ -396,6 +398,8 @@ func New(opts Options) *System {
 		entityResolver:      entityResolver,
 		communityDetector:   opts.CommunityDetector,
 		communitySummarizer: opts.CommunitySummarizer,
+
+		grader: opts.Grader,
 	}
 }
 
@@ -412,4 +416,15 @@ func (s *System) Stats(ctx context.Context, namespace string) (store.Stats, erro
 // Model returns the System's generation model, or nil if none was configured.
 func (s *System) Model() generate.Model {
 	return s.model
+}
+
+// effectiveGrader returns the configured Grader, or a NoopGrader when
+// none was set. Callers can rely on the returned value being non-nil so
+// the EnableChunkGrading wiring always produces deterministic scores
+// even on misconfiguration.
+func (s *System) effectiveGrader() Grader {
+	if s.grader == nil {
+		return NoopGrader{}
+	}
+	return s.grader
 }
