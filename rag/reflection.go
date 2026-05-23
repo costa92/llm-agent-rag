@@ -19,6 +19,7 @@ type reflectionDecisionResult struct {
 	stopReason string
 	nextQuery  string
 	mode       ReflectionMode
+	metrics    metricsSnapshot
 }
 
 type reflectionRound struct {
@@ -128,7 +129,7 @@ func buildReflectionRound(mode ReflectionMode, roundIndex int, inputQuery string
 		round:      diag,
 		trace:      trace,
 		stopReason: decision.stopReason,
-		metrics:    snapshotMetrics(round.answer.Diagnostics.Metrics),
+		metrics:    combineMetricsSnapshots(snapshotMetrics(round.answer.Diagnostics.Metrics), decision.metrics),
 	}
 }
 
@@ -208,6 +209,19 @@ func snapshotMetrics(metrics obs.Metrics) metricsSnapshot {
 	}
 }
 
+func combineMetricsSnapshots(left metricsSnapshot, right metricsSnapshot) metricsSnapshot {
+	combined := metricsSnapshot{
+		Stages: append(append(make([]stageTimingSnapshot, 0, len(left.Stages)+len(right.Stages)), left.Stages...), right.Stages...),
+		Tokens: tokenUsageSnapshot{
+			PromptTokens:     left.Tokens.PromptTokens + right.Tokens.PromptTokens,
+			CompletionTokens: left.Tokens.CompletionTokens + right.Tokens.CompletionTokens,
+			TotalTokens:      left.Tokens.TotalTokens + right.Tokens.TotalTokens,
+			Estimated:        left.Tokens.Estimated || right.Tokens.Estimated,
+		},
+	}
+	return combined
+}
+
 func aggregateReflectionMetrics(rounds []reflectionRound) obs.Metrics {
 	if len(rounds) == 0 {
 		return obs.Metrics{}
@@ -234,6 +248,12 @@ func aggregateReflectionMetrics(rounds []reflectionRound) obs.Metrics {
 	return aggregated
 }
 
+func mergeMetrics(base obs.Metrics, calls obs.CallCounts, totalDuration time.Duration) obs.Metrics {
+	base.Calls = calls
+	base.TotalDuration = totalDuration
+	return base
+}
+
 func decideWithModel(ctx context.Context, model generate.Model, originalQuestion string, opts ReflectionOptions, round askRoundResult) (reflectionDecisionResult, error) {
 	req := generate.Request{
 		SystemPrompt: "You decide whether a self-RAG system should stop, continue, or rewrite before continuing.",
@@ -242,10 +262,12 @@ func decideWithModel(ctx context.Context, model generate.Model, originalQuestion
 			Content: reflectionDecisionPrompt(originalQuestion, opts, round),
 		}},
 	}
+	start := time.Now()
 	resp, err := model.Generate(ctx, req)
 	if err != nil {
 		return reflectionDecisionResult{}, err
 	}
+	usage := deriveTokenUsage(req, resp)
 	decision, reason, rewrite, err := parseReflectionDecision(resp.Text)
 	if err != nil {
 		return reflectionDecisionResult{}, err
@@ -258,6 +280,18 @@ func decideWithModel(ctx context.Context, model generate.Model, originalQuestion
 		reason:    reason,
 		nextQuery: strings.TrimSpace(rewrite),
 		mode:      ReflectionModeModel,
+		metrics: metricsSnapshot{
+			Stages: []stageTimingSnapshot{{
+				Stage:    "reflect",
+				Duration: time.Since(start),
+			}},
+			Tokens: tokenUsageSnapshot{
+				PromptTokens:     usage.PromptTokens,
+				CompletionTokens: usage.CompletionTokens,
+				TotalTokens:      usage.TotalTokens,
+				Estimated:        usage.Estimated,
+			},
+		},
 	}
 	switch decision {
 	case ReflectionDecisionStop:

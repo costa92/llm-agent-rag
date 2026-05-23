@@ -188,8 +188,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 		return Answer{}, err
 	}
 	answer := round.answer
-	answer.Diagnostics.Metrics.Calls = counter.Counts()
-	answer.Diagnostics.Metrics.TotalDuration = time.Since(askStart)
+	answer.Diagnostics.Metrics = mergeMetrics(answer.Diagnostics.Metrics, counter.Counts(), time.Since(askStart))
 	if s.observer.OnAsk != nil {
 		s.observer.OnAsk(ctx, answer.Trace)
 	}
