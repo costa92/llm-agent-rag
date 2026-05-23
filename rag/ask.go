@@ -15,7 +15,10 @@ import (
 )
 
 type askRoundResult struct {
-	answer Answer
+	answer         Answer
+	effectiveQuery string
+	topScore       float64
+	uniqueDocCount int
 }
 
 // Ask runs the standard retrieve-pack-generate answer path: it retrieves
@@ -38,7 +41,42 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	if reflectionDisabled(opts.Reflection) {
 		round, err = s.askRound(ctx, question, question, opts)
 	} else {
-		round, err = s.askRound(ctx, question, question, opts)
+		reflection := normalizeReflectionOptions(opts.Reflection)
+		switch reflection.Mode {
+		case ReflectionModeRule:
+			query := question
+			var rounds []reflectionRound
+			for roundIndex := 1; roundIndex <= reflection.MaxRounds; roundIndex++ {
+				round, err = s.askRound(ctx, question, query, opts)
+				if err != nil {
+					return Answer{}, err
+				}
+				decision := decideRule(roundIndex, reflection, round)
+				rounds = append(rounds, buildReflectionRound(roundIndex, query, round, decision))
+				if decision.decision == ReflectionDecisionStop {
+					break
+				}
+				query = decision.nextQuery
+			}
+			answer := round.answer
+			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, rounds)
+			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, rounds)
+			round.answer = answer
+		default:
+			round, err = s.askRound(ctx, question, question, opts)
+			if err != nil {
+				return Answer{}, err
+			}
+			singleRound := buildReflectionRound(1, question, round, reflectionDecisionResult{
+				decision:   ReflectionDecisionStop,
+				reason:     "reflection mode not implemented",
+				stopReason: "mode_not_implemented",
+			})
+			answer := round.answer
+			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, []reflectionRound{singleRound})
+			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, []reflectionRound{singleRound})
+			round.answer = answer
+		}
 	}
 	if err != nil {
 		return Answer{}, err
@@ -179,11 +217,12 @@ func (s *System) askRound(ctx context.Context, originalQuestion string, retrieva
 			SearchTrajectory:    cloneTrajectory(retrieveTrace.SearchTrajectory),
 		},
 	}
-	return askRoundResult{answer: answer}, nil
-}
-
-func reflectionDisabled(opts *ReflectionOptions) bool {
-	return opts == nil || opts.Mode == "" || opts.Mode == ReflectionModeOff
+	return askRoundResult{
+		answer:         answer,
+		effectiveQuery: retrieveTrace.EffectiveQuery,
+		topScore:       topHitScore(hits),
+		uniqueDocCount: uniqueDocCount(packedHits),
+	}, nil
 }
 
 // deriveTokenUsage records the token cost of a generation. When the model

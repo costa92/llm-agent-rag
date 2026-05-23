@@ -188,6 +188,122 @@ func TestAskOffModeMatchesSingleRoundBehavior(t *testing.T) {
 	}
 }
 
+func TestAskRuleModeStopsAfterSatisfiedFirstRound(t *testing.T) {
+	sys := New(Options{Model: fakeModel{}})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Paris is the capital of France."},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	ans, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search: SearchOptions{Namespace: "geo", TopK: 1},
+		Reflection: &ReflectionOptions{
+			Mode:             ReflectionModeRule,
+			MaxRounds:        3,
+			MinHits:          1,
+			MinScore:         0,
+			MinUniqueDocs:    1,
+			RequireCitations: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if ans.Diagnostics.Reflection.Mode != ReflectionModeRule {
+		t.Fatalf("Reflection.Mode = %q, want %q", ans.Diagnostics.Reflection.Mode, ReflectionModeRule)
+	}
+	if ans.Diagnostics.Reflection.Rounds != 1 {
+		t.Fatalf("Reflection.Rounds = %d, want 1", ans.Diagnostics.Reflection.Rounds)
+	}
+	if ans.Diagnostics.Reflection.AdoptedRound != 1 {
+		t.Fatalf("Reflection.AdoptedRound = %d, want 1", ans.Diagnostics.Reflection.AdoptedRound)
+	}
+	if ans.Diagnostics.Reflection.StopReason == "" {
+		t.Fatal("Reflection.StopReason empty, want stop reason")
+	}
+	if len(ans.Diagnostics.Reflection.RoundDetails) != 1 {
+		t.Fatalf("len(Reflection.RoundDetails) = %d, want 1", len(ans.Diagnostics.Reflection.RoundDetails))
+	}
+	round := ans.Diagnostics.Reflection.RoundDetails[0]
+	if round.Decision != ReflectionDecisionStop {
+		t.Fatalf("round.Decision = %q, want %q", round.Decision, ReflectionDecisionStop)
+	}
+	if round.DecisionMode != ReflectionModeRule {
+		t.Fatalf("round.DecisionMode = %q, want %q", round.DecisionMode, ReflectionModeRule)
+	}
+	if round.DecisionReason == "" {
+		t.Fatal("round.DecisionReason empty, want rule decision reason")
+	}
+	if len(ans.Trace.Reflection.Rounds) != 1 {
+		t.Fatalf("len(Trace.Reflection.Rounds) = %d, want 1", len(ans.Trace.Reflection.Rounds))
+	}
+	if len(ans.Hits) != 1 || len(ans.Citations) != 1 {
+		t.Fatalf("final adopted round semantics changed: hits=%d citations=%d", len(ans.Hits), len(ans.Citations))
+	}
+}
+
+func TestAskRuleModeStopsAtMaxRounds(t *testing.T) {
+	sys := New(Options{Model: fakeModel{}})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Berlin is in Germany."},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	ans, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search: SearchOptions{Namespace: "geo", TopK: 1},
+		Reflection: &ReflectionOptions{
+			Mode:             ReflectionModeRule,
+			MaxRounds:        2,
+			MinHits:          1,
+			MinScore:         1.1,
+			MinUniqueDocs:    2,
+			RequireCitations: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if ans.Diagnostics.Reflection.Mode != ReflectionModeRule {
+		t.Fatalf("Reflection.Mode = %q, want %q", ans.Diagnostics.Reflection.Mode, ReflectionModeRule)
+	}
+	if ans.Diagnostics.Reflection.Rounds != 2 {
+		t.Fatalf("Reflection.Rounds = %d, want 2", ans.Diagnostics.Reflection.Rounds)
+	}
+	if ans.Diagnostics.Reflection.AdoptedRound != 2 {
+		t.Fatalf("Reflection.AdoptedRound = %d, want 2", ans.Diagnostics.Reflection.AdoptedRound)
+	}
+	if ans.Diagnostics.Reflection.StopReason == "" {
+		t.Fatal("Reflection.StopReason empty, want max-round stop reason")
+	}
+	if len(ans.Diagnostics.Reflection.RoundDetails) != 2 {
+		t.Fatalf("len(Reflection.RoundDetails) = %d, want 2", len(ans.Diagnostics.Reflection.RoundDetails))
+	}
+	if ans.Diagnostics.Reflection.RoundDetails[0].Decision != ReflectionDecisionContinue {
+		t.Fatalf(
+			"round 1 decision = %q, want %q",
+			ans.Diagnostics.Reflection.RoundDetails[0].Decision,
+			ReflectionDecisionContinue,
+		)
+	}
+	if ans.Diagnostics.Reflection.RoundDetails[1].Decision != ReflectionDecisionStop {
+		t.Fatalf(
+			"round 2 decision = %q, want %q",
+			ans.Diagnostics.Reflection.RoundDetails[1].Decision,
+			ReflectionDecisionStop,
+		)
+	}
+	if len(ans.Trace.Reflection.Rounds) != 2 {
+		t.Fatalf("len(Trace.Reflection.Rounds) = %d, want 2", len(ans.Trace.Reflection.Rounds))
+	}
+	if len(ans.Hits) != 1 || len(ans.Citations) != 1 {
+		t.Fatalf("final adopted round semantics changed: hits=%d citations=%d", len(ans.Hits), len(ans.Citations))
+	}
+}
+
 func TestReflectionModeConstantsStable(t *testing.T) {
 	if ReflectionModeOff != "off" {
 		t.Fatalf("ReflectionModeOff = %q, want %q", ReflectionModeOff, "off")
