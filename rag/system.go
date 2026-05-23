@@ -76,6 +76,20 @@ type Diagnostics struct {
 	Reflection ReflectionDiagnostics
 }
 
+// ChunkScore is the per-chunk grading evidence produced by a Grader for
+// one reflection round: the hit ID, its relevance to the query, its
+// support for the round's answer, and a short reason for downstream
+// debugging.
+//
+// Compatibility note: this exported struct may grow additively over time, so
+// keyed composite literals are recommended.
+type ChunkScore struct {
+	HitID     string  // HitID identifies the scored hit (the chunk ID).
+	Relevance float64 // Relevance is the grader's 0.0-1.0 query-relevance score.
+	Support   float64 // Support is the grader's 0.0-1.0 answer-support score.
+	Reason    string  // Reason is the grader's short human explanation (e.g. raw reply).
+}
+
 // ReflectionDecision is the round-level reflection outcome.
 type ReflectionDecision string
 
@@ -148,6 +162,10 @@ type ReflectionRoundDiagnostics struct {
 	// GraphTrace records the graph-retrieval traversal for THIS round.
 	// Captured per round (see RoutePath).
 	GraphTrace retrieve.GraphTrace
+	// ChunkScores carries the per-chunk grading evidence for THIS round.
+	// Populated only when ReflectionOptions.EnableChunkGrading is true and
+	// a Grader is configured; empty otherwise.
+	ChunkScores []ChunkScore
 }
 
 // DriftDiagnostics attributes one System.AskDrift run: which communities the
@@ -252,6 +270,11 @@ type ReflectionRoundTrace struct {
 	// Captured per round so multi-round reflection runs do not lose
 	// earlier rounds' routing decisions to last-round-wins.
 	AutoRoutePath []string
+	// ChunkScores mirrors ReflectionRoundDiagnostics.ChunkScores — the
+	// per-chunk grading evidence for THIS round. Populated only when
+	// ReflectionOptions.EnableChunkGrading is true and a Grader is
+	// configured; empty otherwise.
+	ChunkScores []ChunkScore
 }
 
 // System is the top-level RAG pipeline and the front door of the SDK. It is
