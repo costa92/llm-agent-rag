@@ -411,6 +411,9 @@ type Trace struct
 	field TruncatedChunkIDs []string
 	field UsedTokens int
 package github.com/costa92/llm-agent-rag/postgres
+const VectorIndexHNSW
+const VectorIndexIVFFlat
+const VectorIndexNone VectorIndex = iota
 func New(pool *pgxpool.Pool, cfg Config) (*Store, error)
 func RegisterTypes(ctx context.Context, conn *pgx.Conn) error
 method (*Store) Communities(ctx context.Context, namespace string) ([]graph.Community, error)
@@ -433,9 +436,13 @@ method (*Store) UpsertCommunities(ctx context.Context, namespace string, communi
 method (*Store) UpsertGraph(ctx context.Context, namespace string, g graph.Graph) error
 type Config struct
 	field Dimension int
+	field HNSWConstructionM int
+	field IVFFlatLists int
 	field Table string
 	field TextSearchConfig string
+	field VectorIndex VectorIndex
 type Store struct
+type VectorIndex int
 package github.com/costa92/llm-agent-rag/prompt
 method (DefaultQATemplate) Render(_ context.Context, rc RenderContext) (generate.Request, error)
 type DefaultQATemplate struct

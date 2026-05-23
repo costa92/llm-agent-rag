@@ -6,6 +6,25 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [v1.0.5] - 2026-05-23
+
+Additive, no breaking changes — covered by the v1.x additive-only
+promise.
+
+### Added
+
+- `postgres.VectorIndex` enum (`VectorIndexNone` / `VectorIndexIVFFlat`
+  / `VectorIndexHNSW`) plus `Config.VectorIndex`, `Config.IVFFlatLists`,
+  and `Config.HNSWConstructionM` fields. When set, `Migrate` issues an
+  idempotent `CREATE INDEX IF NOT EXISTS` for the embedding column —
+  `USING ivfflat (embedding vector_cosine_ops) WITH (lists = N)` or
+  `USING hnsw (embedding vector_cosine_ops) WITH (m = M)`. Default
+  zero-value preserves v1.0.4 behavior (no vector index — existing
+  databases unaffected). On ~100K-chunk tables IVFFlat lists=100 drops
+  nearest-neighbor query latency from ~1.5s to ~80ms (~19x speedup, per
+  roadmap model — actual gains are environment-dependent). HNSW
+  requires pgvector >= 0.5. (P1-1)
+
 ## [v1.0.4] - 2026-05-23
 
 ### Changed

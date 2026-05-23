@@ -164,14 +164,39 @@ distinct `Config.Table`.
 
 The default `Migrate` does not create a vector index. For small
 datasets (< 10k chunks) sequential scan is fine. For larger
-datasets, create the index manually after import:
+datasets, set `postgres.Config.VectorIndex` and re-run `Migrate`:
+
+```go
+s, err := postgres.New(pool, postgres.Config{
+    Table:        "rag_chunks",
+    Dimension:    1536,
+    VectorIndex:  postgres.VectorIndexIVFFlat, // or VectorIndexHNSW
+    IVFFlatLists: 100,                          // default 100 when zero
+})
+// s.Migrate(ctx) now also issues:
+//   CREATE INDEX IF NOT EXISTS rag_chunks_embedding_ivfflat
+//     ON rag_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
+```
+
+For HNSW set `VectorIndex: postgres.VectorIndexHNSW` and optionally
+`HNSWConstructionM` (default 16). HNSW requires pgvector >= 0.5.
+
+`Migrate` uses `CREATE INDEX IF NOT EXISTS`, so re-running with the
+same `VectorIndex` is a no-op. Switching from IVFFlat to HNSW after
+the fact requires dropping the prior index out-of-band — `Migrate`
+will not drop it for you.
+
+For hot production tables where DDL locks must be avoided, run
+`CREATE INDEX CONCURRENTLY` out-of-band instead — `Migrate` does
+not currently use `CONCURRENTLY` because it cannot run inside a
+transaction:
 
 ```sql
 -- ivfflat for cosine distance — faster build, lower memory
-CREATE INDEX ON rag_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX CONCURRENTLY ON rag_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
 -- hnsw for higher recall — slower build, higher memory
-CREATE INDEX ON rag_chunks USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX CONCURRENTLY ON rag_chunks USING hnsw (embedding vector_cosine_ops);
 ```
 
 `lists = sqrt(rowcount)` is a reasonable starting point for ivfflat.
