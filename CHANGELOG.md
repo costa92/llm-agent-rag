@@ -6,6 +6,25 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [v1.0.2] - 2026-05-23
+
+Additive, no breaking changes — covered by the v1.x additive-only
+promise.
+
+### Added
+
+- `embed.BatchEmbedder` — optional sibling-capability interface for
+  embedders that natively support multi-text batches. The `rag.System`
+  importer (`Import` / `ImportFrom`) type-asserts the configured
+  embedder against `BatchEmbedder` and, when satisfied, collapses every
+  pending chunk across every document into a single `EmbedBatch` call —
+  replacing N sequential per-chunk `Embed` calls with one round-trip.
+  Plain `Embedder` callers see no change: the per-chunk loop is
+  byte-identical to v1.0.1 behavior. The counting instrumentation
+  wrapper (`countingEmbedder`) gains a `countingBatchEmbedder` sibling
+  so the capability survives the instrumentation layer and the type
+  assertion still succeeds for caller-supplied `BatchEmbedder`s. (P1-16)
+
 ## [v1.0.1] - 2026-05-20
 
 Maintenance release. No public-API change — covered by the v1.x
