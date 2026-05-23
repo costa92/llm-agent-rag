@@ -277,3 +277,49 @@ func (r perQueryHitRetriever) Retrieve(_ context.Context, req retrieve.Request) 
 	return []store.Hit{hit}, trace, nil
 }
 
+// TestParseReflectionDecision_AcceptsMixedCaseValue pins the requirement that
+// parseReflectionDecision accepts decision values in any case (Stop, STOP,
+// Continue, Rewrite_and_continue, etc.). The reflection protocol still
+// documents lowercase, but real-world models drift. D3 closure.
+func TestParseReflectionDecision_AcceptsMixedCaseValue(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want ReflectionDecision
+	}{
+		{name: "Stop", text: "decision=Stop\nreason=test", want: ReflectionDecisionStop},
+		{name: "STOP", text: "decision=STOP", want: ReflectionDecisionStop},
+		{name: "Continue", text: "decision=Continue", want: ReflectionDecisionContinue},
+		{name: "CONTINUE", text: "decision=CONTINUE\nreason=more", want: ReflectionDecisionContinue},
+		{name: "Rewrite_and_continue", text: "decision=Rewrite_and_continue\nrewrite=x", want: ReflectionDecisionRewriteAndContinue},
+		{name: "REWRITE_AND_CONTINUE", text: "decision=REWRITE_AND_CONTINUE", want: ReflectionDecisionRewriteAndContinue},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _, _, err := parseReflectionDecision(tc.text)
+			if err != nil {
+				t.Fatalf("parseReflectionDecision(%q) error = %v, want nil", tc.text, err)
+			}
+			if got != tc.want {
+				t.Fatalf("parseReflectionDecision(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+	// Ensure the reason/rewrite fields still pass through unchanged.
+	t.Run("Stop_preserves_reason", func(t *testing.T) {
+		got, reason, rewrite, err := parseReflectionDecision("decision=Stop\nreason=test")
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if got != ReflectionDecisionStop {
+			t.Fatalf("decision = %q, want Stop", got)
+		}
+		if reason != "test" {
+			t.Fatalf("reason = %q, want %q", reason, "test")
+		}
+		if rewrite != "" {
+			t.Fatalf("rewrite = %q, want empty", rewrite)
+		}
+	})
+}
+
