@@ -38,18 +38,27 @@ type SearchOptions struct {
 }
 
 // ReflectionMode selects how Ask evaluates whether to stop, continue, or
-// rewrite across bounded self-reflection rounds.
+// rewrite across bounded self-reflection rounds. The zero value and
+// ReflectionModeOff both disable reflection.
 type ReflectionMode string
 
 const (
-	ReflectionModeOff    ReflectionMode = "off"
-	ReflectionModeRule   ReflectionMode = "rule"
-	ReflectionModeModel  ReflectionMode = "model"
+	// ReflectionModeOff disables reflection explicitly.
+	ReflectionModeOff ReflectionMode = "off"
+	// ReflectionModeRule enables threshold-based reflection decisions.
+	ReflectionModeRule ReflectionMode = "rule"
+	// ReflectionModeModel enables model-judged reflection decisions.
+	ReflectionModeModel ReflectionMode = "model"
+	// ReflectionModeHybrid enables rule-first, model-assisted reflection decisions.
 	ReflectionModeHybrid ReflectionMode = "hybrid"
 )
 
 // ReflectionOptions configures the optional bounded self-reflection loop for
-// System.Ask.
+// System.Ask. Reflection is disabled when AskOptions.Reflection is nil, when
+// Mode is the zero value, or when Mode is ReflectionModeOff.
+//
+// Compatibility note: this exported struct may grow additively over time, so
+// keyed composite literals are recommended.
 type ReflectionOptions struct {
 	Mode             ReflectionMode // Mode selects the reflection policy.
 	MaxRounds        int            // MaxRounds bounds the number of Ask rounds.
@@ -62,7 +71,11 @@ type ReflectionOptions struct {
 }
 
 // AskOptions configures System.Ask — the standard retrieve-pack-generate
-// answer path.
+// answer path. Reflection is disabled when Reflection is nil, when
+// Reflection.Mode is the zero value, or when it is ReflectionModeOff.
+//
+// Compatibility note: this exported struct may grow additively over time, so
+// keyed composite literals are recommended.
 type AskOptions struct {
 	Search     SearchOptions      // Search configures the retrieval stage.
 	Template   prompt.Template    // Template overrides the prompt template; nil uses the System default.

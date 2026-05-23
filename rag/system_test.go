@@ -158,24 +158,46 @@ func TestAskCarriesTraceAndFilters(t *testing.T) {
 	}
 }
 
-func TestAskOptionsExposeReflectionConfig(t *testing.T) {
-	opts := AskOptions{
-		Reflection: &ReflectionOptions{
-			Mode:             ReflectionModeRule,
-			MaxRounds:        2,
-			MinHits:          1,
-			MinScore:         0.4,
-			MinUniqueDocs:    1,
-			RequireCitations: true,
-			AllowRewrite:     true,
-			FailOpen:         true,
-		},
+func TestReflectionModeConstantsStable(t *testing.T) {
+	if ReflectionModeOff != "off" {
+		t.Fatalf("ReflectionModeOff = %q, want %q", ReflectionModeOff, "off")
 	}
-	if opts.Reflection == nil {
-		t.Fatal("Reflection = nil, want config attached")
+	if ReflectionModeRule != "rule" {
+		t.Fatalf("ReflectionModeRule = %q, want %q", ReflectionModeRule, "rule")
 	}
-	if opts.Reflection.Mode != ReflectionModeRule {
-		t.Fatalf("Mode = %q, want %q", opts.Reflection.Mode, ReflectionModeRule)
+	if ReflectionModeModel != "model" {
+		t.Fatalf("ReflectionModeModel = %q, want %q", ReflectionModeModel, "model")
+	}
+	if ReflectionModeHybrid != "hybrid" {
+		t.Fatalf("ReflectionModeHybrid = %q, want %q", ReflectionModeHybrid, "hybrid")
+	}
+}
+
+func TestReflectionDecisionConstantsStable(t *testing.T) {
+	if ReflectionDecisionStop != "stop" {
+		t.Fatalf("ReflectionDecisionStop = %q, want %q", ReflectionDecisionStop, "stop")
+	}
+	if ReflectionDecisionContinue != "continue" {
+		t.Fatalf("ReflectionDecisionContinue = %q, want %q", ReflectionDecisionContinue, "continue")
+	}
+	if ReflectionDecisionRewriteAndContinue != "rewrite_and_continue" {
+		t.Fatalf(
+			"ReflectionDecisionRewriteAndContinue = %q, want %q",
+			ReflectionDecisionRewriteAndContinue,
+			"rewrite_and_continue",
+		)
+	}
+}
+
+func TestReflectionZeroValueConfigIsSafe(t *testing.T) {
+	var opts AskOptions
+	if opts.Reflection != nil {
+		t.Fatalf("zero-value AskOptions.Reflection = %#v, want nil", opts.Reflection)
+	}
+
+	var cfg ReflectionOptions
+	if cfg.Mode != "" {
+		t.Fatalf("zero-value ReflectionOptions.Mode = %q, want empty disabled mode", cfg.Mode)
 	}
 }
 
