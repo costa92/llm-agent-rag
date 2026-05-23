@@ -57,7 +57,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 					return Answer{}, err
 				}
 				decision := decideRule(roundIndex, reflection, round)
-				built := buildReflectionRound(reflection.Mode, roundIndex, query, round, decision)
+				built := buildReflectionRound(reflection.Mode, roundIndex, query, round, decision, nil)
 				var maxRel float64
 				if reflection.EnableChunkGrading {
 					var scores []ChunkScore
@@ -142,7 +142,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 									stopReason: "decision_error",
 									mode:       ReflectionModeHybrid,
 								}
-								appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision), round)
+								appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision, nil), round)
 								break
 							}
 							return Answer{}, err
@@ -167,7 +167,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 									stopReason: "decision_error",
 									mode:       ReflectionModeModel,
 								}
-								appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision), round)
+								appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision, nil), round)
 								break
 							}
 							return Answer{}, err
@@ -179,7 +179,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 						}
 					}
 				}
-				maxRel, _ := appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision), round)
+				maxRel, _ := appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision, nil), round)
 				currentRound := round
 				previousRound = &currentRound
 				if decision.decision == ReflectionDecisionStop &&
@@ -234,7 +234,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 				decision:   ReflectionDecisionStop,
 				reason:     "reflection mode not implemented",
 				stopReason: "mode_not_implemented",
-			})
+			}, nil)
 			answer := round.answer
 			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, []reflectionRound{singleRound}, 0)
 			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, []reflectionRound{singleRound})

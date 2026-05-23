@@ -118,6 +118,11 @@ type ReflectionDiagnostics struct {
 	DecisionModelCalls int                          // DecisionModelCalls counts reflection decision-model invocations.
 	RewriteModelCalls  int                          // RewriteModelCalls counts reflection rewrite-model invocations.
 	RoundDetails       []ReflectionRoundDiagnostics // RoundDetails records the per-round signals and decisions.
+	// FollowupQueriesUsed is the total count of active-retrieval
+	// follow-up queries the QueryPlanner emitted (and were executed)
+	// across all rounds of this Ask call. Zero when active retrieval
+	// was off, no planner was configured, or no round triggered it.
+	FollowupQueriesUsed int
 }
 
 // ReflectionRoundDiagnostics records the retrieval and decision summary for
@@ -166,6 +171,12 @@ type ReflectionRoundDiagnostics struct {
 	// Populated only when ReflectionOptions.EnableChunkGrading is true and
 	// a Grader is configured; empty otherwise.
 	ChunkScores []ChunkScore
+	// FollowupQueries are the active-retrieval follow-up search queries
+	// the QueryPlanner emitted for THIS round, in dispatch order. Empty
+	// when EnableActiveRetrieval is false, no planner is configured, the
+	// seed retrieval's max relevance is already above the floor, or the
+	// per-Ask follow-up budget is exhausted.
+	FollowupQueries []string
 }
 
 // DriftDiagnostics attributes one System.AskDrift run: which communities the
@@ -275,6 +286,11 @@ type ReflectionRoundTrace struct {
 	// ReflectionOptions.EnableChunkGrading is true and a Grader is
 	// configured; empty otherwise.
 	ChunkScores []ChunkScore
+	// FollowupQueries mirrors
+	// ReflectionRoundDiagnostics.FollowupQueries — the active-retrieval
+	// follow-up search queries the QueryPlanner emitted for THIS round.
+	// Empty when active retrieval was off or did not fire this round.
+	FollowupQueries []string
 }
 
 // System is the top-level RAG pipeline and the front door of the SDK. It is
