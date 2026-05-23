@@ -28,8 +28,70 @@ type GraderExample struct {
 // (no RoundDetails), when grading was off (no ChunkScores in any round),
 // or when there is otherwise nothing to emit.
 //
-// Stub: implementation in next commit (RED phase of TDD).
+// The function is pure and read-only: it does not mutate ans, does no
+// I/O, and is safe to call from any goroutine. Chunk content is joined
+// from Answer.Hits by chunk ID; when no Hit carries a scored chunk's
+// ID, ChunkContent is left empty (the chunk may have been scored in a
+// non-adopted round or dropped by the packer before it became a Hit on
+// the final Answer). This is intentional — the extractor refuses to add
+// new exported fields to Answer for the join.
+//
+// Naming note: the field is called Citations on the brief but
+// rag.Citation only carries chunk METADATA, not chunk text — Hits is
+// the only Answer-side source of Content. See GraderExample.ChunkContent.
 func ExportGraderDataset(ans Answer) []GraderExample {
-	_ = ans
-	return nil
+	rounds := ans.Diagnostics.Reflection.RoundDetails
+	if len(rounds) == 0 {
+		return nil
+	}
+	// First pass: count + check we have any scored chunks at all so we
+	// can return nil cheaply when grading was disabled.
+	total := 0
+	for _, r := range rounds {
+		total += len(r.ChunkScores)
+	}
+	if total == 0 {
+		return nil
+	}
+	// Build the chunk-ID → content lookup off Answer.Hits. Hits is the
+	// only Answer-side source of chunk text (Citations carries metadata
+	// only). When a scored ID has no matching Hit, ChunkContent stays
+	// empty per the doc comment.
+	contentByID := make(map[string]string, len(ans.Hits))
+	for _, hit := range ans.Hits {
+		contentByID[hit.Chunk.ID] = hit.Chunk.Content
+	}
+	// Build the adopted-round PromptChunkIDs set for the Adopted flag.
+	adopted := ans.Diagnostics.Reflection.AdoptedRound
+	adoptedIDs := make(map[string]struct{})
+	for _, r := range rounds {
+		if r.Round == adopted {
+			for _, id := range r.PromptChunkIDs {
+				adoptedIDs[id] = struct{}{}
+			}
+			break
+		}
+	}
+	out := make([]GraderExample, 0, total)
+	for _, r := range rounds {
+		for _, cs := range r.ChunkScores {
+			ex := GraderExample{
+				Query:        ans.Trace.Question,
+				Answer:       ans.Text,
+				ChunkID:      cs.HitID,
+				ChunkContent: contentByID[cs.HitID],
+				Relevance:    cs.Relevance,
+				Support:      cs.Support,
+				Reason:       cs.Reason,
+				Round:        r.Round,
+			}
+			if r.Round == adopted {
+				if _, ok := adoptedIDs[cs.HitID]; ok {
+					ex.Adopted = true
+				}
+			}
+			out = append(out, ex)
+		}
+	}
+	return out
 }
