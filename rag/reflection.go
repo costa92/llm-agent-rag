@@ -221,12 +221,20 @@ func pickBestRound(rounds []reflectionRound, relWeight, supWeight float64) int {
 	return bestIdx
 }
 
-func buildReflectionRound(mode ReflectionMode, roundIndex int, inputQuery string, round askRoundResult, decision reflectionDecisionResult) reflectionRound {
+func buildReflectionRound(mode ReflectionMode, roundIndex int, inputQuery string, round askRoundResult, decision reflectionDecisionResult, followupQueries []string) reflectionRound {
 	decisionMode := mode
 	if decision.mode != "" {
 		decisionMode = decision.mode
 	}
 	autoRoute := append([]string(nil), round.answer.Trace.AutoRoutePath...)
+	// Clone the followup queries slice independently for the diagnostic
+	// and trace sides so observers can't mutate the diagnostic copy by
+	// accident. A nil input yields nil on both sides.
+	var followupsDiag, followupsTrace []string
+	if len(followupQueries) > 0 {
+		followupsDiag = append([]string(nil), followupQueries...)
+		followupsTrace = append([]string(nil), followupQueries...)
+	}
 	diag := ReflectionRoundDiagnostics{
 		Round:               roundIndex,
 		InputQuery:          inputQuery,
@@ -246,6 +254,7 @@ func buildReflectionRound(mode ReflectionMode, roundIndex int, inputQuery string
 		AutoRouteCandidates: cloneAskRouteCandidates(round.answer.Trace.AutoRouteCandidates),
 		SearchTrajectory:    cloneTrajectory(round.answer.Trace.SearchTrajectory),
 		GraphTrace:          round.answer.Diagnostics.GraphTrace,
+		FollowupQueries:     followupsDiag,
 	}
 	trace := ReflectionRoundTrace{
 		Round:            roundIndex,
@@ -258,6 +267,7 @@ func buildReflectionRound(mode ReflectionMode, roundIndex int, inputQuery string
 		DecisionReason:   decision.reason,
 		RawDecisionText:  decision.rawText,
 		AutoRoutePath:    append([]string(nil), autoRoute...),
+		FollowupQueries:  followupsTrace,
 	}
 	return reflectionRound{
 		round:      diag,

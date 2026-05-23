@@ -114,6 +114,31 @@ type ReflectionOptions struct {
 	// AdaptiveRetrieval forces an extra round. A value <= 0 defaults to
 	// 0.6 when AdaptiveRetrieval is active.
 	AdaptiveRetrievalThreshold float64
+	// EnableActiveRetrieval, when true, runs a follow-up retrieval pass
+	// WITHIN a reflection round when the seed retrieval's max chunk
+	// relevance is below ActiveRetrievalRelevanceFloor. The configured
+	// QueryPlanner emits up to MaxFollowupQueries extra search queries
+	// (subject to MaxFollowupQueriesPerAsk across the whole Ask), each
+	// is retrieved, and the union of seed + follow-up hits is graded /
+	// packed before generation. Default false preserves v1.1.x behavior.
+	//
+	// Composition: active retrieval and AllowRewrite are orthogonal.
+	// Active fires WITHIN a round (unions follow-up hits with the seed
+	// retrieval before grading/packing); rewrite drives the NEXT
+	// round's input query. Both can be on simultaneously.
+	EnableActiveRetrieval bool
+	// MaxFollowupQueries caps how many follow-up retrievals a single
+	// reflection round fires. A value <= 0 defaults to 2 when
+	// EnableActiveRetrieval is true.
+	MaxFollowupQueries int
+	// MaxFollowupQueriesPerAsk caps the total number of follow-up
+	// retrievals consumed across all rounds of a single Ask call. A
+	// value <= 0 defaults to 4 when EnableActiveRetrieval is true.
+	MaxFollowupQueriesPerAsk int
+	// ActiveRetrievalRelevanceFloor is the max-chunk-relevance threshold
+	// below which active retrieval fires. A value <= 0 defaults to 0.4
+	// when EnableActiveRetrieval is true.
+	ActiveRetrievalRelevanceFloor float64
 }
 
 // AskOptions configures System.Ask — the standard retrieve-pack-generate
@@ -206,4 +231,11 @@ type Options struct {
 	// A nil Grader with grading enabled falls back to NoopGrader (every
 	// chunk scores 0.5) so the wiring stays functional.
 	Grader Grader
+	// QueryPlanner, when set, is the planner consulted by the active
+	// retrieval pass when ReflectionOptions.EnableActiveRetrieval is
+	// true. A nil planner with active retrieval enabled falls back to
+	// NoopQueryPlanner (no follow-ups) so the wiring stays functional —
+	// active retrieval then degrades to a no-op without breaking the
+	// Ask call.
+	QueryPlanner QueryPlanner
 }

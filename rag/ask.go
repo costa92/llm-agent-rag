@@ -19,6 +19,17 @@ type askRoundResult struct {
 	effectiveQuery string
 	topScore       float64
 	uniqueDocCount int
+	// followupQueries are the active-retrieval follow-up search queries
+	// the QueryPlanner emitted for this round (nil when active retrieval
+	// did not fire). The outer reflection loop plumbs them through
+	// buildReflectionRound to ReflectionRoundDiagnostics.FollowupQueries.
+	followupQueries []string
+	// preGradedRelevance carries the per-chunk relevance scores active
+	// retrieval already computed on the seed hit set (Q-D). When non-nil,
+	// the outer grading step skips a second ScoreRelevance pass for the
+	// seed IDs — ScoreSupport still runs because it requires the
+	// generated answer text.
+	preGradedRelevance []ChunkScore
 }
 
 // Ask runs the standard retrieve-pack-generate answer path: it retrieves
@@ -39,9 +50,41 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 		err   error
 	)
 	if reflectionDisabled(opts.Reflection) {
-		round, err = s.askRound(ctx, question, question, opts)
+		// No reflection: pass a zero-value (disabled) budget. Active
+		// retrieval requires reflection to be configured.
+		round, err = s.askRound(ctx, question, question, opts, activeRetrievalBudget{})
 	} else {
 		reflection := normalizeReflectionOptions(opts.Reflection)
+		// Build the active-retrieval budget once per Ask call. The
+		// remaining/used pointers thread the global per-Ask budget
+		// through every round so decrements compose correctly.
+		// prevAnswerText is updated after each round (commit 6 wires the
+		// rewrite composition; commit 5 keeps it empty before the first
+		// round and updates as rounds run for rule/model/hybrid modes).
+		activeEnabled := reflection.EnableActiveRetrieval && s.queryPlanner != nil
+		perRoundCap, globalCap, floor := effectiveActiveRetrievalConfig(reflection)
+		var (
+			followupsUsedThisAsk int
+			followupsRemaining   int
+			prevAnswerText       string
+		)
+		if activeEnabled {
+			followupsRemaining = globalCap
+		}
+		makeBudget := func() activeRetrievalBudget {
+			if !activeEnabled {
+				return activeRetrievalBudget{}
+			}
+			return activeRetrievalBudget{
+				enabled:         true,
+				perRoundCap:     perRoundCap,
+				globalRemaining: &followupsRemaining,
+				floor:           floor,
+				planner:         s.effectiveQueryPlanner(),
+				used:            &followupsUsedThisAsk,
+				prevAnswer:      prevAnswerText,
+			}
+		}
 		switch reflection.Mode {
 		case ReflectionModeRule:
 			query := question
@@ -52,12 +95,12 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 				adaptiveBudget = 1
 			}
 			for roundIndex := 1; roundIndex <= reflection.MaxRounds; roundIndex++ {
-				round, err = s.askRound(ctx, question, query, opts)
+				round, err = s.askRound(ctx, question, query, opts, makeBudget())
 				if err != nil {
 					return Answer{}, err
 				}
 				decision := decideRule(roundIndex, reflection, round)
-				built := buildReflectionRound(reflection.Mode, roundIndex, query, round, decision)
+				built := buildReflectionRound(reflection.Mode, roundIndex, query, round, decision, round.followupQueries)
 				var maxRel float64
 				if reflection.EnableChunkGrading {
 					var scores []ChunkScore
@@ -66,6 +109,9 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 				}
 				rounds = append(rounds, built)
 				roundResults = append(roundResults, round)
+				// Thread prev answer into the next round's budget so
+				// commit-6 cross-round composition has the latest text.
+				prevAnswerText = round.answer.Text
 				if decision.decision == ReflectionDecisionStop &&
 					reflection.AdaptiveRetrieval &&
 					reflection.EnableChunkGrading &&
@@ -93,6 +139,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			answer.Diagnostics.Metrics = metrics
 			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, rounds, 0)
 			answer.Diagnostics.Reflection.AdoptedRound = rounds[adoptedIdx].round.Round
+			answer.Diagnostics.Reflection.FollowupQueriesUsed = followupsUsedThisAsk
 			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, rounds)
 			answer.Trace.Reflection.AdoptedRound = rounds[adoptedIdx].trace.Round
 			round.answer = answer
@@ -118,7 +165,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 				return maxRel, built
 			}
 			for roundIndex := 1; roundIndex <= reflection.MaxRounds; roundIndex++ {
-				round, err = s.askRound(ctx, question, query, opts)
+				round, err = s.askRound(ctx, question, query, opts, makeBudget())
 				if err != nil {
 					return Answer{}, err
 				}
@@ -142,7 +189,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 									stopReason: "decision_error",
 									mode:       ReflectionModeHybrid,
 								}
-								appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision), round)
+								appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision, round.followupQueries), round)
 								break
 							}
 							return Answer{}, err
@@ -167,7 +214,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 									stopReason: "decision_error",
 									mode:       ReflectionModeModel,
 								}
-								appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision), round)
+								appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision, round.followupQueries), round)
 								break
 							}
 							return Answer{}, err
@@ -179,9 +226,10 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 						}
 					}
 				}
-				maxRel, _ := appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision), round)
+				maxRel, _ := appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision, round.followupQueries), round)
 				currentRound := round
 				previousRound = &currentRound
+				prevAnswerText = round.answer.Text
 				if decision.decision == ReflectionDecisionStop &&
 					reflection.AdaptiveRetrieval &&
 					reflection.EnableChunkGrading &&
@@ -215,6 +263,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			if len(rounds) > 0 {
 				answer.Diagnostics.Reflection.AdoptedRound = rounds[adoptedIdx].round.Round
 			}
+			answer.Diagnostics.Reflection.FollowupQueriesUsed = followupsUsedThisAsk
 			if err != nil && reflection.FailOpen && len(rounds) > 0 {
 				answer.Diagnostics.Reflection.FailureFallback = true
 				answer.Diagnostics.Reflection.FailureReason = err.Error()
@@ -226,7 +275,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			}
 			round.answer = answer
 		default:
-			round, err = s.askRound(ctx, question, question, opts)
+			round, err = s.askRound(ctx, question, question, opts, makeBudget())
 			if err != nil {
 				return Answer{}, err
 			}
@@ -234,7 +283,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 				decision:   ReflectionDecisionStop,
 				reason:     "reflection mode not implemented",
 				stopReason: "mode_not_implemented",
-			})
+			}, nil)
 			answer := round.answer
 			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, []reflectionRound{singleRound}, 0)
 			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, []reflectionRound{singleRound})
@@ -252,7 +301,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	return answer, nil
 }
 
-func (s *System) askRound(ctx context.Context, originalQuestion string, retrievalQuery string, opts AskOptions) (askRoundResult, error) {
+func (s *System) askRound(ctx context.Context, originalQuestion string, retrievalQuery string, opts AskOptions, budget activeRetrievalBudget) (askRoundResult, error) {
 	metrics := obs.Metrics{}
 
 	stageStart := time.Now()
@@ -260,6 +309,18 @@ func (s *System) askRound(ctx context.Context, originalQuestion string, retrieva
 	metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "retrieve", Duration: time.Since(stageStart)})
 	if err != nil {
 		return askRoundResult{}, err
+	}
+	// Active retrieval (v1.2.0): when EnableActiveRetrieval is set on
+	// ReflectionOptions, fire one follow-up retrieval pass before
+	// rerank/pack/generate. The driver is a no-op when budget.enabled is
+	// false, the planner is unconfigured, the global per-Ask budget is
+	// exhausted, or the seed retrieval's max relevance is already above
+	// the configured floor. Sequential dispatch — deterministic for
+	// tests.
+	var activeOutcome activeRetrievalOutcome
+	if budget.enabled {
+		activeOutcome = s.runActiveRetrieval(ctx, originalQuestion, hits, opts.Search, budget)
+		hits = activeOutcome.hits
 	}
 	tpl := opts.Template
 	if tpl == nil {
@@ -380,10 +441,12 @@ func (s *System) askRound(ctx context.Context, originalQuestion string, retrieva
 		},
 	}
 	return askRoundResult{
-		answer:         answer,
-		effectiveQuery: retrieveTrace.EffectiveQuery,
-		topScore:       topHitScore(hits),
-		uniqueDocCount: uniqueDocCount(packedHits),
+		answer:             answer,
+		effectiveQuery:     retrieveTrace.EffectiveQuery,
+		topScore:           topHitScore(hits),
+		uniqueDocCount:     uniqueDocCount(packedHits),
+		followupQueries:    activeOutcome.followupQueries,
+		preGradedRelevance: activeOutcome.preGradedRel,
 	}, nil
 }
 

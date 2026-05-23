@@ -118,6 +118,11 @@ type ReflectionDiagnostics struct {
 	DecisionModelCalls int                          // DecisionModelCalls counts reflection decision-model invocations.
 	RewriteModelCalls  int                          // RewriteModelCalls counts reflection rewrite-model invocations.
 	RoundDetails       []ReflectionRoundDiagnostics // RoundDetails records the per-round signals and decisions.
+	// FollowupQueriesUsed is the total count of active-retrieval
+	// follow-up queries the QueryPlanner emitted (and were executed)
+	// across all rounds of this Ask call. Zero when active retrieval
+	// was off, no planner was configured, or no round triggered it.
+	FollowupQueriesUsed int
 }
 
 // ReflectionRoundDiagnostics records the retrieval and decision summary for
@@ -166,6 +171,12 @@ type ReflectionRoundDiagnostics struct {
 	// Populated only when ReflectionOptions.EnableChunkGrading is true and
 	// a Grader is configured; empty otherwise.
 	ChunkScores []ChunkScore
+	// FollowupQueries are the active-retrieval follow-up search queries
+	// the QueryPlanner emitted for THIS round, in dispatch order. Empty
+	// when EnableActiveRetrieval is false, no planner is configured, the
+	// seed retrieval's max relevance is already above the floor, or the
+	// per-Ask follow-up budget is exhausted.
+	FollowupQueries []string
 }
 
 // DriftDiagnostics attributes one System.AskDrift run: which communities the
@@ -275,6 +286,11 @@ type ReflectionRoundTrace struct {
 	// ReflectionOptions.EnableChunkGrading is true and a Grader is
 	// configured; empty otherwise.
 	ChunkScores []ChunkScore
+	// FollowupQueries mirrors
+	// ReflectionRoundDiagnostics.FollowupQueries — the active-retrieval
+	// follow-up search queries the QueryPlanner emitted for THIS round.
+	// Empty when active retrieval was off or did not fire this round.
+	FollowupQueries []string
 }
 
 // System is the top-level RAG pipeline and the front door of the SDK. It is
@@ -303,6 +319,8 @@ type System struct {
 	communitySummarizer graph.CommunitySummarizer
 
 	grader Grader
+
+	queryPlanner QueryPlanner
 }
 
 // New constructs a System from opts, filling unset dependencies with the
@@ -400,6 +418,8 @@ func New(opts Options) *System {
 		communitySummarizer: opts.CommunitySummarizer,
 
 		grader: opts.Grader,
+
+		queryPlanner: opts.QueryPlanner,
 	}
 }
 
@@ -427,4 +447,17 @@ func (s *System) effectiveGrader() Grader {
 		return NoopGrader{}
 	}
 	return s.grader
+}
+
+// effectiveQueryPlanner returns the configured QueryPlanner, or a
+// NoopQueryPlanner when none was set. Callers can rely on the returned
+// value being non-nil so the EnableActiveRetrieval wiring always has a
+// planner to consult — even on misconfiguration, active retrieval then
+// degrades to a no-op rather than breaking the Ask call. Mirrors
+// effectiveGrader.
+func (s *System) effectiveQueryPlanner() QueryPlanner {
+	if s.queryPlanner == nil {
+		return NoopQueryPlanner{}
+	}
+	return s.queryPlanner
 }

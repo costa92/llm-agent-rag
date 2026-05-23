@@ -6,6 +6,37 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [1.2.0] - 2026-05-24
+
+Minor release adding Active Retrieval and a pluggable QueryPlanner seam
+to the reflection loop. Additive, no breaking changes — covered by the
+v1.x additive-only promise.
+
+### Added
+
+- `rag.QueryPlanner` interface — `PlanFollowups(ctx, question, prevAnswer, scores) ([]string, error)`. Two implementations ship in-package:
+  - `rag.NoopQueryPlanner` — returns `(nil, nil)`. Safe default.
+  - `rag.PromptQueryPlanner{Model generate.Model}` — LLM-driven planner emitting one follow-up query per line. Strips bullet/number prefixes defensively. Fails open on model error or empty reply (returns `nil, nil`, never errors); returns a non-nil error only when `Model` is nil.
+- `rag.Options.QueryPlanner` — System-level wiring slot. A nil planner defaults to `NoopQueryPlanner`.
+- `rag.ReflectionOptions` active-retrieval fields:
+  - `EnableActiveRetrieval bool` (default `false`)
+  - `MaxFollowupQueries int` (default `2`, per-round cap)
+  - `MaxFollowupQueriesPerAsk int` (default `4`, global cap per Ask)
+  - `ActiveRetrievalRelevanceFloor float64` (default `0.4`)
+- `rag.ReflectionRoundDiagnostics.FollowupQueries []string` and `rag.ReflectionRoundTrace.FollowupQueries []string` — planner's emitted follow-up queries for that round.
+- `rag.ReflectionDiagnostics.FollowupQueriesUsed int` — global counter consumed across rounds in one Ask call.
+
+### Changed
+
+- (none — behavior gated on `EnableActiveRetrieval`)
+
+### Compatibility
+
+- Fully additive. Existing v1.1.x callers unaffected when `EnableActiveRetrieval` is left at its zero value.
+- Composition: Active retrieval and `AllowRewrite` are orthogonal — active fires WITHIN a round (unions follow-up hits with seed retrieval before grading/packing); rewrite drives the next round's input query. Both can be on simultaneously.
+- stdlib-only invariant preserved (no new third-party imports).
+- API snapshot diff: 16 lines added, 0 removed, 0 renamed.
+
 ## [1.1.1] - 2026-05-24
 
 Patch release adding a dataset-extraction seam over the reflection
