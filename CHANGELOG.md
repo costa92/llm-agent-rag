@@ -6,6 +6,44 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [1.1.1] - 2026-05-24
+
+Patch release adding a dataset-extraction seam over the reflection
+trace. Additive, no breaking changes — covered by the v1.x
+additive-only promise.
+
+### Added
+
+- `rag.GraderExample` — struct capturing one
+  `(query, answer, chunk, grader-scores, round, adopted-flag)` tuple
+  extracted from a completed Ask trace. Fields: `Query`, `Answer`,
+  `ChunkID`, `ChunkContent`, `Relevance`, `Support`, `Reason`,
+  `Round` (1-based, matches `ReflectionRoundDiagnostics.Round`),
+  `Adopted` (true iff `Round == AdoptedRound` AND `ChunkID` is in
+  the adopted round's `PromptChunkIDs`).
+- `rag.ExportGraderDataset(Answer) []GraderExample` — pure
+  read-only extractor over `Answer.Diagnostics.Reflection.RoundDetails`.
+  Returns nil when reflection is off (no `RoundDetails`) or grading
+  is off (no `ChunkScores` in any round). Joins chunk text from
+  `Answer.Hits` by chunk ID; `ChunkContent` falls back to `""` when
+  no `Hit` carries that ID (e.g. for chunks scored in a non-adopted
+  round or dropped by the packer). Safe for any goroutine; no I/O,
+  no mutation.
+
+### Changed
+
+- (none)
+
+### Compatibility
+
+- Fully additive. Existing v1.x users unaffected.
+- API snapshot diff: 11 lines added, 0 removed, 0 renamed.
+- stdlib-only invariant preserved (no new third-party imports).
+- Naming note: `GraderExample` scores come from whichever `Grader`
+  was wired (typically `PromptGrader`). They are NOT paper-grade
+  `[ISREL]` / `[ISSUP]` critic-model labels — treat as weak
+  supervision.
+
 ## [1.1.0] - 2026-05-23
 
 Minor release closing Track B of the Self-RAG reflection milestone.
