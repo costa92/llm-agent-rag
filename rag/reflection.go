@@ -254,6 +254,14 @@ func mergeMetrics(base obs.Metrics, calls obs.CallCounts, totalDuration time.Dur
 	return base
 }
 
+func clampDecisionAtMaxRounds(decision reflectionDecisionResult, mode ReflectionMode) reflectionDecisionResult {
+	decision.decision = ReflectionDecisionStop
+	decision.reason = "max rounds reached"
+	decision.stopReason = "max_rounds"
+	decision.mode = mode
+	return decision
+}
+
 func decideWithModel(ctx context.Context, model generate.Model, originalQuestion string, opts ReflectionOptions, round askRoundResult) (reflectionDecisionResult, error) {
 	req := generate.Request{
 		SystemPrompt: "You decide whether a self-RAG system should stop, continue, or rewrite before continuing.",

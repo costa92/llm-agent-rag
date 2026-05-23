@@ -104,12 +104,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 						outcome := orchestrateModelReflection(query, decision)
 						decision = outcome.decision
 						if roundIndex >= reflection.MaxRounds && decision.decision != ReflectionDecisionStop {
-							decision = reflectionDecisionResult{
-								decision:   ReflectionDecisionStop,
-								reason:     "max rounds reached",
-								stopReason: "max_rounds",
-								mode:       ReflectionModeHybrid,
-							}
+							decision = clampDecisionAtMaxRounds(decision, ReflectionModeHybrid)
 						}
 					}
 				} else {
@@ -134,12 +129,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 						outcome := orchestrateModelReflection(query, decision)
 						decision = outcome.decision
 						if roundIndex >= reflection.MaxRounds && decision.decision != ReflectionDecisionStop {
-							decision = reflectionDecisionResult{
-								decision:   ReflectionDecisionStop,
-								reason:     "max rounds reached",
-								stopReason: "max_rounds",
-								mode:       ReflectionModeModel,
-							}
+							decision = clampDecisionAtMaxRounds(decision, ReflectionModeModel)
 						}
 					}
 				}

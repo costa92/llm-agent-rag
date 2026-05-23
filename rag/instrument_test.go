@@ -158,3 +158,68 @@ func TestAskReflectionAggregatesMetricsAcrossRounds(t *testing.T) {
 		t.Fatalf("generate stage count = %d, want 2 answer-generation stages", generateStages)
 	}
 }
+
+func TestAskReflectionAggregatesMetricsWhenMaxRoundsClampStopsDecision(t *testing.T) {
+	model := &scriptedReflectionModel{
+		responses: []generate.Response{
+			{Text: "answer round 1", Usage: generate.Usage{PromptTokens: 11, CompletionTokens: 5, TotalTokens: 16}},
+			{Text: "decision=rewrite_and_continue\nreason=need better evidence\nrewrite=zzparis", Usage: generate.Usage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10}},
+			{Text: "answer round 2", Usage: generate.Usage{PromptTokens: 13, CompletionTokens: 6, TotalTokens: 19}},
+			{Text: "decision=rewrite_and_continue\nreason=need one more round\nrewrite=zzparis-again", Usage: generate.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7}},
+		},
+	}
+	sys := New(Options{
+		Model: model,
+		Retriever: orderedResultRetriever{
+			results: map[string][]store.Hit{
+				"capital of france": {
+					orderedHit("docA", "doc1", 0.9, "berlin"),
+				},
+				"zzparis": {
+					orderedHit("docB", "doc2", 0.95, "paris"),
+				},
+			},
+		},
+		Packer: orderedAllPacker{},
+	})
+
+	ans, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 1},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:             ReflectionModeModel,
+			MaxRounds:        2,
+			MinHits:          2,
+			MinScore:         2,
+			MinUniqueDocs:    2,
+			RequireCitations: true,
+			AllowRewrite:     true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+
+	m := ans.Diagnostics.Metrics
+	if m.Calls.Generate != 4 {
+		t.Fatalf("Calls.Generate = %d, want 4 across answer+decision model calls", m.Calls.Generate)
+	}
+	if got := m.Tokens.PromptTokens; got != 36 {
+		t.Fatalf("PromptTokens = %d, want 36", got)
+	}
+	if got := m.Tokens.CompletionTokens; got != 16 {
+		t.Fatalf("CompletionTokens = %d, want 16", got)
+	}
+	if got := m.Tokens.TotalTokens; got != 52 {
+		t.Fatalf("TotalTokens = %d, want 52", got)
+	}
+	reflectStages := 0
+	for _, stage := range m.Stages {
+		if stage.Stage == "reflect" {
+			reflectStages++
+		}
+	}
+	if reflectStages != 2 {
+		t.Fatalf("reflect stage count = %d, want 2", reflectStages)
+	}
+}
