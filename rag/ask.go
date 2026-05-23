@@ -14,6 +14,10 @@ import (
 	"github.com/costa92/llm-agent-rag/store"
 )
 
+type askRoundResult struct {
+	answer Answer
+}
+
 // Ask runs the standard retrieve-pack-generate answer path: it retrieves
 // context for question, packs it into a prompt, and generates an Answer.
 func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Answer, error) {
@@ -25,14 +29,37 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	// preprocessor — are counted, and time each stage.
 	counter := obs.NewCounter()
 	ctx = obs.WithCounter(ctx, counter)
-	metrics := obs.Metrics{}
 	askStart := time.Now()
 
-	stageStart := time.Now()
-	hits, retrieveTrace, err := s.retrieve(ctx, question, opts.Search)
-	metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "retrieve", Duration: time.Since(stageStart)})
+	var (
+		round askRoundResult
+		err   error
+	)
+	if reflectionDisabled(opts.Reflection) {
+		round, err = s.askRound(ctx, question, question, opts)
+	} else {
+		round, err = s.askRound(ctx, question, question, opts)
+	}
 	if err != nil {
 		return Answer{}, err
+	}
+	answer := round.answer
+	answer.Diagnostics.Metrics.Calls = counter.Counts()
+	answer.Diagnostics.Metrics.TotalDuration = time.Since(askStart)
+	if s.observer.OnAsk != nil {
+		s.observer.OnAsk(ctx, answer.Trace)
+	}
+	return answer, nil
+}
+
+func (s *System) askRound(ctx context.Context, originalQuestion string, retrievalQuery string, opts AskOptions) (askRoundResult, error) {
+	metrics := obs.Metrics{}
+
+	stageStart := time.Now()
+	hits, retrieveTrace, err := s.retrieve(ctx, retrievalQuery, opts.Search)
+	metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "retrieve", Duration: time.Since(stageStart)})
+	if err != nil {
+		return askRoundResult{}, err
 	}
 	tpl := opts.Template
 	if tpl == nil {
@@ -45,12 +72,12 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 		var rerankTrace rerank.Trace
 		stageStart = time.Now()
 		rankedHits, rerankTrace, err = s.reranker.Rerank(ctx, rerank.Request{
-			Query: question,
+			Query: originalQuestion,
 			Hits:  hits,
 		})
 		metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "rerank", Duration: time.Since(stageStart)})
 		if err != nil {
-			return Answer{}, err
+			return askRoundResult{}, err
 		}
 		rerankedIDs = append([]string(nil), rerankTrace.OutputChunkIDs...)
 		rerankScores = append([]rerank.RerankScore(nil), rerankTrace.Scores...)
@@ -65,44 +92,39 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	if s.packer != nil {
 		stageStart = time.Now()
 		packed, err := s.packer.Pack(ctx, pack.Request{
-			Question:  question,
+			Question:  originalQuestion,
 			Hits:      rankedHits,
 			MaxTokens: opts.MaxTokens,
 		})
 		metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "pack", Duration: time.Since(stageStart)})
 		if err != nil {
-			return Answer{}, err
+			return askRoundResult{}, err
 		}
 		packedHits = packed.Hits
 		packedIDs = append([]string(nil), packed.Trace.SelectedChunkIDs...)
 		droppedIDs = append([]string(nil), packed.Trace.DroppedChunkIDs...)
 	}
-	// Screen retrieved content for prompt injection before prompt
-	// assembly: a suspicious chunk is neutralized in place or dropped.
-	// A nil scanner leaves packedHits untouched.
 	var injectionFindings []InjectionFinding
 	if s.injectionScanner != nil {
 		packedHits, injectionFindings = s.sanitizeHits(packedHits)
 		packedIDs = chunkIDs(packedHits)
 	}
 	req, err := tpl.Render(ctx, prompt.RenderContext{
-		Question:  question,
+		Question:  originalQuestion,
 		Namespace: opts.Search.Namespace,
 		Hits:      packedHits,
 		Metadata:  opts.Metadata,
 	})
 	if err != nil {
-		return Answer{}, err
+		return askRoundResult{}, err
 	}
 	stageStart = time.Now()
 	resp, err := s.model.Generate(ctx, req)
 	metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "generate", Duration: time.Since(stageStart)})
 	if err != nil {
-		return Answer{}, err
+		return askRoundResult{}, err
 	}
-	metrics.Calls = counter.Counts()
 	metrics.Tokens = deriveTokenUsage(req, resp)
-	metrics.TotalDuration = time.Since(askStart)
 	ids := make([]string, 0, len(packedHits))
 	citations := make([]Citation, 0, len(packedHits))
 	for _, hit := range packedHits {
@@ -137,7 +159,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			GraphTrace:          retrieveTrace.Graph,
 		},
 		Trace: Trace{
-			Question:            question,
+			Question:            originalQuestion,
 			Namespace:           opts.Search.Namespace,
 			TopK:                opts.Search.TopK,
 			Filters:             copyMap(opts.Search.Filters),
@@ -157,10 +179,11 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			SearchTrajectory:    cloneTrajectory(retrieveTrace.SearchTrajectory),
 		},
 	}
-	if s.observer.OnAsk != nil {
-		s.observer.OnAsk(ctx, answer.Trace)
-	}
-	return answer, nil
+	return askRoundResult{answer: answer}, nil
+}
+
+func reflectionDisabled(opts *ReflectionOptions) bool {
+	return opts == nil || opts.Mode == "" || opts.Mode == ReflectionModeOff
 }
 
 // deriveTokenUsage records the token cost of a generation. When the model

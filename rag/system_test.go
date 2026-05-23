@@ -158,6 +158,36 @@ func TestAskCarriesTraceAndFilters(t *testing.T) {
 	}
 }
 
+func TestAskOffModeMatchesSingleRoundBehavior(t *testing.T) {
+	sys := New(Options{Model: fakeModel{}})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Paris is the capital of France."},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	ans, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search: SearchOptions{Namespace: "geo", TopK: 1},
+		Reflection: &ReflectionOptions{
+			Mode:      ReflectionModeOff,
+			MaxRounds: 3,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if ans.Diagnostics.Reflection.Rounds != 0 {
+		t.Fatalf("Reflection.Rounds = %d, want 0 for off mode", ans.Diagnostics.Reflection.Rounds)
+	}
+	if len(ans.Hits) != 1 {
+		t.Fatalf("len(ans.Hits) = %d, want 1", len(ans.Hits))
+	}
+	if ans.Trace.Question != "capital of france" {
+		t.Fatalf("ans.Trace.Question = %q, want original question", ans.Trace.Question)
+	}
+}
+
 func TestReflectionModeConstantsStable(t *testing.T) {
 	if ReflectionModeOff != "off" {
 		t.Fatalf("ReflectionModeOff = %q, want %q", ReflectionModeOff, "off")
