@@ -358,3 +358,303 @@ func equalStringSlices(a, b []string) bool {
 	}
 	return true
 }
+
+// rewriteDecisionModel scripts a model reply that asks for a query
+// rewrite on the first reflection-decision call and then stops. Used
+// for the active-retrieval + AllowRewrite composition test.
+type rewriteDecisionModel struct {
+	answerTexts   []string
+	rewriteQuery  string
+	calls         int
+	decisionCalls int
+}
+
+func (m *rewriteDecisionModel) Generate(_ context.Context, req generate.Request) (generate.Response, error) {
+	m.calls++
+	// Heuristic to distinguish answer-generation from
+	// reflection-decision: the decision prompt always starts with
+	// "Original question:". This mirrors how scriptedReflectionModel
+	// is consumed in existing tests.
+	user := req.Messages[0].Content
+	if len(user) >= len("Original question:") && user[:len("Original question:")] == "Original question:" {
+		m.decisionCalls++
+		if m.decisionCalls == 1 && m.rewriteQuery != "" {
+			return generate.Response{
+				Text: "decision=rewrite_and_continue\nreason=need more\nrewrite=" + m.rewriteQuery + "\n",
+			}, nil
+		}
+		return generate.Response{Text: "decision=stop\nreason=ok\n"}, nil
+	}
+	// Answer generation.
+	idx := m.calls - m.decisionCalls - 1
+	if idx >= 0 && idx < len(m.answerTexts) {
+		return generate.Response{Text: m.answerTexts[idx]}, nil
+	}
+	return generate.Response{Text: "default answer"}, nil
+}
+
+// TestActiveRetrieval_ComposesWithRewrite_AcrossRounds pins Q-D
+// composition: in model mode with AllowRewrite, active retrieval
+// fires inside EACH round on the seed retrieval — orthogonal to the
+// rewrite that drives the next round's query.
+func TestActiveRetrieval_ComposesWithRewrite_AcrossRounds(t *testing.T) {
+	model := &rewriteDecisionModel{
+		answerTexts:  []string{"first answer", "second answer"},
+		rewriteQuery: "rewritten paris query",
+	}
+	planner := &scriptedQueryPlanner{
+		queries: [][]string{
+			{"alpha"},
+			{"beta"},
+		},
+	}
+	grader := lowRelevanceGrader{relevance: 0.1}
+	sys := New(Options{Model: model, Grader: grader, QueryPlanner: planner})
+	_, err := sys.Import(context.Background(), seedDocsForActiveRetrieval(),
+		ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	ans, err := sys.Ask(context.Background(), "paris seed", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 4},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:                  ReflectionModeModel,
+			MaxRounds:             2,
+			AllowRewrite:          true,
+			EnableActiveRetrieval: true,
+			MaxFollowupQueries:    1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if len(ans.Diagnostics.Reflection.RoundDetails) != 2 {
+		t.Fatalf("len(RoundDetails) = %d, want 2 (rewrite drives 2nd round)",
+			len(ans.Diagnostics.Reflection.RoundDetails))
+	}
+	r1 := ans.Diagnostics.Reflection.RoundDetails[0].FollowupQueries
+	r2 := ans.Diagnostics.Reflection.RoundDetails[1].FollowupQueries
+	if len(r1) != 1 || r1[0] != "alpha" {
+		t.Fatalf("round 1 FollowupQueries = %v, want [alpha]", r1)
+	}
+	if len(r2) != 1 || r2[0] != "beta" {
+		t.Fatalf("round 2 FollowupQueries = %v, want [beta]", r2)
+	}
+	if planner.calls != 2 {
+		t.Fatalf("planner.calls = %d, want 2 (one per round)", planner.calls)
+	}
+}
+
+// TestActiveRetrieval_AndAdaptiveRetrieval_BothApplyIndependently
+// pins that active retrieval (within-round follow-ups) and adaptive
+// retrieval (force-extra-round) compose without interfering.
+func TestActiveRetrieval_AndAdaptiveRetrieval_BothApplyIndependently(t *testing.T) {
+	model := &scriptedReflectionModel{
+		responses: []generate.Response{
+			{Text: "round 1 answer"},
+			{Text: "round 2 answer"},
+		},
+	}
+	planner := &scriptedQueryPlanner{
+		queries: [][]string{
+			{"alpha"},
+			{"beta"},
+		},
+	}
+	grader := lowRelevanceGrader{relevance: 0.1}
+	sys := New(Options{Model: model, Grader: grader, QueryPlanner: planner})
+	_, err := sys.Import(context.Background(), seedDocsForActiveRetrieval(),
+		ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	ans, err := sys.Ask(context.Background(), "paris seed", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 4},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:                  ReflectionModeRule,
+			MaxRounds:             2,
+			EnableChunkGrading:    true,
+			AdaptiveRetrieval:     true,
+			EnableActiveRetrieval: true,
+			MaxFollowupQueries:    1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	// Adaptive forces an extra round (low relevance), and active
+	// retrieval fires inside each round.
+	if len(ans.Diagnostics.Reflection.RoundDetails) != 2 {
+		t.Fatalf("len(RoundDetails) = %d, want 2 (adaptive forced extra round)",
+			len(ans.Diagnostics.Reflection.RoundDetails))
+	}
+	if ans.Diagnostics.Reflection.FollowupQueriesUsed != 2 {
+		t.Fatalf("FollowupQueriesUsed = %d, want 2", ans.Diagnostics.Reflection.FollowupQueriesUsed)
+	}
+}
+
+// TestActiveRetrieval_PrevAnswerThreadedToPlanner pins Q-D: the
+// previous round's answer text is threaded into the planner for the
+// next round so the planner can read the answer-vs-question gap.
+func TestActiveRetrieval_PrevAnswerThreadedToPlanner(t *testing.T) {
+	model := &scriptedReflectionModel{
+		responses: []generate.Response{
+			{Text: "first round answer text"},
+			{Text: "second round answer text"},
+		},
+	}
+	planner := &scriptedQueryPlanner{
+		queries: [][]string{
+			{"alpha"},
+			{"beta"},
+		},
+	}
+	grader := lowRelevanceGrader{relevance: 0.1}
+	sys := New(Options{Model: model, Grader: grader, QueryPlanner: planner})
+	_, err := sys.Import(context.Background(), seedDocsForActiveRetrieval(),
+		ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	_, err = sys.Ask(context.Background(), "paris seed", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 4},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:                  ReflectionModeRule,
+			MaxRounds:             2,
+			MinHits:                100, // force non-stop after round 1
+			EnableActiveRetrieval: true,
+			MaxFollowupQueries:    1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	// The planner is consulted at the start of round 2 — BEFORE the
+	// round 2 generate. So lastPrevAnswer (the value seen on the
+	// LAST planner call, which is the 2nd call) should be round-1's
+	// answer text, not round-2's.
+	if planner.calls != 2 {
+		t.Fatalf("planner.calls = %d, want 2", planner.calls)
+	}
+	if planner.lastPrevAnswer != "first round answer text" {
+		t.Fatalf("planner.lastPrevAnswer = %q, want %q (round-1 answer at start of round 2)",
+			planner.lastPrevAnswer, "first round answer text")
+	}
+}
+
+// TestActiveRetrieval_PrevAnswerForRound2 pins the exact thread:
+// the planner sees the first round's answer as prevAnswer when it
+// is consulted at the start of round 2.
+func TestActiveRetrieval_PrevAnswerForRound2(t *testing.T) {
+	model := &scriptedReflectionModel{
+		responses: []generate.Response{
+			{Text: "round 1 final answer"},
+			{Text: "round 2 final answer"},
+		},
+	}
+	// Capture the prevAnswer the planner sees on its second call.
+	var seenOnSecondCall string
+	planner := capturingPlanner{
+		onCall: func(call int, _, prevAnswer string, _ []ChunkScore) {
+			if call == 2 {
+				seenOnSecondCall = prevAnswer
+			}
+		},
+		queries: [][]string{{"alpha"}, {"beta"}},
+	}
+	grader := lowRelevanceGrader{relevance: 0.1}
+	sys := New(Options{Model: model, Grader: grader, QueryPlanner: &planner})
+	_, err := sys.Import(context.Background(), seedDocsForActiveRetrieval(),
+		ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	_, err = sys.Ask(context.Background(), "paris seed", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 4},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:                  ReflectionModeRule,
+			MaxRounds:             2,
+			MinHits:                100, // force non-stop after round 1
+			EnableActiveRetrieval: true,
+			MaxFollowupQueries:    1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if seenOnSecondCall != "round 1 final answer" {
+		t.Fatalf("planner saw prevAnswer = %q on round 2, want %q",
+			seenOnSecondCall, "round 1 final answer")
+	}
+}
+
+// capturingPlanner records each PlanFollowups call and invokes a
+// caller-supplied callback so tests can pin exactly what the driver
+// threaded into the planner.
+type capturingPlanner struct {
+	onCall  func(call int, question, prevAnswer string, scores []ChunkScore)
+	queries [][]string
+	calls   int
+}
+
+func (p *capturingPlanner) PlanFollowups(_ context.Context, question, prevAnswer string, scores []ChunkScore) ([]string, error) {
+	p.calls++
+	if p.onCall != nil {
+		p.onCall(p.calls, question, prevAnswer, scores)
+	}
+	idx := p.calls - 1
+	if idx >= len(p.queries) {
+		return nil, nil
+	}
+	return p.queries[idx], nil
+}
+
+// TestActiveRetrieval_BackwardCompat_NoDiffWhenDisabled pins the
+// hard invariant: with EnableActiveRetrieval=false, the diagnostics
+// must look byte-identical to a v1.1.x run — no FollowupQueries on
+// any round, FollowupQueriesUsed=0, and the planner never consulted.
+func TestActiveRetrieval_BackwardCompat_NoDiffWhenDisabled(t *testing.T) {
+	model := &scriptedReflectionModel{
+		responses: []generate.Response{{Text: "the answer"}},
+	}
+	planner := &scriptedQueryPlanner{queries: [][]string{{"should-not-run"}}}
+	grader := lowRelevanceGrader{relevance: 0.0} // would trigger if enabled
+	sys := New(Options{Model: model, Grader: grader, QueryPlanner: planner})
+	_, err := sys.Import(context.Background(), seedDocsForActiveRetrieval(),
+		ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	ans, err := sys.Ask(context.Background(), "paris seed", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 4},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:      ReflectionModeRule,
+			MaxRounds: 1,
+			// EnableActiveRetrieval left false.
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if planner.calls != 0 {
+		t.Fatalf("planner.calls = %d, want 0", planner.calls)
+	}
+	if ans.Diagnostics.Reflection.FollowupQueriesUsed != 0 {
+		t.Fatalf("FollowupQueriesUsed = %d, want 0", ans.Diagnostics.Reflection.FollowupQueriesUsed)
+	}
+	if len(ans.Diagnostics.Reflection.RoundDetails) != 1 {
+		t.Fatalf("len(RoundDetails) = %d, want 1", len(ans.Diagnostics.Reflection.RoundDetails))
+	}
+	if got := ans.Diagnostics.Reflection.RoundDetails[0].FollowupQueries; got != nil {
+		t.Fatalf("FollowupQueries = %v, want nil (backward-compat)", got)
+	}
+	if got := ans.Trace.Reflection.Rounds[0].FollowupQueries; got != nil {
+		t.Fatalf("trace.FollowupQueries = %v, want nil (backward-compat)", got)
+	}
+}
+
