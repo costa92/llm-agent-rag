@@ -118,7 +118,7 @@ sys := rag.New(rag.Options{
             // record metrics, emit a span, log structured event
         },
         OnRetrieve: func(ctx context.Context, trace retrieve.Trace) {
-            // every retrieval — including the one inside each Ask
+            // every internal retrieval round, including reflection retries
         },
         OnAsk: func(ctx context.Context, trace rag.Trace) {
             // end-to-end answer trace, fires after OnRetrieve
@@ -131,6 +131,11 @@ OTel adapters in the `llm-agent-otel` sister repo wire to these
 hooks. Each callback receives the same trace data the rag facade
 returns to callers, so observer code never needs to inspect
 internals.
+
+When `AskOptions.Reflection` is enabled, one top-level `Ask` can trigger
+multiple successful internal retrieval rounds. Treat `OnRetrieve` counts as
+per-round, not per public API call. `OnAsk` still fires once for the adopted
+answer round.
 
 Errors short-circuit before any callback fires. If you need error
 spans, wrap the rag method directly in your tracing layer.
@@ -213,3 +218,14 @@ The number removed is surfaced in `ImportTrace.RemovedChunks`.
 `Remove` deletes a single chunk by ID. `RemoveByFilter` deletes
 every chunk matching the namespace + filter and returns the count.
 No soft-delete — deletion is final.
+
+### Reflection in production
+
+For production rollouts, prefer `ReflectionOptions.FailOpen: true` so a later
+reflection or rewrite failure can still return the best already-usable round
+instead of failing the entire request.
+
+If reflection rewrites the query and `Search.EnableMQE` or `Search.EnableHyDE`
+is also enabled, the rewritten query still flows through those preprocessors on
+the next round. Later-round retrieval traces therefore reflect both reflection
+rewrite and any configured MQE or HyDE expansion.

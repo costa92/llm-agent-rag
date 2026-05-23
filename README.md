@@ -179,6 +179,48 @@ func main() {
 - `Ask` layers retrieval, optional rerank, context packing, prompt rendering,
   and answer generation.
 
+### Self-RAG reflection
+
+`Ask` can run a bounded self-reflection loop before it adopts a final round:
+
+```go
+ans, err := sys.Ask(ctx, "What changed in the refund policy?", rag.AskOptions{
+	Search: rag.SearchOptions{
+		Namespace:  "docs",
+		TopK:       6,
+		EnableMQE:  true,
+		EnableHyDE: true,
+	},
+	Reflection: &rag.ReflectionOptions{
+		Mode:             rag.ReflectionModeHybrid,
+		MaxRounds:        3,
+		MinHits:          3,
+		MinScore:         0.75,
+		MinUniqueDocs:    2,
+		RequireCitations: true,
+		AllowRewrite:     true,
+		FailOpen:         true,
+	},
+})
+if err != nil {
+	panic(err)
+}
+
+fmt.Println(ans.Text)
+fmt.Println(ans.Diagnostics.Reflection.AdoptedRound)
+fmt.Println(ans.Diagnostics.Reflection.StopReason)
+```
+
+Reflection diagnostics keep the full round history in
+`ans.Diagnostics.Reflection.RoundDetails` and `trace.Reflection.Rounds`.
+The final answer fields only reflect the adopted round: chunk IDs, scores,
+and other answer-facing attributes do not merge signals from rejected rounds.
+
+Observer behavior stays additive: `Observer.OnAsk` still fires once per
+top-level `Ask`, while `Observer.OnRetrieve` may fire multiple times during
+one `Ask` when reflection runs because each internal retrieval round emits its
+own retrieval trace.
+
 ## Minimal example workflow
 
 1. Build a `rag.System`

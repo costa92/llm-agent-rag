@@ -456,6 +456,13 @@ type RenderContext struct
 type Template interface
 	method Render(ctx context.Context, rc RenderContext) (generate.Request, error)
 package github.com/costa92/llm-agent-rag/rag
+const ReflectionDecisionContinue ReflectionDecision = "continue"
+const ReflectionDecisionRewriteAndContinue ReflectionDecision = "rewrite_and_continue"
+const ReflectionDecisionStop ReflectionDecision = "stop"
+const ReflectionModeHybrid ReflectionMode = "hybrid"
+const ReflectionModeModel ReflectionMode = "model"
+const ReflectionModeOff ReflectionMode = "off"
+const ReflectionModeRule ReflectionMode = "rule"
 func New(opts Options) *System
 method (*System) Ask(ctx context.Context, question string, opts AskOptions) (Answer, error)
 method (*System) AskDrift(ctx context.Context, question string, opts DriftOptions) (Answer, error)
@@ -477,6 +484,7 @@ type Answer struct
 type AskOptions struct
 	field MaxTokens int
 	field Metadata map[string]any
+	field Reflection *ReflectionOptions
 	field Search SearchOptions
 	field Template prompt.Template
 type Citation struct
@@ -498,6 +506,7 @@ type Diagnostics struct
 	field MatchedSections []string
 	field Metrics obs.Metrics
 	field PromptChunkIDs []string
+	field Reflection ReflectionDiagnostics
 	field RerankScores []rerank.RerankScore
 	field ReturnedChunkIDs []string
 	field RoutePolicy retrieve.RoutePolicyTrace
@@ -558,6 +567,53 @@ type Options struct
 	field Splitter ingest.Splitter
 	field Store store.Store
 	field Template prompt.Template
+type ReflectionDecision string
+type ReflectionDiagnostics struct
+	field AdoptedRound int
+	field DecisionModelCalls int
+	field FailureFallback bool
+	field FailureReason string
+	field Mode ReflectionMode
+	field RewriteModelCalls int
+	field RoundDetails []ReflectionRoundDiagnostics
+	field Rounds int
+	field StopReason string
+type ReflectionMode string
+type ReflectionOptions struct
+	field AllowRewrite bool
+	field FailOpen bool
+	field MaxRounds int
+	field MinHits int
+	field MinScore float64
+	field MinUniqueDocs int
+	field Mode ReflectionMode
+	field RequireCitations bool
+type ReflectionRoundDiagnostics struct
+	field Decision ReflectionDecision
+	field DecisionMode ReflectionMode
+	field DecisionReason string
+	field EffectiveQuery string
+	field InputQuery string
+	field PromptChunkIDs []string
+	field ReturnedChunkIDs []string
+	field RewrittenQuery string
+	field Round int
+	field TopScore float64
+	field UniqueDocCount int
+type ReflectionRoundTrace struct
+	field Decision ReflectionDecision
+	field DecisionReason string
+	field EffectiveQuery string
+	field InputQuery string
+	field PromptChunkIDs []string
+	field ReturnedChunkIDs []string
+	field RewrittenQuery string
+	field Round int
+type ReflectionTrace struct
+	field AdoptedRound int
+	field Mode ReflectionMode
+	field Rounds []ReflectionRoundTrace
+	field StopReason string
 type SearchOptions struct
 	field AutoRouteConfidenceGap float64
 	field AutoRouteConfidenceThreshold float64
@@ -590,6 +646,7 @@ type Trace struct
 	field Namespace string
 	field PackedChunkIDs []string
 	field Question string
+	field Reflection ReflectionTrace
 	field RerankedChunkIDs []string
 	field RoutePath []string
 	field RoutePolicy retrieve.RoutePolicyTrace
