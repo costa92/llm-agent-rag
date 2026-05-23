@@ -52,13 +52,17 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 					return Answer{}, err
 				}
 				decision := decideRule(roundIndex, reflection, round)
-				rounds = append(rounds, buildReflectionRound(roundIndex, query, round, decision))
+				rounds = append(rounds, buildReflectionRound(reflection.Mode, roundIndex, query, round, decision))
 				if decision.decision == ReflectionDecisionStop {
 					break
 				}
-				query = decision.nextQuery
+				query = question
 			}
 			answer := round.answer
+			metrics := aggregateReflectionMetrics(rounds)
+			metrics.Calls = answer.Diagnostics.Metrics.Calls
+			metrics.TotalDuration = answer.Diagnostics.Metrics.TotalDuration
+			answer.Diagnostics.Metrics = metrics
 			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, rounds)
 			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, rounds)
 			round.answer = answer
@@ -67,7 +71,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			if err != nil {
 				return Answer{}, err
 			}
-			singleRound := buildReflectionRound(1, question, round, reflectionDecisionResult{
+			singleRound := buildReflectionRound(reflection.Mode, 1, question, round, reflectionDecisionResult{
 				decision:   ReflectionDecisionStop,
 				reason:     "reflection mode not implemented",
 				stopReason: "mode_not_implemented",

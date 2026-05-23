@@ -1,6 +1,11 @@
 package rag
 
-import "github.com/costa92/llm-agent-rag/store"
+import (
+	"time"
+
+	"github.com/costa92/llm-agent-rag/obs"
+	"github.com/costa92/llm-agent-rag/store"
+)
 
 const defaultReflectionMaxRounds = 1
 
@@ -15,6 +20,24 @@ type reflectionRound struct {
 	round      ReflectionRoundDiagnostics
 	trace      ReflectionRoundTrace
 	stopReason string
+	metrics    metricsSnapshot
+}
+
+type metricsSnapshot struct {
+	Stages []stageTimingSnapshot
+	Tokens tokenUsageSnapshot
+}
+
+type stageTimingSnapshot struct {
+	Stage    string
+	Duration time.Duration
+}
+
+type tokenUsageSnapshot struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	Estimated        bool
 }
 
 func reflectionDisabled(opts *ReflectionOptions) bool {
@@ -56,11 +79,11 @@ func decideRule(roundIndex int, opts ReflectionOptions, round askRoundResult) re
 		decision:   ReflectionDecisionContinue,
 		reason:     "rule thresholds not satisfied",
 		stopReason: "continue",
-		nextQuery:  round.effectiveQuery,
+		nextQuery:  "",
 	}
 }
 
-func buildReflectionRound(roundIndex int, inputQuery string, round askRoundResult, decision reflectionDecisionResult) reflectionRound {
+func buildReflectionRound(mode ReflectionMode, roundIndex int, inputQuery string, round askRoundResult, decision reflectionDecisionResult) reflectionRound {
 	diag := ReflectionRoundDiagnostics{
 		Round:            roundIndex,
 		InputQuery:       inputQuery,
@@ -70,7 +93,7 @@ func buildReflectionRound(roundIndex int, inputQuery string, round askRoundResul
 		UniqueDocCount:   round.uniqueDocCount,
 		TopScore:         round.topScore,
 		Decision:         decision.decision,
-		DecisionMode:     ReflectionModeRule,
+		DecisionMode:     mode,
 		DecisionReason:   decision.reason,
 	}
 	trace := ReflectionRoundTrace{
@@ -82,7 +105,12 @@ func buildReflectionRound(roundIndex int, inputQuery string, round askRoundResul
 		Decision:         decision.decision,
 		DecisionReason:   decision.reason,
 	}
-	return reflectionRound{round: diag, trace: trace, stopReason: decision.stopReason}
+	return reflectionRound{
+		round:      diag,
+		trace:      trace,
+		stopReason: decision.stopReason,
+		metrics:    snapshotMetrics(round.answer.Diagnostics.Metrics),
+	}
 }
 
 func reflectionDiagnosticsFromRounds(mode ReflectionMode, rounds []reflectionRound) ReflectionDiagnostics {
@@ -139,4 +167,49 @@ func uniqueDocCount(hits []store.Hit) int {
 		seen[hit.Chunk.DocID] = struct{}{}
 	}
 	return len(seen)
+}
+
+func snapshotMetrics(metrics obs.Metrics) metricsSnapshot {
+	stages := make([]stageTimingSnapshot, 0, len(metrics.Stages))
+	for _, stage := range metrics.Stages {
+		stages = append(stages, stageTimingSnapshot{
+			Stage:    stage.Stage,
+			Duration: stage.Duration,
+		})
+	}
+	return metricsSnapshot{
+		Stages: stages,
+		Tokens: tokenUsageSnapshot{
+			PromptTokens:     metrics.Tokens.PromptTokens,
+			CompletionTokens: metrics.Tokens.CompletionTokens,
+			TotalTokens:      metrics.Tokens.TotalTokens,
+			Estimated:        metrics.Tokens.Estimated,
+		},
+	}
+}
+
+func aggregateReflectionMetrics(rounds []reflectionRound) obs.Metrics {
+	if len(rounds) == 0 {
+		return obs.Metrics{}
+	}
+	aggregated := obs.Metrics{
+		Stages: make([]obs.StageTiming, 0, len(rounds)*2),
+	}
+	allReported := true
+	for _, round := range rounds {
+		for _, stage := range round.metrics.Stages {
+			aggregated.Stages = append(aggregated.Stages, obs.StageTiming{
+				Stage:    stage.Stage,
+				Duration: stage.Duration,
+			})
+		}
+		aggregated.Tokens.PromptTokens += round.metrics.Tokens.PromptTokens
+		aggregated.Tokens.CompletionTokens += round.metrics.Tokens.CompletionTokens
+		aggregated.Tokens.TotalTokens += round.metrics.Tokens.TotalTokens
+		if round.metrics.Tokens.Estimated {
+			allReported = false
+		}
+	}
+	aggregated.Tokens.Estimated = !allReported
+	return aggregated
 }

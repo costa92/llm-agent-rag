@@ -18,6 +18,24 @@ func (fakeModel) Generate(_ context.Context, req generate.Request) (generate.Res
 	return generate.Response{Text: req.Messages[0].Content}, nil
 }
 
+type scriptedUsageModel struct {
+	responses []generate.Response
+	calls     int
+}
+
+func (m *scriptedUsageModel) Generate(_ context.Context, req generate.Request) (generate.Response, error) {
+	idx := m.calls
+	m.calls++
+	if idx < len(m.responses) {
+		resp := m.responses[idx]
+		if resp.Text == "" {
+			resp.Text = req.Messages[0].Content
+		}
+		return resp, nil
+	}
+	return generate.Response{Text: req.Messages[0].Content}, nil
+}
+
 func TestSystemImportRetrieveAsk(t *testing.T) {
 	sys := New(Options{Model: fakeModel{}})
 	_, err := sys.Import(context.Background(), []ingest.Document{
@@ -301,6 +319,116 @@ func TestAskRuleModeStopsAtMaxRounds(t *testing.T) {
 	}
 	if len(ans.Hits) != 1 || len(ans.Citations) != 1 {
 		t.Fatalf("final adopted round semantics changed: hits=%d citations=%d", len(ans.Hits), len(ans.Citations))
+	}
+}
+
+func TestAskRuleModeContinuesWithoutImplicitRewrite(t *testing.T) {
+	sys := New(Options{
+		Model:        fakeModel{},
+		Preprocessor: rewritePreprocessor{},
+	})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Berlin is in Germany."},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	question := "capital of france"
+	ans, err := sys.Ask(context.Background(), question, AskOptions{
+		Search: SearchOptions{Namespace: "geo", TopK: 1},
+		Reflection: &ReflectionOptions{
+			Mode:             ReflectionModeRule,
+			MaxRounds:        2,
+			MinHits:          1,
+			MinScore:         1.1,
+			MinUniqueDocs:    2,
+			RequireCitations: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if got := ans.Diagnostics.Reflection.Rounds; got != 2 {
+		t.Fatalf("Reflection.Rounds = %d, want 2", got)
+	}
+	for i, round := range ans.Diagnostics.Reflection.RoundDetails {
+		if round.InputQuery != question {
+			t.Fatalf("round %d InputQuery = %q, want original question %q", i+1, round.InputQuery, question)
+		}
+		if round.EffectiveQuery != "france capital" {
+			t.Fatalf("round %d EffectiveQuery = %q, want rewritten retrieval query", i+1, round.EffectiveQuery)
+		}
+	}
+	for i, round := range ans.Trace.Reflection.Rounds {
+		if round.InputQuery != question {
+			t.Fatalf("trace round %d InputQuery = %q, want original question %q", i+1, round.InputQuery, question)
+		}
+		if round.EffectiveQuery != "france capital" {
+			t.Fatalf("trace round %d EffectiveQuery = %q, want rewritten retrieval query", i+1, round.EffectiveQuery)
+		}
+	}
+}
+
+func TestAskRuleModeAggregatesMetricsAcrossRounds(t *testing.T) {
+	model := &scriptedUsageModel{
+		responses: []generate.Response{
+			{
+				Text:  "round 1",
+				Usage: generate.Usage{PromptTokens: 11, CompletionTokens: 7, TotalTokens: 18},
+			},
+			{
+				Text:  "round 2",
+				Usage: generate.Usage{PromptTokens: 13, CompletionTokens: 5, TotalTokens: 18},
+			},
+		},
+	}
+	sys := New(Options{Model: model})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Berlin is in Germany."},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	ans, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search: SearchOptions{Namespace: "geo", TopK: 1},
+		Reflection: &ReflectionOptions{
+			Mode:             ReflectionModeRule,
+			MaxRounds:        2,
+			MinHits:          1,
+			MinScore:         1.1,
+			MinUniqueDocs:    2,
+			RequireCitations: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if got := ans.Diagnostics.Reflection.Rounds; got != 2 {
+		t.Fatalf("Reflection.Rounds = %d, want 2", got)
+	}
+	if got := ans.Diagnostics.Metrics.Calls.Generate; got != 2 {
+		t.Fatalf("Metrics.Calls.Generate = %d, want 2", got)
+	}
+	if got := len(ans.Diagnostics.Metrics.Stages); got != 6 {
+		t.Fatalf("len(Metrics.Stages) = %d, want 6 for two retrieve/pack/generate rounds", got)
+	}
+	wantStages := []string{"retrieve", "pack", "generate", "retrieve", "pack", "generate"}
+	for i, stage := range ans.Diagnostics.Metrics.Stages {
+		if stage.Stage != wantStages[i] {
+			t.Fatalf("Metrics.Stages[%d].Stage = %q, want %q", i, stage.Stage, wantStages[i])
+		}
+	}
+	tok := ans.Diagnostics.Metrics.Tokens
+	if tok.PromptTokens != 24 || tok.CompletionTokens != 12 || tok.TotalTokens != 36 {
+		t.Fatalf("Metrics.Tokens = %+v, want summed usage across rounds", tok)
+	}
+	if tok.Estimated {
+		t.Fatalf("Metrics.Tokens.Estimated = true, want false for reported usage")
+	}
+	if ans.Text != "round 2" {
+		t.Fatalf("final adopted answer text = %q, want round 2 output", ans.Text)
 	}
 }
 
