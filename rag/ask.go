@@ -14,6 +14,13 @@ import (
 	"github.com/costa92/llm-agent-rag/store"
 )
 
+type askRoundResult struct {
+	answer         Answer
+	effectiveQuery string
+	topScore       float64
+	uniqueDocCount int
+}
+
 // Ask runs the standard retrieve-pack-generate answer path: it retrieves
 // context for question, packs it into a prompt, and generates an Answer.
 func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Answer, error) {
@@ -25,14 +32,234 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	// preprocessor — are counted, and time each stage.
 	counter := obs.NewCounter()
 	ctx = obs.WithCounter(ctx, counter)
-	metrics := obs.Metrics{}
 	askStart := time.Now()
 
-	stageStart := time.Now()
-	hits, retrieveTrace, err := s.retrieve(ctx, question, opts.Search)
-	metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "retrieve", Duration: time.Since(stageStart)})
+	var (
+		round askRoundResult
+		err   error
+	)
+	if reflectionDisabled(opts.Reflection) {
+		round, err = s.askRound(ctx, question, question, opts)
+	} else {
+		reflection := normalizeReflectionOptions(opts.Reflection)
+		switch reflection.Mode {
+		case ReflectionModeRule:
+			query := question
+			var rounds []reflectionRound
+			var roundResults []askRoundResult
+			adaptiveBudget := 0
+			if reflection.AdaptiveRetrieval && reflection.EnableChunkGrading {
+				adaptiveBudget = 1
+			}
+			for roundIndex := 1; roundIndex <= reflection.MaxRounds; roundIndex++ {
+				round, err = s.askRound(ctx, question, query, opts)
+				if err != nil {
+					return Answer{}, err
+				}
+				decision := decideRule(roundIndex, reflection, round)
+				built := buildReflectionRound(reflection.Mode, roundIndex, query, round, decision)
+				var maxRel float64
+				if reflection.EnableChunkGrading {
+					var scores []ChunkScore
+					scores, maxRel = gradeRound(ctx, s.effectiveGrader(), query, round)
+					built = attachChunkScores(built, scores)
+				}
+				rounds = append(rounds, built)
+				roundResults = append(roundResults, round)
+				if decision.decision == ReflectionDecisionStop &&
+					reflection.AdaptiveRetrieval &&
+					reflection.EnableChunkGrading &&
+					adaptiveBudget > 0 &&
+					roundIndex < reflection.MaxRounds &&
+					maxRel < effectiveAdaptiveThreshold(reflection) {
+					adaptiveBudget--
+					query = question
+					continue
+				}
+				if decision.decision == ReflectionDecisionStop {
+					break
+				}
+				query = question
+			}
+			adoptedIdx := len(rounds) - 1
+			if reflection.SelectionMode == SelectionModeBestByScore && len(rounds) > 1 {
+				adoptedIdx = pickBestRound(rounds, reflection.GraderRelevanceWeight, reflection.GraderSupportWeight)
+				round = roundResults[adoptedIdx]
+			}
+			answer := round.answer
+			metrics := aggregateReflectionMetrics(rounds)
+			metrics.Calls = answer.Diagnostics.Metrics.Calls
+			metrics.TotalDuration = answer.Diagnostics.Metrics.TotalDuration
+			answer.Diagnostics.Metrics = metrics
+			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, rounds, 0)
+			answer.Diagnostics.Reflection.AdoptedRound = rounds[adoptedIdx].round.Round
+			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, rounds)
+			answer.Trace.Reflection.AdoptedRound = rounds[adoptedIdx].trace.Round
+			round.answer = answer
+		case ReflectionModeModel, ReflectionModeHybrid:
+			query := question
+			var rounds []reflectionRound
+			var roundResults []askRoundResult
+			var previousRound *askRoundResult
+			decisionModelCalls := 0
+			adaptiveBudget := 0
+			if reflection.AdaptiveRetrieval && reflection.EnableChunkGrading {
+				adaptiveBudget = 1
+			}
+			appendRound := func(built reflectionRound, rr askRoundResult) (float64, reflectionRound) {
+				var maxRel float64
+				if reflection.EnableChunkGrading {
+					var scores []ChunkScore
+					scores, maxRel = gradeRound(ctx, s.effectiveGrader(), query, rr)
+					built = attachChunkScores(built, scores)
+				}
+				rounds = append(rounds, built)
+				roundResults = append(roundResults, rr)
+				return maxRel, built
+			}
+			for roundIndex := 1; roundIndex <= reflection.MaxRounds; roundIndex++ {
+				round, err = s.askRound(ctx, question, query, opts)
+				if err != nil {
+					return Answer{}, err
+				}
+				var decision reflectionDecisionResult
+				if reflection.Mode == ReflectionModeHybrid {
+					ruleDecision := decideRule(roundIndex, reflection, round)
+					if ruleDecision.decision == ReflectionDecisionStop {
+						ruleDecision.mode = ReflectionModeHybrid
+						decision = ruleDecision
+					} else if unchangedDecision, stop := stopForUnchangedEvidence(round, previousRound); stop {
+						unchangedDecision.mode = ReflectionModeHybrid
+						decision = unchangedDecision
+					} else {
+						decisionModelCalls++
+						decision, err = decideWithModel(ctx, s.model, question, reflection, round)
+						if err != nil {
+							if reflection.FailOpen {
+								decision = reflectionDecisionResult{
+									decision:   ReflectionDecisionStop,
+									reason:     "reflection decision failed; returning usable answer",
+									stopReason: "decision_error",
+									mode:       ReflectionModeHybrid,
+								}
+								appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision), round)
+								break
+							}
+							return Answer{}, err
+						}
+						outcome := orchestrateModelReflection(query, decision)
+						decision = outcome.decision
+						if roundIndex >= reflection.MaxRounds && decision.decision != ReflectionDecisionStop {
+							decision = clampDecisionAtMaxRounds(decision, ReflectionModeHybrid)
+						}
+					}
+				} else {
+					if unchangedDecision, stop := stopForUnchangedEvidence(round, previousRound); stop {
+						decision = unchangedDecision
+					} else {
+						decisionModelCalls++
+						decision, err = decideWithModel(ctx, s.model, question, reflection, round)
+						if err != nil {
+							if reflection.FailOpen {
+								decision = reflectionDecisionResult{
+									decision:   ReflectionDecisionStop,
+									reason:     "reflection decision failed; returning usable answer",
+									stopReason: "decision_error",
+									mode:       ReflectionModeModel,
+								}
+								appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision), round)
+								break
+							}
+							return Answer{}, err
+						}
+						outcome := orchestrateModelReflection(query, decision)
+						decision = outcome.decision
+						if roundIndex >= reflection.MaxRounds && decision.decision != ReflectionDecisionStop {
+							decision = clampDecisionAtMaxRounds(decision, ReflectionModeModel)
+						}
+					}
+				}
+				maxRel, _ := appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision), round)
+				currentRound := round
+				previousRound = &currentRound
+				if decision.decision == ReflectionDecisionStop &&
+					reflection.AdaptiveRetrieval &&
+					reflection.EnableChunkGrading &&
+					adaptiveBudget > 0 &&
+					roundIndex < reflection.MaxRounds &&
+					maxRel < effectiveAdaptiveThreshold(reflection) {
+					adaptiveBudget--
+					query = question
+					continue
+				}
+				if decision.decision == ReflectionDecisionStop {
+					break
+				}
+				if decision.decision == ReflectionDecisionRewriteAndContinue && decision.nextQuery != "" {
+					query = decision.nextQuery
+					continue
+				}
+				query = question
+			}
+			adoptedIdx := len(rounds) - 1
+			if reflection.SelectionMode == SelectionModeBestByScore && len(rounds) > 1 {
+				adoptedIdx = pickBestRound(rounds, reflection.GraderRelevanceWeight, reflection.GraderSupportWeight)
+				round = roundResults[adoptedIdx]
+			}
+			answer := round.answer
+			metrics := aggregateReflectionMetrics(rounds)
+			metrics.Calls = answer.Diagnostics.Metrics.Calls
+			metrics.TotalDuration = answer.Diagnostics.Metrics.TotalDuration
+			answer.Diagnostics.Metrics = metrics
+			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, rounds, decisionModelCalls)
+			if len(rounds) > 0 {
+				answer.Diagnostics.Reflection.AdoptedRound = rounds[adoptedIdx].round.Round
+			}
+			if err != nil && reflection.FailOpen && len(rounds) > 0 {
+				answer.Diagnostics.Reflection.FailureFallback = true
+				answer.Diagnostics.Reflection.FailureReason = err.Error()
+				err = nil
+			}
+			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, rounds)
+			if len(rounds) > 0 {
+				answer.Trace.Reflection.AdoptedRound = rounds[adoptedIdx].trace.Round
+			}
+			round.answer = answer
+		default:
+			round, err = s.askRound(ctx, question, question, opts)
+			if err != nil {
+				return Answer{}, err
+			}
+			singleRound := buildReflectionRound(reflection.Mode, 1, question, round, reflectionDecisionResult{
+				decision:   ReflectionDecisionStop,
+				reason:     "reflection mode not implemented",
+				stopReason: "mode_not_implemented",
+			})
+			answer := round.answer
+			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, []reflectionRound{singleRound}, 0)
+			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, []reflectionRound{singleRound})
+			round.answer = answer
+		}
+	}
 	if err != nil {
 		return Answer{}, err
+	}
+	answer := round.answer
+	answer.Diagnostics.Metrics = mergeMetrics(answer.Diagnostics.Metrics, counter.Counts(), time.Since(askStart))
+	if s.observer.OnAsk != nil {
+		s.observer.OnAsk(ctx, answer.Trace)
+	}
+	return answer, nil
+}
+
+func (s *System) askRound(ctx context.Context, originalQuestion string, retrievalQuery string, opts AskOptions) (askRoundResult, error) {
+	metrics := obs.Metrics{}
+
+	stageStart := time.Now()
+	hits, retrieveTrace, err := s.retrieve(ctx, retrievalQuery, opts.Search)
+	metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "retrieve", Duration: time.Since(stageStart)})
+	if err != nil {
+		return askRoundResult{}, err
 	}
 	tpl := opts.Template
 	if tpl == nil {
@@ -45,12 +272,12 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 		var rerankTrace rerank.Trace
 		stageStart = time.Now()
 		rankedHits, rerankTrace, err = s.reranker.Rerank(ctx, rerank.Request{
-			Query: question,
+			Query: originalQuestion,
 			Hits:  hits,
 		})
 		metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "rerank", Duration: time.Since(stageStart)})
 		if err != nil {
-			return Answer{}, err
+			return askRoundResult{}, err
 		}
 		rerankedIDs = append([]string(nil), rerankTrace.OutputChunkIDs...)
 		rerankScores = append([]rerank.RerankScore(nil), rerankTrace.Scores...)
@@ -65,44 +292,39 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	if s.packer != nil {
 		stageStart = time.Now()
 		packed, err := s.packer.Pack(ctx, pack.Request{
-			Question:  question,
+			Question:  originalQuestion,
 			Hits:      rankedHits,
 			MaxTokens: opts.MaxTokens,
 		})
 		metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "pack", Duration: time.Since(stageStart)})
 		if err != nil {
-			return Answer{}, err
+			return askRoundResult{}, err
 		}
 		packedHits = packed.Hits
 		packedIDs = append([]string(nil), packed.Trace.SelectedChunkIDs...)
 		droppedIDs = append([]string(nil), packed.Trace.DroppedChunkIDs...)
 	}
-	// Screen retrieved content for prompt injection before prompt
-	// assembly: a suspicious chunk is neutralized in place or dropped.
-	// A nil scanner leaves packedHits untouched.
 	var injectionFindings []InjectionFinding
 	if s.injectionScanner != nil {
 		packedHits, injectionFindings = s.sanitizeHits(packedHits)
 		packedIDs = chunkIDs(packedHits)
 	}
 	req, err := tpl.Render(ctx, prompt.RenderContext{
-		Question:  question,
+		Question:  originalQuestion,
 		Namespace: opts.Search.Namespace,
 		Hits:      packedHits,
 		Metadata:  opts.Metadata,
 	})
 	if err != nil {
-		return Answer{}, err
+		return askRoundResult{}, err
 	}
 	stageStart = time.Now()
 	resp, err := s.model.Generate(ctx, req)
 	metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "generate", Duration: time.Since(stageStart)})
 	if err != nil {
-		return Answer{}, err
+		return askRoundResult{}, err
 	}
-	metrics.Calls = counter.Counts()
 	metrics.Tokens = deriveTokenUsage(req, resp)
-	metrics.TotalDuration = time.Since(askStart)
 	ids := make([]string, 0, len(packedHits))
 	citations := make([]Citation, 0, len(packedHits))
 	for _, hit := range packedHits {
@@ -137,7 +359,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			GraphTrace:          retrieveTrace.Graph,
 		},
 		Trace: Trace{
-			Question:            question,
+			Question:            originalQuestion,
 			Namespace:           opts.Search.Namespace,
 			TopK:                opts.Search.TopK,
 			Filters:             copyMap(opts.Search.Filters),
@@ -157,10 +379,12 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			SearchTrajectory:    cloneTrajectory(retrieveTrace.SearchTrajectory),
 		},
 	}
-	if s.observer.OnAsk != nil {
-		s.observer.OnAsk(ctx, answer.Trace)
-	}
-	return answer, nil
+	return askRoundResult{
+		answer:         answer,
+		effectiveQuery: retrieveTrace.EffectiveQuery,
+		topScore:       topHitScore(hits),
+		uniqueDocCount: uniqueDocCount(packedHits),
+	}, nil
 }
 
 // deriveTokenUsage records the token cost of a generation. When the model

@@ -48,6 +48,9 @@ type Citation struct {
 
 // Diagnostics is the per-run diagnostic detail behind an Answer — every
 // routing, rerank, injection, and graph signal the pipeline produced.
+//
+// Compatibility note: this exported struct may grow additively over time, so
+// keyed composite literals are recommended.
 type Diagnostics struct {
 	HitCount            int                       // HitCount is the number of hits retrieved.
 	ReturnedChunkIDs    []string                  // ReturnedChunkIDs are the chunk IDs the retriever returned.
@@ -68,6 +71,101 @@ type Diagnostics struct {
 	// local follow-up loop, and the synthesis. It is the zero value for an
 	// ordinary Ask or AskGlobal — the field is additive.
 	Drift DriftDiagnostics
+	// Reflection attributes a bounded self-reflection Ask run. It is the
+	// zero value for an ordinary single-round Ask — the field is additive.
+	Reflection ReflectionDiagnostics
+}
+
+// ChunkScore is the per-chunk grading evidence produced by a Grader for
+// one reflection round: the hit ID, its relevance to the query, its
+// support for the round's answer, and a short reason for downstream
+// debugging.
+//
+// Compatibility note: this exported struct may grow additively over time, so
+// keyed composite literals are recommended.
+type ChunkScore struct {
+	HitID     string  // HitID identifies the scored hit (the chunk ID).
+	Relevance float64 // Relevance is the grader's 0.0-1.0 query-relevance score.
+	Support   float64 // Support is the grader's 0.0-1.0 answer-support score.
+	Reason    string  // Reason is the grader's short human explanation (e.g. raw reply).
+}
+
+// ReflectionDecision is the round-level reflection outcome.
+type ReflectionDecision string
+
+const (
+	// ReflectionDecisionStop keeps the current round and terminates reflection.
+	ReflectionDecisionStop ReflectionDecision = "stop"
+	// ReflectionDecisionContinue runs another round without changing the query.
+	ReflectionDecisionContinue ReflectionDecision = "continue"
+	// ReflectionDecisionRewriteAndContinue rewrites the query before the next round.
+	ReflectionDecisionRewriteAndContinue ReflectionDecision = "rewrite_and_continue"
+)
+
+// ReflectionDiagnostics attributes one reflection-capable System.Ask run:
+// how many rounds executed, which round was adopted, and the per-round
+// retrieval and decision signals gathered along the way.
+//
+// Compatibility note: this exported struct may grow additively over time, so
+// keyed composite literals are recommended.
+type ReflectionDiagnostics struct {
+	Mode               ReflectionMode               // Mode is the configured reflection policy.
+	Rounds             int                          // Rounds is kept for consistency with existing API naming and records how many reflection rounds actually ran.
+	AdoptedRound       int                          // AdoptedRound is the final round chosen for the answer.
+	StopReason         string                       // StopReason explains why reflection stopped.
+	FailureFallback    bool                         // FailureFallback reports whether fail-open returned a prior round.
+	FailureReason      string                       // FailureReason records the reflection failure cause, if any.
+	DecisionModelCalls int                          // DecisionModelCalls counts reflection decision-model invocations.
+	RewriteModelCalls  int                          // RewriteModelCalls counts reflection rewrite-model invocations.
+	RoundDetails       []ReflectionRoundDiagnostics // RoundDetails records the per-round signals and decisions.
+}
+
+// ReflectionRoundDiagnostics records the retrieval and decision summary for
+// one reflection round.
+//
+// Compatibility note: this exported struct may grow additively over time, so
+// keyed composite literals are recommended.
+type ReflectionRoundDiagnostics struct {
+	Round            int                // Round is the 1-based reflection round index.
+	InputQuery       string             // InputQuery is the query fed into the round.
+	EffectiveQuery   string             // EffectiveQuery is the retriever's final effective query.
+	RewrittenQuery   string             // RewrittenQuery is the next-round rewrite produced by reflection.
+	ReturnedChunkIDs []string           // ReturnedChunkIDs are the chunks returned by retrieval.
+	PromptChunkIDs   []string           // PromptChunkIDs are the chunks packed into the answer prompt.
+	UniqueDocCount   int                // UniqueDocCount is the number of unique documents supporting the round.
+	TopScore         float64            // TopScore is the top retrieval score for the round.
+	Decision         ReflectionDecision // Decision is the round-level reflection outcome.
+	DecisionMode     ReflectionMode     // DecisionMode is the policy that made the round decision.
+	DecisionReason   string             // DecisionReason explains why the round decision was made.
+	// RawDecisionText is the model's full raw reply for the reflection
+	// decision call, captured verbatim for post-hoc debugging. It is
+	// empty in rule mode (no model call) and in hybrid mode rounds
+	// where the rule path stops first.
+	RawDecisionText string
+	// DecisionPrompt is the user-content portion of the reflection
+	// decision prompt sent to the model. It is empty when no model
+	// decision occurred this round.
+	DecisionPrompt string
+	// RoutePath is the pinned section route for THIS round, if any.
+	// Captured per round so multi-round reflection runs do not lose
+	// the earlier rounds' routing decisions to last-round-wins.
+	RoutePath []string
+	// AutoRoutePath is the route auto-routing selected for THIS round.
+	// Captured per round (see RoutePath).
+	AutoRoutePath []string
+	// AutoRouteCandidates are the candidates auto-routing considered
+	// for THIS round. Captured per round (see RoutePath).
+	AutoRouteCandidates []retrieve.RouteCandidate
+	// SearchTrajectory records each route searched for THIS round.
+	// Captured per round (see RoutePath).
+	SearchTrajectory []retrieve.TrajectoryStep
+	// GraphTrace records the graph-retrieval traversal for THIS round.
+	// Captured per round (see RoutePath).
+	GraphTrace retrieve.GraphTrace
+	// ChunkScores carries the per-chunk grading evidence for THIS round.
+	// Populated only when ReflectionOptions.EnableChunkGrading is true and
+	// a Grader is configured; empty otherwise.
+	ChunkScores []ChunkScore
 }
 
 // DriftDiagnostics attributes one System.AskDrift run: which communities the
@@ -114,6 +212,9 @@ type GlobalDiagnostics struct {
 
 // Trace is the per-run trace an Observer receives — the inputs and the
 // routing/rerank/pack pipeline decisions for one Ask.
+//
+// Compatibility note: this exported struct may grow additively over time, so
+// keyed composite literals are recommended.
 type Trace struct {
 	Question            string                    // Question is the query that was asked.
 	Namespace           string                    // Namespace is the namespace the run searched.
@@ -133,6 +234,47 @@ type Trace struct {
 	DroppedChunkIDs     []string                  // DroppedChunkIDs are chunks dropped by the packer.
 	SelectedChunkIDs    []string                  // SelectedChunkIDs are the chunks the answer used.
 	SearchTrajectory    []retrieve.TrajectoryStep // SearchTrajectory records each route searched.
+	Reflection          ReflectionTrace           // Reflection is the additive self-reflection trace detail.
+}
+
+// ReflectionTrace is the observer-facing trace summary for a reflection Ask
+// run: configured mode, adopted round, stop reason, and the per-round trail.
+//
+// Compatibility note: this exported struct may grow additively over time, so
+// keyed composite literals are recommended.
+type ReflectionTrace struct {
+	Mode         ReflectionMode         // Mode is the configured reflection policy.
+	AdoptedRound int                    // AdoptedRound is the final round chosen for the answer.
+	StopReason   string                 // StopReason explains why reflection stopped.
+	Rounds       []ReflectionRoundTrace // Rounds records the per-round trace trail.
+}
+
+// ReflectionRoundTrace records the observer-facing per-round reflection
+// details for one Ask round.
+//
+// Compatibility note: this exported struct may grow additively over time, so
+// keyed composite literals are recommended.
+type ReflectionRoundTrace struct {
+	Round            int                // Round is the 1-based reflection round index.
+	InputQuery       string             // InputQuery is the query fed into the round.
+	EffectiveQuery   string             // EffectiveQuery is the retriever's final effective query.
+	RewrittenQuery   string             // RewrittenQuery is the next-round rewrite produced by reflection.
+	ReturnedChunkIDs []string           // ReturnedChunkIDs are the chunks returned by retrieval.
+	PromptChunkIDs   []string           // PromptChunkIDs are the chunks packed into the answer prompt.
+	Decision         ReflectionDecision // Decision is the round-level reflection outcome.
+	DecisionReason   string             // DecisionReason explains why the round decision was made.
+	// RawDecisionText mirrors ReflectionRoundDiagnostics.RawDecisionText.
+	// It is empty when no model decision occurred this round.
+	RawDecisionText string
+	// AutoRoutePath is the route auto-routing selected for THIS round.
+	// Captured per round so multi-round reflection runs do not lose
+	// earlier rounds' routing decisions to last-round-wins.
+	AutoRoutePath []string
+	// ChunkScores mirrors ReflectionRoundDiagnostics.ChunkScores — the
+	// per-chunk grading evidence for THIS round. Populated only when
+	// ReflectionOptions.EnableChunkGrading is true and a Grader is
+	// configured; empty otherwise.
+	ChunkScores []ChunkScore
 }
 
 // System is the top-level RAG pipeline and the front door of the SDK. It is
@@ -159,6 +301,8 @@ type System struct {
 	entityResolver      graph.EntityResolver
 	communityDetector   graph.CommunityDetector
 	communitySummarizer graph.CommunitySummarizer
+
+	grader Grader
 }
 
 // New constructs a System from opts, filling unset dependencies with the
@@ -254,6 +398,8 @@ func New(opts Options) *System {
 		entityResolver:      entityResolver,
 		communityDetector:   opts.CommunityDetector,
 		communitySummarizer: opts.CommunitySummarizer,
+
+		grader: opts.Grader,
 	}
 }
 
@@ -270,4 +416,15 @@ func (s *System) Stats(ctx context.Context, namespace string) (store.Stats, erro
 // Model returns the System's generation model, or nil if none was configured.
 func (s *System) Model() generate.Model {
 	return s.model
+}
+
+// effectiveGrader returns the configured Grader, or a NoopGrader when
+// none was set. Callers can rely on the returned value being non-nil so
+// the EnableChunkGrading wiring always produces deterministic scores
+// even on misconfiguration.
+func (s *System) effectiveGrader() Grader {
+	if s.grader == nil {
+		return NoopGrader{}
+	}
+	return s.grader
 }

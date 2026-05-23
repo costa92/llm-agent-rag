@@ -456,7 +456,20 @@ type RenderContext struct
 type Template interface
 	method Render(ctx context.Context, rc RenderContext) (generate.Request, error)
 package github.com/costa92/llm-agent-rag/rag
+const ReflectionDecisionContinue ReflectionDecision = "continue"
+const ReflectionDecisionRewriteAndContinue ReflectionDecision = "rewrite_and_continue"
+const ReflectionDecisionStop ReflectionDecision = "stop"
+const ReflectionModeHybrid ReflectionMode = "hybrid"
+const ReflectionModeModel ReflectionMode = "model"
+const ReflectionModeOff ReflectionMode = "off"
+const ReflectionModeRule ReflectionMode = "rule"
+const SelectionModeBestByScore
+const SelectionModeLastRound SelectionMode = iota
 func New(opts Options) *System
+method (NoopGrader) ScoreRelevance(_ context.Context, _ string, _ store.Hit) (float64, string, error)
+method (NoopGrader) ScoreSupport(_ context.Context, _ string, _ store.Hit) (float64, string, error)
+method (PromptGrader) ScoreRelevance(ctx context.Context, query string, hit store.Hit) (float64, string, error)
+method (PromptGrader) ScoreSupport(ctx context.Context, answer string, hit store.Hit) (float64, string, error)
 method (*System) Ask(ctx context.Context, question string, opts AskOptions) (Answer, error)
 method (*System) AskDrift(ctx context.Context, question string, opts DriftOptions) (Answer, error)
 method (*System) AskGlobal(ctx context.Context, question string, opts GlobalOptions) (Answer, error)
@@ -477,8 +490,14 @@ type Answer struct
 type AskOptions struct
 	field MaxTokens int
 	field Metadata map[string]any
+	field Reflection *ReflectionOptions
 	field Search SearchOptions
 	field Template prompt.Template
+type ChunkScore struct
+	field HitID string
+	field Reason string
+	field Relevance float64
+	field Support float64
 type Citation struct
 	field ChunkID string
 	field DocID string
@@ -498,6 +517,7 @@ type Diagnostics struct
 	field MatchedSections []string
 	field Metrics obs.Metrics
 	field PromptChunkIDs []string
+	field Reflection ReflectionDiagnostics
 	field RerankScores []rerank.RerankScore
 	field ReturnedChunkIDs []string
 	field RoutePolicy retrieve.RoutePolicyTrace
@@ -521,6 +541,9 @@ type GlobalDiagnostics struct
 type GlobalOptions struct
 	field MaxCommunities int
 	field Namespace string
+type Grader interface
+	method ScoreRelevance(ctx context.Context, query string, hit store.Hit) (score float64, reason string, err error)
+	method ScoreSupport(ctx context.Context, answer string, hit store.Hit) (score float64, reason string, err error)
 type ImportTrace struct
 	field ChunkIDs []string
 	field Chunks int
@@ -535,6 +558,7 @@ type InjectionFinding struct
 	field Action string
 	field ChunkID string
 	field Patterns []string
+type NoopGrader struct
 type Observer struct
 	field OnAsk func(ctx context.Context, trace Trace)
 	field OnImport func(ctx context.Context, trace ImportTrace)
@@ -545,6 +569,7 @@ type Options struct
 	field Embedder embed.Embedder
 	field EntityExtractor graph.EntityExtractor
 	field EntityResolver graph.EntityResolver
+	field Grader Grader
 	field InjectionScanner guard.InjectionScanner
 	field MaxChars int
 	field Model generate.Model
@@ -558,6 +583,72 @@ type Options struct
 	field Splitter ingest.Splitter
 	field Store store.Store
 	field Template prompt.Template
+type PromptGrader struct
+	field Model generate.Model
+type ReflectionDecision string
+type ReflectionDiagnostics struct
+	field AdoptedRound int
+	field DecisionModelCalls int
+	field FailureFallback bool
+	field FailureReason string
+	field Mode ReflectionMode
+	field RewriteModelCalls int
+	field RoundDetails []ReflectionRoundDiagnostics
+	field Rounds int
+	field StopReason string
+type ReflectionMode string
+type ReflectionOptions struct
+	field AdaptiveRetrieval bool
+	field AdaptiveRetrievalThreshold float64
+	field AllowRewrite bool
+	field EnableChunkGrading bool
+	field FailOpen bool
+	field GraderRelevanceWeight float64
+	field GraderSupportWeight float64
+	field MaxRounds int
+	field MinHits int
+	field MinScore float64
+	field MinUniqueDocs int
+	field Mode ReflectionMode
+	field RequireCitations bool
+	field SelectionMode SelectionMode
+type ReflectionRoundDiagnostics struct
+	field AutoRouteCandidates []retrieve.RouteCandidate
+	field AutoRoutePath []string
+	field ChunkScores []ChunkScore
+	field Decision ReflectionDecision
+	field DecisionMode ReflectionMode
+	field DecisionPrompt string
+	field DecisionReason string
+	field EffectiveQuery string
+	field GraphTrace retrieve.GraphTrace
+	field InputQuery string
+	field PromptChunkIDs []string
+	field RawDecisionText string
+	field ReturnedChunkIDs []string
+	field RewrittenQuery string
+	field Round int
+	field RoutePath []string
+	field SearchTrajectory []retrieve.TrajectoryStep
+	field TopScore float64
+	field UniqueDocCount int
+type ReflectionRoundTrace struct
+	field AutoRoutePath []string
+	field ChunkScores []ChunkScore
+	field Decision ReflectionDecision
+	field DecisionReason string
+	field EffectiveQuery string
+	field InputQuery string
+	field PromptChunkIDs []string
+	field RawDecisionText string
+	field ReturnedChunkIDs []string
+	field RewrittenQuery string
+	field Round int
+type ReflectionTrace struct
+	field AdoptedRound int
+	field Mode ReflectionMode
+	field Rounds []ReflectionRoundTrace
+	field StopReason string
 type SearchOptions struct
 	field AutoRouteConfidenceGap float64
 	field AutoRouteConfidenceThreshold float64
@@ -578,6 +669,7 @@ type SearchOptions struct
 	field RoutePath []string
 	field SecurityFilters map[string]any
 	field TopK int
+type SelectionMode int
 type System struct
 type Trace struct
 	field AutoRouteCandidates []retrieve.RouteCandidate
@@ -590,6 +682,7 @@ type Trace struct
 	field Namespace string
 	field PackedChunkIDs []string
 	field Question string
+	field Reflection ReflectionTrace
 	field RerankedChunkIDs []string
 	field RoutePath []string
 	field RoutePolicy retrieve.RoutePolicyTrace

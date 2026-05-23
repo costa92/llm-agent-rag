@@ -4,8 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/ingest"
 	"github.com/costa92/llm-agent-rag/retrieve"
+	"github.com/costa92/llm-agent-rag/store"
 )
 
 func TestObserverFiresOnImport(t *testing.T) {
@@ -134,5 +136,82 @@ func TestObserverNilCallbacksAreSafe(t *testing.T) {
 	}
 	if _, err := sys.Ask(context.Background(), "title", AskOptions{Search: SearchOptions{Namespace: "obs", TopK: 1}}); err != nil {
 		t.Fatalf("Ask: %v", err)
+	}
+}
+
+func TestAskReflectionTriggersRetrieveObserverPerRound(t *testing.T) {
+	model := &scriptedReflectionModel{
+		responses: []generate.Response{
+			{Text: "answer round 1"},
+			{Text: "decision=rewrite_and_continue\nreason=need better evidence\nrewrite=zzparis"},
+			{Text: "answer round 2"},
+			{Text: "decision=stop\nreason=sufficient evidence"},
+		},
+	}
+	var (
+		askCalls       int
+		retrieveTraces []retrieve.Trace
+		askTrace       Trace
+	)
+	sys := New(Options{
+		Model: model,
+		Retriever: orderedResultRetriever{
+			results: map[string][]store.Hit{
+				"capital of france": {
+					orderedHit("docA", "doc1", 0.9, "berlin"),
+				},
+				"zzparis": {
+					orderedHit("docB", "doc2", 0.95, "paris"),
+				},
+			},
+		},
+		Packer: orderedAllPacker{},
+		Observer: Observer{
+			OnRetrieve: func(_ context.Context, trace retrieve.Trace) {
+				retrieveTraces = append(retrieveTraces, trace)
+			},
+			OnAsk: func(_ context.Context, trace Trace) {
+				askCalls++
+				askTrace = trace
+			},
+		},
+	})
+
+	ans, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 1},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:             ReflectionModeHybrid,
+			MaxRounds:        3,
+			MinHits:          2,
+			MinScore:         2,
+			MinUniqueDocs:    2,
+			RequireCitations: true,
+			AllowRewrite:     true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if askCalls != 1 {
+		t.Fatalf("OnAsk fired %d times, want 1", askCalls)
+	}
+	if len(retrieveTraces) != 2 {
+		t.Fatalf("OnRetrieve fired %d times, want 2 for two internal rounds", len(retrieveTraces))
+	}
+	if retrieveTraces[0].OriginalQuery != "capital of france" {
+		t.Fatalf("round 1 original query = %q, want %q", retrieveTraces[0].OriginalQuery, "capital of france")
+	}
+	if retrieveTraces[1].OriginalQuery != "zzparis" {
+		t.Fatalf("round 2 original query = %q, want %q", retrieveTraces[1].OriginalQuery, "zzparis")
+	}
+	if askTrace.Question != ans.Trace.Question {
+		t.Fatal("OnAsk trace differs from answer trace")
+	}
+	if askTrace.Reflection.AdoptedRound != 2 {
+		t.Fatalf("OnAsk trace adopted round = %d, want 2", askTrace.Reflection.AdoptedRound)
+	}
+	if len(askTrace.Reflection.Rounds) != 2 {
+		t.Fatalf("OnAsk reflection rounds = %d, want 2", len(askTrace.Reflection.Rounds))
 	}
 }

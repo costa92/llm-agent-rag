@@ -37,13 +37,97 @@ type SearchOptions struct {
 	ExpansionDepth               int            // ExpansionDepth bounds tree-expansion depth.
 }
 
+// ReflectionMode selects how Ask evaluates whether to stop, continue, or
+// rewrite across bounded self-reflection rounds. The zero value and
+// ReflectionModeOff both disable reflection.
+type ReflectionMode string
+
+const (
+	// ReflectionModeOff disables reflection explicitly.
+	ReflectionModeOff ReflectionMode = "off"
+	// ReflectionModeRule enables threshold-based reflection decisions.
+	ReflectionModeRule ReflectionMode = "rule"
+	// ReflectionModeModel enables model-judged reflection decisions.
+	ReflectionModeModel ReflectionMode = "model"
+	// ReflectionModeHybrid enables rule-first, model-assisted reflection decisions.
+	ReflectionModeHybrid ReflectionMode = "hybrid"
+)
+
+// SelectionMode selects which reflection round's answer is adopted at
+// the end of the multi-round loop. The zero value is
+// SelectionModeLastRound, preserving v1.0.x semantics.
+type SelectionMode int
+
+const (
+	// SelectionModeLastRound adopts the last completed reflection round.
+	// This is the v1.0.x default and the zero-value of SelectionMode.
+	SelectionModeLastRound SelectionMode = iota
+	// SelectionModeBestByScore adopts the round with the highest weighted
+	// aggregate ChunkScores at the end of the loop:
+	//   score(round) = GraderRelevanceWeight*mean(relevance)
+	//                  + GraderSupportWeight*mean(support)
+	// Loop semantics (when to stop, when to rewrite) are unchanged — this
+	// flag only affects which round's answer/citations are returned.
+	SelectionModeBestByScore
+)
+
+// ReflectionOptions configures the optional bounded self-reflection loop for
+// System.Ask. Reflection is disabled when AskOptions.Reflection is nil, when
+// Mode is the zero value, or when Mode is ReflectionModeOff.
+//
+// Compatibility note: this exported struct may grow additively over time, so
+// keyed composite literals are recommended.
+type ReflectionOptions struct {
+	Mode             ReflectionMode // Mode selects the reflection policy.
+	MaxRounds        int            // MaxRounds bounds the number of Ask rounds.
+	MinHits          int            // MinHits is the minimum retrieved-hit threshold.
+	MinScore         float64        // MinScore is the minimum top-score threshold.
+	MinUniqueDocs    int            // MinUniqueDocs is the minimum unique-document threshold.
+	RequireCitations bool           // RequireCitations requires prompt citations before stopping.
+	AllowRewrite     bool           // AllowRewrite permits query rewrites between rounds.
+	FailOpen         bool           // FailOpen returns the best usable round after reflection failure.
+	// EnableChunkGrading turns on the per-chunk grading pass. When true,
+	// the System's configured Grader is called for every hit after each
+	// retrieval round and the scores are recorded on
+	// ReflectionRoundDiagnostics.ChunkScores and
+	// ReflectionRoundTrace.ChunkScores. Default false preserves v1.0.x
+	// behavior (no grading call).
+	EnableChunkGrading bool
+	// GraderRelevanceWeight is the weight of mean(ChunkScores.Relevance)
+	// in the SelectionModeBestByScore aggregate. A value <= 0 defaults to
+	// 0.5 when SelectionModeBestByScore is active.
+	GraderRelevanceWeight float64
+	// GraderSupportWeight is the weight of mean(ChunkScores.Support) in
+	// the SelectionModeBestByScore aggregate. A value <= 0 defaults to
+	// 0.5 when SelectionModeBestByScore is active.
+	GraderSupportWeight float64
+	// SelectionMode picks which reflection round's answer is adopted at
+	// the end of the loop. Zero value SelectionModeLastRound preserves
+	// v1.0.x semantics.
+	SelectionMode SelectionMode
+	// AdaptiveRetrieval, when true, forces one extra reflection round if
+	// the max ChunkScores.Relevance for the latest round is below
+	// AdaptiveRetrievalThreshold (subject to MaxRounds). Requires
+	// EnableChunkGrading. Default false preserves v1.0.x behavior.
+	AdaptiveRetrieval bool
+	// AdaptiveRetrievalThreshold is the relevance threshold below which
+	// AdaptiveRetrieval forces an extra round. A value <= 0 defaults to
+	// 0.6 when AdaptiveRetrieval is active.
+	AdaptiveRetrievalThreshold float64
+}
+
 // AskOptions configures System.Ask — the standard retrieve-pack-generate
-// answer path.
+// answer path. Reflection is disabled when Reflection is nil, when
+// Reflection.Mode is the zero value, or when it is ReflectionModeOff.
+//
+// Compatibility note: this exported struct may grow additively over time, so
+// keyed composite literals are recommended.
 type AskOptions struct {
-	Search    SearchOptions   // Search configures the retrieval stage.
-	Template  prompt.Template // Template overrides the prompt template; nil uses the System default.
-	Metadata  map[string]any  // Metadata is caller-supplied passthrough sent to the model.
-	MaxTokens int             // MaxTokens caps the packed context token budget.
+	Search     SearchOptions      // Search configures the retrieval stage.
+	Template   prompt.Template    // Template overrides the prompt template; nil uses the System default.
+	Metadata   map[string]any     // Metadata is caller-supplied passthrough sent to the model.
+	MaxTokens  int                // MaxTokens caps the packed context token budget.
+	Reflection *ReflectionOptions // Reflection configures the optional bounded self-reflection loop.
 }
 
 // GlobalOptions configures System.AskGlobal — the map-reduce global-search
@@ -117,4 +201,9 @@ type Options struct {
 	// that is not a CommunityStore) leaves communities undetected — Import
 	// behaves exactly as before.
 	CommunityDetector graph.CommunityDetector
+	// Grader, when set, is the per-chunk Grader called during a
+	// reflection round when ReflectionOptions.EnableChunkGrading is true.
+	// A nil Grader with grading enabled falls back to NoopGrader (every
+	// chunk scores 0.5) so the wiring stays functional.
+	Grader Grader
 }
