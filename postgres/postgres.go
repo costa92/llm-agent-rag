@@ -23,6 +23,29 @@ import (
 	"github.com/costa92/llm-agent-rag/store"
 )
 
+// VectorIndex chooses the pgvector index strategy applied by Migrate
+// to the embedding column. Zero-value (VectorIndexNone) preserves
+// pre-v1.0.5 behavior: no vector index is created. Existing tables
+// without an index continue to be queryable; users opt in by setting
+// Config.VectorIndex and re-running Migrate.
+//
+// IVFFlat works on pgvector >= 0.3. HNSW requires pgvector >= 0.5.
+// Migrate uses CREATE INDEX IF NOT EXISTS, so re-running with the
+// same VectorIndex is a no-op.
+type VectorIndex int
+
+const (
+	// VectorIndexNone is the zero value — no index created. (Default.)
+	VectorIndexNone VectorIndex = iota
+	// VectorIndexIVFFlat creates an IVFFlat index using vector_cosine_ops.
+	// Tune via Config.IVFFlatLists; default is 100 (good for up to ~1M rows).
+	VectorIndexIVFFlat
+	// VectorIndexHNSW creates an HNSW index using vector_cosine_ops.
+	// Tune via Config.HNSWConstructionM; default is 16 (pgvector's default).
+	// Requires pgvector >= 0.5.
+	VectorIndexHNSW
+)
+
 // Config configures a Store.
 type Config struct {
 	// Table is the table name backing the store. Defaults to "chunks".
@@ -33,6 +56,18 @@ type Config struct {
 	// TextSearchConfig is the PostgreSQL text-search configuration used for
 	// the full-text lexical index and queries. Defaults to "english".
 	TextSearchConfig string
+	// VectorIndex selects the pgvector index strategy created by Migrate.
+	// Default (VectorIndexNone) leaves the embedding column un-indexed —
+	// matches v1.0.4 behavior. Added in v1.0.5 (P1-1).
+	VectorIndex VectorIndex
+	// IVFFlatLists is the lists parameter for IVFFlat indexes.
+	// Zero resolves to 100. Heuristic: sqrt(rowcount) for production datasets.
+	// Only consulted when VectorIndex == VectorIndexIVFFlat. Added in v1.0.5.
+	IVFFlatLists int
+	// HNSWConstructionM is the m parameter for HNSW indexes.
+	// Zero resolves to 16 (pgvector default). Higher m = better recall, larger index.
+	// Only consulted when VectorIndex == VectorIndexHNSW. Added in v1.0.5.
+	HNSWConstructionM int
 }
 
 // Store is a PostgreSQL + pgvector implementation of store.Store.
@@ -151,6 +186,33 @@ func (s *Store) Migrate(ctx context.Context) error {
 			content_hash TEXT,
 			PRIMARY KEY (namespace, community_id)
 		)`, s.cfg.Table),
+	}
+	// P1-1: optional vector index. Uses CREATE INDEX IF NOT EXISTS so
+	// re-running Migrate is a no-op when the index already exists at the
+	// requested type. Idempotent only against the SAME requested
+	// VectorIndex — switching from IVFFlat to HNSW requires dropping the
+	// prior index out-of-band.
+	switch s.cfg.VectorIndex {
+	case VectorIndexNone:
+		// intentionally no DDL
+	case VectorIndexIVFFlat:
+		lists := s.cfg.IVFFlatLists
+		if lists <= 0 {
+			lists = 100
+		}
+		stmts = append(stmts, fmt.Sprintf(
+			`CREATE INDEX IF NOT EXISTS %s_embedding_ivfflat ON %s USING ivfflat (embedding vector_cosine_ops) WITH (lists = %d)`,
+			s.cfg.Table, s.cfg.Table, lists))
+	case VectorIndexHNSW:
+		m := s.cfg.HNSWConstructionM
+		if m <= 0 {
+			m = 16
+		}
+		stmts = append(stmts, fmt.Sprintf(
+			`CREATE INDEX IF NOT EXISTS %s_embedding_hnsw ON %s USING hnsw (embedding vector_cosine_ops) WITH (m = %d)`,
+			s.cfg.Table, s.cfg.Table, m))
+	default:
+		return fmt.Errorf("postgres: unknown VectorIndex %d", s.cfg.VectorIndex)
 	}
 	for _, stmt := range stmts {
 		if _, err := s.pool.Exec(ctx, stmt); err != nil {
