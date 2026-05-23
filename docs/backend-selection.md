@@ -107,7 +107,7 @@ Five-step checklist:
 | Backend             | Persistence | Vector index            | Metadata filter | Security filter (AND) | Live test gate        |
 | ------------------- | ----------- | ----------------------- | --------------- | --------------------- | --------------------- |
 | `InMemoryStore`     | no          | linear scan             | yes             | yes                   | (always on)           |
-| `postgres.Store`    | yes         | optional ivfflat / hnsw | JSONB `@>`      | yes                   | `LLM_AGENT_RAG_PG_URL` |
+| `postgres.Store`    | yes         | ivfflat / hnsw via `Config.VectorIndex` | JSONB `@>`      | yes                   | `LLM_AGENT_RAG_PG_URL` |
 
 ## Forward-looking backends
 
