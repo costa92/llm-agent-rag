@@ -67,6 +67,23 @@ func (m *scriptedReflectionModel) Generate(_ context.Context, req generate.Reque
 	return generate.Response{Text: req.Messages[0].Content}, nil
 }
 
+type conditionalRewritePreprocessor struct{}
+
+func (conditionalRewritePreprocessor) Process(_ context.Context, req retrieve.Request) (retrieve.PreprocessResult, error) {
+	effective := req.Query
+	if req.Query == "capital of france" {
+		effective = "zzberlin"
+	}
+	return retrieve.PreprocessResult{
+		QueryVariants: []string{effective},
+		Trace: retrieve.Trace{
+			OriginalQuery:  req.Query,
+			EffectiveQuery: effective,
+			QueryVariants:  []string{effective},
+		},
+	}, nil
+}
+
 func TestSystemImportRetrieveAsk(t *testing.T) {
 	sys := New(Options{Model: fakeModel{}})
 	_, err := sys.Import(context.Background(), []ingest.Document{
@@ -414,7 +431,10 @@ func TestAskRuleModeAggregatesMetricsAcrossRounds(t *testing.T) {
 			},
 		},
 	}
-	sys := New(Options{Model: model})
+	sys := New(Options{
+		Model:        model,
+		Preprocessor: conditionalRewritePreprocessor{},
+	})
 	_, err := sys.Import(context.Background(), []ingest.Document{
 		{ID: "doc1", Content: "Berlin is in Germany."},
 	}, ingest.ImportOptions{Namespace: "geo"})
@@ -467,15 +487,18 @@ func TestAskModelModeRewritesAndContinues(t *testing.T) {
 	model := &scriptedReflectionModel{
 		responses: []generate.Response{
 			{Text: "answer round 1"},
-			{Text: "decision=rewrite_and_continue\nreason=need better evidence\nrewrite=paris capital france"},
+			{Text: "decision=rewrite_and_continue\nreason=need better evidence\nrewrite=zzparis"},
 			{Text: "answer round 2"},
 			{Text: "decision=stop\nreason=sufficient evidence"},
 		},
 	}
-	sys := New(Options{Model: model})
+	sys := New(Options{
+		Model:        model,
+		Preprocessor: conditionalRewritePreprocessor{},
+	})
 	_, err := sys.Import(context.Background(), []ingest.Document{
-		{ID: "doc1", Content: "Berlin is in Germany."},
-		{ID: "doc2", Content: "Paris is the capital of France."},
+		{ID: "doc1", Content: "zzberlin Berlin is in Germany."},
+		{ID: "doc2", Content: "zzparis Paris is the capital of France."},
 	}, ingest.ImportOptions{Namespace: "geo"})
 	if err != nil {
 		t.Fatalf("Import(): %v", err)
@@ -524,21 +547,21 @@ func TestAskModelModeRewritesAndContinues(t *testing.T) {
 	if ans.Diagnostics.Reflection.RoundDetails[0].DecisionMode != ReflectionModeModel {
 		t.Fatalf("round 1 decision mode = %q, want %q", ans.Diagnostics.Reflection.RoundDetails[0].DecisionMode, ReflectionModeModel)
 	}
-	if ans.Diagnostics.Reflection.RoundDetails[0].RewrittenQuery != "paris capital france" {
+	if ans.Diagnostics.Reflection.RoundDetails[0].RewrittenQuery != "zzparis" {
 		t.Fatalf(
 			"round 1 rewritten query = %q, want %q",
 			ans.Diagnostics.Reflection.RoundDetails[0].RewrittenQuery,
-			"paris capital france",
+			"zzparis",
 		)
 	}
-	if ans.Trace.Reflection.Rounds[0].RewrittenQuery != "paris capital france" {
+	if ans.Trace.Reflection.Rounds[0].RewrittenQuery != "zzparis" {
 		t.Fatalf(
 			"trace round 1 rewritten query = %q, want %q",
 			ans.Trace.Reflection.Rounds[0].RewrittenQuery,
-			"paris capital france",
+			"zzparis",
 		)
 	}
-	if ans.Trace.Reflection.Rounds[1].InputQuery != "paris capital france" {
+	if ans.Trace.Reflection.Rounds[1].InputQuery != "zzparis" {
 		t.Fatalf(
 			"trace round 2 input query = %q, want rewritten query",
 			ans.Trace.Reflection.Rounds[1].InputQuery,
@@ -558,6 +581,104 @@ func TestAskModelModeRewritesAndContinues(t *testing.T) {
 	}
 	if !strings.Contains(ans.Prompt.Messages[0].Content, "HITS=doc2:0") {
 		t.Fatalf("final adopted prompt = %q, want round 2 prompt", ans.Prompt.Messages[0].Content)
+	}
+}
+
+func TestAskModelModeStopsWhenRewriteUnchanged(t *testing.T) {
+	model := &scriptedReflectionModel{
+		responses: []generate.Response{
+			{Text: "answer round 1"},
+			{Text: "decision=rewrite_and_continue\nreason=retry same query\nrewrite=capital of france"},
+		},
+	}
+	sys := New(Options{Model: model})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Paris is the capital of France."},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	ans, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 1},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:         ReflectionModeModel,
+			MaxRounds:    3,
+			AllowRewrite: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if got := len(model.requests); got != 2 {
+		t.Fatalf("model call count = %d, want 2 for answer + reflection decision", got)
+	}
+	if ans.Diagnostics.Reflection.Rounds != 1 {
+		t.Fatalf("Reflection.Rounds = %d, want 1 after unchanged rewrite stop", ans.Diagnostics.Reflection.Rounds)
+	}
+	if ans.Diagnostics.Reflection.StopReason != "rewrite_unchanged" {
+		t.Fatalf("Reflection.StopReason = %q, want %q", ans.Diagnostics.Reflection.StopReason, "rewrite_unchanged")
+	}
+	if ans.Diagnostics.Reflection.RoundDetails[0].Decision != ReflectionDecisionStop {
+		t.Fatalf("round 1 decision = %q, want %q", ans.Diagnostics.Reflection.RoundDetails[0].Decision, ReflectionDecisionStop)
+	}
+	if ans.Diagnostics.Reflection.RoundDetails[0].RewrittenQuery != "" {
+		t.Fatalf("round 1 rewritten query = %q, want empty after unchanged rewrite stop", ans.Diagnostics.Reflection.RoundDetails[0].RewrittenQuery)
+	}
+	if ans.Text != "answer round 1" {
+		t.Fatalf("final answer text = %q, want first round answer", ans.Text)
+	}
+}
+
+func TestAskModelModeStopsWhenEvidenceUnchanged(t *testing.T) {
+	model := &scriptedReflectionModel{
+		responses: []generate.Response{
+			{Text: "answer round 1"},
+			{Text: "decision=rewrite_and_continue\nreason=use synonym\nrewrite=france capital"},
+			{Text: "answer round 2"},
+		},
+	}
+	sys := New(Options{Model: model})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Paris is the capital of France."},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	ans, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 1},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:         ReflectionModeModel,
+			MaxRounds:    3,
+			AllowRewrite: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if got := len(model.requests); got != 3 {
+		t.Fatalf("model call count = %d, want 3 for answer, reflection, answer", got)
+	}
+	if ans.Diagnostics.Reflection.Rounds != 2 {
+		t.Fatalf("Reflection.Rounds = %d, want 2 when stopping after unchanged evidence", ans.Diagnostics.Reflection.Rounds)
+	}
+	if ans.Diagnostics.Reflection.StopReason != "evidence_unchanged" {
+		t.Fatalf("Reflection.StopReason = %q, want %q", ans.Diagnostics.Reflection.StopReason, "evidence_unchanged")
+	}
+	if ans.Diagnostics.Reflection.RoundDetails[1].Decision != ReflectionDecisionStop {
+		t.Fatalf("round 2 decision = %q, want %q", ans.Diagnostics.Reflection.RoundDetails[1].Decision, ReflectionDecisionStop)
+	}
+	if ans.Diagnostics.Reflection.RoundDetails[1].DecisionReason == "" {
+		t.Fatal("round 2 decision reason empty, want unchanged-evidence stop reason")
+	}
+	if ans.Text != "answer round 2" {
+		t.Fatalf("final answer text = %q, want second-round answer", ans.Text)
+	}
+	if len(ans.Hits) != 1 || ans.Hits[0].Chunk.ID != "doc1:0" {
+		t.Fatalf("final adopted hits = %+v, want adopted second-round evidence", ans.Hits)
 	}
 }
 

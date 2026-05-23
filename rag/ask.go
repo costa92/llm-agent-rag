@@ -69,6 +69,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 		case ReflectionModeModel, ReflectionModeHybrid:
 			query := question
 			var rounds []reflectionRound
+			var previousRound *askRoundResult
 			for roundIndex := 1; roundIndex <= reflection.MaxRounds; roundIndex++ {
 				round, err = s.askRound(ctx, question, query, opts)
 				if err != nil {
@@ -80,11 +81,16 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 					if ruleDecision.decision == ReflectionDecisionStop {
 						ruleDecision.mode = ReflectionModeHybrid
 						decision = ruleDecision
+					} else if unchangedDecision, stop := stopForUnchangedEvidence(round, previousRound); stop {
+						unchangedDecision.mode = ReflectionModeHybrid
+						decision = unchangedDecision
 					} else {
 						decision, err = decideWithModel(ctx, s.model, question, reflection, round)
 						if err != nil {
 							return Answer{}, err
 						}
+						outcome := orchestrateModelReflection(query, decision)
+						decision = outcome.decision
 						if roundIndex >= reflection.MaxRounds && decision.decision != ReflectionDecisionStop {
 							decision = reflectionDecisionResult{
 								decision:   ReflectionDecisionStop,
@@ -95,20 +101,28 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 						}
 					}
 				} else {
-					decision, err = decideWithModel(ctx, s.model, question, reflection, round)
-					if err != nil {
-						return Answer{}, err
-					}
-					if roundIndex >= reflection.MaxRounds && decision.decision != ReflectionDecisionStop {
-						decision = reflectionDecisionResult{
-							decision:   ReflectionDecisionStop,
-							reason:     "max rounds reached",
-							stopReason: "max_rounds",
-							mode:       ReflectionModeModel,
+					if unchangedDecision, stop := stopForUnchangedEvidence(round, previousRound); stop {
+						decision = unchangedDecision
+					} else {
+						decision, err = decideWithModel(ctx, s.model, question, reflection, round)
+						if err != nil {
+							return Answer{}, err
+						}
+						outcome := orchestrateModelReflection(query, decision)
+						decision = outcome.decision
+						if roundIndex >= reflection.MaxRounds && decision.decision != ReflectionDecisionStop {
+							decision = reflectionDecisionResult{
+								decision:   ReflectionDecisionStop,
+								reason:     "max rounds reached",
+								stopReason: "max_rounds",
+								mode:       ReflectionModeModel,
+							}
 						}
 					}
 				}
 				rounds = append(rounds, buildReflectionRound(reflection.Mode, roundIndex, query, round, decision))
+				currentRound := round
+				previousRound = &currentRound
 				if decision.decision == ReflectionDecisionStop {
 					break
 				}

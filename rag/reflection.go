@@ -45,6 +45,11 @@ type tokenUsageSnapshot struct {
 	Estimated        bool
 }
 
+type modelReflectionOutcome struct {
+	decision reflectionDecisionResult
+	stop     bool
+}
+
 func reflectionDisabled(opts *ReflectionOptions) bool {
 	return opts == nil || opts.Mode == "" || opts.Mode == ReflectionModeOff
 }
@@ -280,6 +285,43 @@ func decideWithModel(ctx context.Context, model generate.Model, originalQuestion
 	return result, nil
 }
 
+func resolveModelRewrite(currentQuery string, decision reflectionDecisionResult) modelReflectionOutcome {
+	if decision.decision != ReflectionDecisionRewriteAndContinue {
+		return modelReflectionOutcome{decision: decision}
+	}
+	if strings.TrimSpace(decision.nextQuery) == strings.TrimSpace(currentQuery) {
+		decision.decision = ReflectionDecisionStop
+		decision.reason = "rewrite unchanged from current query"
+		decision.stopReason = "rewrite_unchanged"
+		decision.nextQuery = ""
+		return modelReflectionOutcome{
+			decision: decision,
+			stop:     true,
+		}
+	}
+	return modelReflectionOutcome{decision: decision}
+}
+
+func stopForUnchangedEvidence(currentRound askRoundResult, previousRound *askRoundResult) (reflectionDecisionResult, bool) {
+	if previousRound == nil {
+		return reflectionDecisionResult{}, false
+	}
+	if !evidenceSetsEqual(previousRound.answer.Diagnostics.PromptChunkIDs, currentRound.answer.Diagnostics.PromptChunkIDs) {
+		return reflectionDecisionResult{}, false
+	}
+	return reflectionDecisionResult{
+		decision:   ReflectionDecisionStop,
+		reason:     "evidence set unchanged from previous round",
+		stopReason: "evidence_unchanged",
+		mode:       ReflectionModeModel,
+	}, true
+}
+
+func orchestrateModelReflection(currentQuery string, decision reflectionDecisionResult) modelReflectionOutcome {
+	outcome := resolveModelRewrite(currentQuery, decision)
+	return outcome
+}
+
 func reflectionDecisionPrompt(originalQuestion string, opts ReflectionOptions, round askRoundResult) string {
 	return fmt.Sprintf(
 		"Original question: %s\nCurrent answer: %s\nRetrieved hits: %d\nUnique docs: %d\nTop score: %.6f\nCitations: %d\nAllow rewrite: %t\n\nRespond with lines:\ndecision=<stop|continue|rewrite_and_continue>\nreason=<short reason>\nrewrite=<next query, only when rewriting>",
@@ -321,4 +363,16 @@ func parseReflectionDecision(text string) (ReflectionDecision, string, string) {
 		}
 	}
 	return decision, reason, rewrite
+}
+
+func evidenceSetsEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
