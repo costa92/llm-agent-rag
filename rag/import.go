@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/costa92/llm-agent-rag/embed"
 	"github.com/costa92/llm-agent-rag/graph"
 	"github.com/costa92/llm-agent-rag/guard"
 	"github.com/costa92/llm-agent-rag/ingest"
@@ -35,7 +36,15 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 	persistGraph := s.entityExtractor != nil && isGraphStore
 	var staleGraphChunkIDs []string
 	importStart := time.Now()
-	embedStart := time.Now()
+	// First pass: redact, replace-source removal, and split — accumulate
+	// every chunk across every document so the optional batch fast path
+	// can collapse N sequential embed calls into one round-trip. The
+	// per-doc ordering is preserved by appending sequentially, so the
+	// fallback path is byte-identical to the v1 per-chunk loop.
+	type pendingChunk struct {
+		chunk ingest.Chunk
+	}
+	var pending []pendingChunk
 	for _, doc := range docs {
 		// Redact PII before splitting so chunks, vectors, and the store
 		// never see raw PII. A nil redactor leaves content untouched.
@@ -72,36 +81,69 @@ func (s *System) Import(ctx context.Context, docs []ingest.Document, opts ingest
 		docChunks := splitter.Split(doc, maxChars)
 		res.Documents++
 		res.Chunks += len(docChunks)
-		for _, chunk := range docChunks {
-			vec, err := s.embedder.Embed(ctx, chunk.Content)
+		for _, ch := range docChunks {
+			pending = append(pending, pendingChunk{chunk: ch})
+		}
+	}
+	embedStart := time.Now()
+	// Optional batch fast path: when the configured embedder also
+	// implements embed.BatchEmbedder, embed every accumulated chunk in
+	// a single round-trip. Plain Embedder callers fall through to the
+	// per-chunk loop below — v1 behavior is byte-identical for them.
+	// Errors keep the same wrap shape as the per-chunk path so caller
+	// error handling does not regress.
+	var batchVectors []embed.Vector
+	if be, ok := s.embedder.(embed.BatchEmbedder); ok && len(pending) > 0 {
+		texts := make([]string, len(pending))
+		for i, p := range pending {
+			texts[i] = p.chunk.Content
+		}
+		vecs, err := be.EmbedBatch(ctx, texts)
+		if err != nil {
+			return ingest.ImportResult{}, fmt.Errorf("rag: embed batch: %w", err)
+		}
+		if len(vecs) != len(pending) {
+			return ingest.ImportResult{}, fmt.Errorf("rag: embed batch returned %d vectors for %d texts", len(vecs), len(pending))
+		}
+		batchVectors = vecs
+	}
+	for i, p := range pending {
+		chunk := p.chunk
+		var vec embed.Vector
+		if batchVectors != nil {
+			vec = batchVectors[i]
+			embedCount++
+		} else {
+			v, err := s.embedder.Embed(ctx, chunk.Content)
 			if err != nil {
 				return ingest.ImportResult{}, fmt.Errorf("rag: embed chunk %s: %w", chunk.ID, err)
 			}
+			vec = v
 			embedCount++
-			chunks = append(chunks, store.StoredChunk{
-				ID:           chunk.ID,
-				Namespace:    opts.Namespace,
-				DocID:        chunk.DocID,
-				Title:        chunk.Title,
-				SectionID:    buildSectionID(opts.Namespace, chunk),
-				SectionPath:  metadataStringSlice(chunk.Metadata, ingest.MetadataSectionPathKey),
-				Heading:      metadataString(chunk.Metadata, ingest.MetadataHeadingKey),
-				HeadingLevel: metadataInt(chunk.Metadata, ingest.MetadataHeadingLevelKey),
-				Content:      chunk.Content,
-				Vector:       vec,
-				Metadata:     chunk.Metadata,
-			})
-			res.ChunkIDs = append(res.ChunkIDs, chunk.ID)
-			// Extract the knowledge graph post-split. A nil extractor
-			// leaves the graph unbuilt and Import behaves as before.
-			if s.entityExtractor != nil {
-				ents, rels, err := s.entityExtractor.Extract(ctx, chunk.ID, chunk.Content)
-				if err != nil {
-					return ingest.ImportResult{}, fmt.Errorf("rag: extract graph from chunk %s: %w", chunk.ID, err)
-				}
-				graphEnts = append(graphEnts, ents...)
-				graphRels = append(graphRels, rels...)
+		}
+		chunks = append(chunks, store.StoredChunk{
+			ID:           chunk.ID,
+			Namespace:    opts.Namespace,
+			DocID:        chunk.DocID,
+			Title:        chunk.Title,
+			SectionID:    buildSectionID(opts.Namespace, chunk),
+			SectionPath:  metadataStringSlice(chunk.Metadata, ingest.MetadataSectionPathKey),
+			Heading:      metadataString(chunk.Metadata, ingest.MetadataHeadingKey),
+			HeadingLevel: metadataInt(chunk.Metadata, ingest.MetadataHeadingLevelKey),
+			Content:      chunk.Content,
+			Vector:       vec,
+			Metadata:     chunk.Metadata,
+		})
+		res.ChunkIDs = append(res.ChunkIDs, chunk.ID)
+		// Extract the knowledge graph post-split. A nil extractor
+		// leaves the graph unbuilt and Import behaves as before.
+		if s.entityExtractor != nil {
+			ents, rels, err := s.entityExtractor.Extract(ctx, chunk.ID, chunk.Content)
+			if err != nil {
+				return ingest.ImportResult{}, fmt.Errorf("rag: extract graph from chunk %s: %w", chunk.ID, err)
 			}
+			graphEnts = append(graphEnts, ents...)
+			graphRels = append(graphRels, rels...)
 		}
 	}
 	embedDuration := time.Since(embedStart)

@@ -179,7 +179,18 @@ func New(opts Options) *System {
 	// or Preprocessor holds whatever embedder/model the caller passed and
 	// is left as-is. A nil model stays nil so Ask still returns
 	// ErrModelRequired.
-	emb = countingEmbedder{inner: emb}
+	//
+	// If the caller's embedder also implements embed.BatchEmbedder
+	// (the v1.0.2 optional sibling capability), wrap with the
+	// batch-aware variant so a downstream type-assertion in Import
+	// can engage the batch fast path. Otherwise fall back to the
+	// plain Embedder-only wrapper — preserving the v1 behavior
+	// exactly for callers that only implement Embedder.
+	if be, ok := emb.(embed.BatchEmbedder); ok {
+		emb = countingBatchEmbedder{inner: emb, innerBatch: be}
+	} else {
+		emb = countingEmbedder{inner: emb}
+	}
 	var model generate.Model
 	if opts.Model != nil {
 		model = countingModel{inner: opts.Model}

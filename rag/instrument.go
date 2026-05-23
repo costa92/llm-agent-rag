@@ -24,6 +24,33 @@ func (e countingEmbedder) Embed(ctx context.Context, text string) (embed.Vector,
 
 func (e countingEmbedder) Dimension() int { return e.inner.Dimension() }
 
+// countingBatchEmbedder is the BatchEmbedder-aware variant of
+// countingEmbedder, used when the wrapped embedder also implements
+// embed.BatchEmbedder. It counts the batch under one obs.Counter
+// AddEmbed bump per text — preserving per-chunk accounting parity with
+// the per-chunk path — and delegates to the inner BatchEmbedder.
+//
+// Both wrappers share the same Embed/Dimension methods; the only
+// difference is that countingBatchEmbedder additionally satisfies
+// embed.BatchEmbedder so the rag.Importer type-assertion succeeds and
+// the batch fast path engages.
+type countingBatchEmbedder struct {
+	inner      embed.Embedder      // for Embed/Dimension (always the same value)
+	innerBatch embed.BatchEmbedder // for EmbedBatch
+}
+
+func (e countingBatchEmbedder) Embed(ctx context.Context, text string) (embed.Vector, error) {
+	obs.CounterFrom(ctx).AddEmbed(1)
+	return e.inner.Embed(ctx, text)
+}
+
+func (e countingBatchEmbedder) Dimension() int { return e.inner.Dimension() }
+
+func (e countingBatchEmbedder) EmbedBatch(ctx context.Context, texts []string) ([]embed.Vector, error) {
+	obs.CounterFrom(ctx).AddEmbed(len(texts))
+	return e.innerBatch.EmbedBatch(ctx, texts)
+}
+
 // countingModel wraps a generate.Model and increments the obs.Counter on
 // the call context once per Generate call. New wraps the system model in
 // this so generation calls nested inside the default preprocessor wiring
