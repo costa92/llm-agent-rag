@@ -6,6 +6,68 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [1.1.0] - 2026-05-23
+
+Minor release closing Track B of the Self-RAG reflection milestone.
+Additive, no breaking changes — covered by the v1.x additive-only
+promise.
+
+### Added
+
+- `rag.Grader` interface (per-chunk relevance/support scoring),
+  inspired by Self-RAG / RAGLab `[ISREL]` / `[ISSUP]` reflection
+  tokens. Two implementations ship in-package:
+  - `rag.NoopGrader` — deterministic neutral-0.5 scores, the safe
+    default when no real grader is configured.
+  - `rag.PromptGrader{Model generate.Model}` — LLM-driven scorer
+    that asks the model to emit `score=<float>` lines. Clamps
+    out-of-range values to `[0,1]` and fails open (0.5 + raw text as
+    reason) on unparseable replies. Propagates model-level transport
+    errors so reflection's `FailOpen` logic can distinguish a
+    deterministic neutral from a real outage.
+- `rag.ChunkScore` (`HitID` / `Relevance` / `Support` / `Reason`) —
+  the per-chunk grading record carried on
+  `ReflectionRoundDiagnostics.ChunkScores` and
+  `ReflectionRoundTrace.ChunkScores`. Populated only when
+  `ReflectionOptions.EnableChunkGrading` is true and a `Grader` is
+  configured; empty otherwise.
+- `rag.Options.Grader` — the System-level wiring slot. A nil Grader
+  with grading enabled falls back to `NoopGrader` so the wiring is
+  always functional.
+- `rag.SelectionMode` enum:
+  - `SelectionModeLastRound` (= 0, default) — keeps the v1.0.x
+    last-round-wins adoption.
+  - `SelectionModeBestByScore` — adopts the round with the highest
+    weighted aggregate `ChunkScores`. Loop semantics (when to stop,
+    when to rewrite) are unchanged — this flag only affects which
+    round's answer/citations are returned at the end. Ties break by
+    earliest round index for determinism.
+- `ReflectionOptions` gains six additive fields, all zero-defaults
+  preserve v1.0.x behavior:
+  - `EnableChunkGrading` (default `false`)
+  - `GraderRelevanceWeight` (default `0` → `0.5` when active)
+  - `GraderSupportWeight` (default `0` → `0.5` when active)
+  - `SelectionMode` (default `SelectionModeLastRound`)
+  - `AdaptiveRetrieval` (default `false`) — forces one extra round
+    when the latest round's max chunk relevance is below
+    `AdaptiveRetrievalThreshold`, subject to `MaxRounds`.
+  - `AdaptiveRetrievalThreshold` (default `0` → `0.6` when active)
+
+### Changed
+
+- The reflection loop now records per-chunk `ChunkScores` on every
+  round when `EnableChunkGrading=true`, and applies the configured
+  `SelectionMode` to pick the adopted round at the end. Defaults
+  (everything off) leave behavior byte-identical to v1.0.6 — the 22+
+  existing reflection tests stay green unchanged.
+
+### Compatibility
+
+- Pure additive: every existing test stays green without
+  modification.
+- API snapshot diff: 22 lines added, 0 removed, 0 renamed.
+- stdlib-only invariant preserved (no new third-party imports).
+
 ## [v1.0.6] - 2026-05-23
 
 Additive, no breaking changes — covered by the v1.x additive-only

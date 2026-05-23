@@ -46,17 +46,45 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 		case ReflectionModeRule:
 			query := question
 			var rounds []reflectionRound
+			var roundResults []askRoundResult
+			adaptiveBudget := 0
+			if reflection.AdaptiveRetrieval && reflection.EnableChunkGrading {
+				adaptiveBudget = 1
+			}
 			for roundIndex := 1; roundIndex <= reflection.MaxRounds; roundIndex++ {
 				round, err = s.askRound(ctx, question, query, opts)
 				if err != nil {
 					return Answer{}, err
 				}
 				decision := decideRule(roundIndex, reflection, round)
-				rounds = append(rounds, buildReflectionRound(reflection.Mode, roundIndex, query, round, decision))
+				built := buildReflectionRound(reflection.Mode, roundIndex, query, round, decision)
+				var maxRel float64
+				if reflection.EnableChunkGrading {
+					var scores []ChunkScore
+					scores, maxRel = gradeRound(ctx, s.effectiveGrader(), query, round)
+					built = attachChunkScores(built, scores)
+				}
+				rounds = append(rounds, built)
+				roundResults = append(roundResults, round)
+				if decision.decision == ReflectionDecisionStop &&
+					reflection.AdaptiveRetrieval &&
+					reflection.EnableChunkGrading &&
+					adaptiveBudget > 0 &&
+					roundIndex < reflection.MaxRounds &&
+					maxRel < effectiveAdaptiveThreshold(reflection) {
+					adaptiveBudget--
+					query = question
+					continue
+				}
 				if decision.decision == ReflectionDecisionStop {
 					break
 				}
 				query = question
+			}
+			adoptedIdx := len(rounds) - 1
+			if reflection.SelectionMode == SelectionModeBestByScore && len(rounds) > 1 {
+				adoptedIdx = pickBestRound(rounds, reflection.GraderRelevanceWeight, reflection.GraderSupportWeight)
+				round = roundResults[adoptedIdx]
 			}
 			answer := round.answer
 			metrics := aggregateReflectionMetrics(rounds)
@@ -64,13 +92,31 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			metrics.TotalDuration = answer.Diagnostics.Metrics.TotalDuration
 			answer.Diagnostics.Metrics = metrics
 			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, rounds, 0)
+			answer.Diagnostics.Reflection.AdoptedRound = rounds[adoptedIdx].round.Round
 			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, rounds)
+			answer.Trace.Reflection.AdoptedRound = rounds[adoptedIdx].trace.Round
 			round.answer = answer
 		case ReflectionModeModel, ReflectionModeHybrid:
 			query := question
 			var rounds []reflectionRound
+			var roundResults []askRoundResult
 			var previousRound *askRoundResult
 			decisionModelCalls := 0
+			adaptiveBudget := 0
+			if reflection.AdaptiveRetrieval && reflection.EnableChunkGrading {
+				adaptiveBudget = 1
+			}
+			appendRound := func(built reflectionRound, rr askRoundResult) (float64, reflectionRound) {
+				var maxRel float64
+				if reflection.EnableChunkGrading {
+					var scores []ChunkScore
+					scores, maxRel = gradeRound(ctx, s.effectiveGrader(), query, rr)
+					built = attachChunkScores(built, scores)
+				}
+				rounds = append(rounds, built)
+				roundResults = append(roundResults, rr)
+				return maxRel, built
+			}
 			for roundIndex := 1; roundIndex <= reflection.MaxRounds; roundIndex++ {
 				round, err = s.askRound(ctx, question, query, opts)
 				if err != nil {
@@ -96,7 +142,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 									stopReason: "decision_error",
 									mode:       ReflectionModeHybrid,
 								}
-								rounds = append(rounds, buildReflectionRound(reflection.Mode, roundIndex, query, round, decision))
+								appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision), round)
 								break
 							}
 							return Answer{}, err
@@ -121,7 +167,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 									stopReason: "decision_error",
 									mode:       ReflectionModeModel,
 								}
-								rounds = append(rounds, buildReflectionRound(reflection.Mode, roundIndex, query, round, decision))
+								appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision), round)
 								break
 							}
 							return Answer{}, err
@@ -133,9 +179,19 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 						}
 					}
 				}
-				rounds = append(rounds, buildReflectionRound(reflection.Mode, roundIndex, query, round, decision))
+				maxRel, _ := appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision), round)
 				currentRound := round
 				previousRound = &currentRound
+				if decision.decision == ReflectionDecisionStop &&
+					reflection.AdaptiveRetrieval &&
+					reflection.EnableChunkGrading &&
+					adaptiveBudget > 0 &&
+					roundIndex < reflection.MaxRounds &&
+					maxRel < effectiveAdaptiveThreshold(reflection) {
+					adaptiveBudget--
+					query = question
+					continue
+				}
 				if decision.decision == ReflectionDecisionStop {
 					break
 				}
@@ -145,18 +201,29 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 				}
 				query = question
 			}
+			adoptedIdx := len(rounds) - 1
+			if reflection.SelectionMode == SelectionModeBestByScore && len(rounds) > 1 {
+				adoptedIdx = pickBestRound(rounds, reflection.GraderRelevanceWeight, reflection.GraderSupportWeight)
+				round = roundResults[adoptedIdx]
+			}
 			answer := round.answer
 			metrics := aggregateReflectionMetrics(rounds)
 			metrics.Calls = answer.Diagnostics.Metrics.Calls
 			metrics.TotalDuration = answer.Diagnostics.Metrics.TotalDuration
 			answer.Diagnostics.Metrics = metrics
 			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, rounds, decisionModelCalls)
+			if len(rounds) > 0 {
+				answer.Diagnostics.Reflection.AdoptedRound = rounds[adoptedIdx].round.Round
+			}
 			if err != nil && reflection.FailOpen && len(rounds) > 0 {
 				answer.Diagnostics.Reflection.FailureFallback = true
 				answer.Diagnostics.Reflection.FailureReason = err.Error()
 				err = nil
 			}
 			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, rounds)
+			if len(rounds) > 0 {
+				answer.Trace.Reflection.AdoptedRound = rounds[adoptedIdx].trace.Round
+			}
 			round.answer = answer
 		default:
 			round, err = s.askRound(ctx, question, question, opts)

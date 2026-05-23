@@ -463,7 +463,13 @@ const ReflectionModeHybrid ReflectionMode = "hybrid"
 const ReflectionModeModel ReflectionMode = "model"
 const ReflectionModeOff ReflectionMode = "off"
 const ReflectionModeRule ReflectionMode = "rule"
+const SelectionModeBestByScore
+const SelectionModeLastRound SelectionMode = iota
 func New(opts Options) *System
+method (NoopGrader) ScoreRelevance(_ context.Context, _ string, _ store.Hit) (float64, string, error)
+method (NoopGrader) ScoreSupport(_ context.Context, _ string, _ store.Hit) (float64, string, error)
+method (PromptGrader) ScoreRelevance(ctx context.Context, query string, hit store.Hit) (float64, string, error)
+method (PromptGrader) ScoreSupport(ctx context.Context, answer string, hit store.Hit) (float64, string, error)
 method (*System) Ask(ctx context.Context, question string, opts AskOptions) (Answer, error)
 method (*System) AskDrift(ctx context.Context, question string, opts DriftOptions) (Answer, error)
 method (*System) AskGlobal(ctx context.Context, question string, opts GlobalOptions) (Answer, error)
@@ -487,6 +493,11 @@ type AskOptions struct
 	field Reflection *ReflectionOptions
 	field Search SearchOptions
 	field Template prompt.Template
+type ChunkScore struct
+	field HitID string
+	field Reason string
+	field Relevance float64
+	field Support float64
 type Citation struct
 	field ChunkID string
 	field DocID string
@@ -530,6 +541,9 @@ type GlobalDiagnostics struct
 type GlobalOptions struct
 	field MaxCommunities int
 	field Namespace string
+type Grader interface
+	method ScoreRelevance(ctx context.Context, query string, hit store.Hit) (score float64, reason string, err error)
+	method ScoreSupport(ctx context.Context, answer string, hit store.Hit) (score float64, reason string, err error)
 type ImportTrace struct
 	field ChunkIDs []string
 	field Chunks int
@@ -544,6 +558,7 @@ type InjectionFinding struct
 	field Action string
 	field ChunkID string
 	field Patterns []string
+type NoopGrader struct
 type Observer struct
 	field OnAsk func(ctx context.Context, trace Trace)
 	field OnImport func(ctx context.Context, trace ImportTrace)
@@ -554,6 +569,7 @@ type Options struct
 	field Embedder embed.Embedder
 	field EntityExtractor graph.EntityExtractor
 	field EntityResolver graph.EntityResolver
+	field Grader Grader
 	field InjectionScanner guard.InjectionScanner
 	field MaxChars int
 	field Model generate.Model
@@ -567,6 +583,8 @@ type Options struct
 	field Splitter ingest.Splitter
 	field Store store.Store
 	field Template prompt.Template
+type PromptGrader struct
+	field Model generate.Model
 type ReflectionDecision string
 type ReflectionDiagnostics struct
 	field AdoptedRound int
@@ -580,17 +598,24 @@ type ReflectionDiagnostics struct
 	field StopReason string
 type ReflectionMode string
 type ReflectionOptions struct
+	field AdaptiveRetrieval bool
+	field AdaptiveRetrievalThreshold float64
 	field AllowRewrite bool
+	field EnableChunkGrading bool
 	field FailOpen bool
+	field GraderRelevanceWeight float64
+	field GraderSupportWeight float64
 	field MaxRounds int
 	field MinHits int
 	field MinScore float64
 	field MinUniqueDocs int
 	field Mode ReflectionMode
 	field RequireCitations bool
+	field SelectionMode SelectionMode
 type ReflectionRoundDiagnostics struct
 	field AutoRouteCandidates []retrieve.RouteCandidate
 	field AutoRoutePath []string
+	field ChunkScores []ChunkScore
 	field Decision ReflectionDecision
 	field DecisionMode ReflectionMode
 	field DecisionPrompt string
@@ -609,6 +634,7 @@ type ReflectionRoundDiagnostics struct
 	field UniqueDocCount int
 type ReflectionRoundTrace struct
 	field AutoRoutePath []string
+	field ChunkScores []ChunkScore
 	field Decision ReflectionDecision
 	field DecisionReason string
 	field EffectiveQuery string
@@ -643,6 +669,7 @@ type SearchOptions struct
 	field RoutePath []string
 	field SecurityFilters map[string]any
 	field TopK int
+type SelectionMode int
 type System struct
 type Trace struct
 	field AutoRouteCandidates []retrieve.RouteCandidate
