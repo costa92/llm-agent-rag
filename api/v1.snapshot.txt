@@ -589,23 +589,32 @@ type ReflectionOptions struct
 	field Mode ReflectionMode
 	field RequireCitations bool
 type ReflectionRoundDiagnostics struct
+	field AutoRouteCandidates []retrieve.RouteCandidate
+	field AutoRoutePath []string
 	field Decision ReflectionDecision
 	field DecisionMode ReflectionMode
+	field DecisionPrompt string
 	field DecisionReason string
 	field EffectiveQuery string
+	field GraphTrace retrieve.GraphTrace
 	field InputQuery string
 	field PromptChunkIDs []string
+	field RawDecisionText string
 	field ReturnedChunkIDs []string
 	field RewrittenQuery string
 	field Round int
+	field RoutePath []string
+	field SearchTrajectory []retrieve.TrajectoryStep
 	field TopScore float64
 	field UniqueDocCount int
 type ReflectionRoundTrace struct
+	field AutoRoutePath []string
 	field Decision ReflectionDecision
 	field DecisionReason string
 	field EffectiveQuery string
 	field InputQuery string
 	field PromptChunkIDs []string
+	field RawDecisionText string
 	field ReturnedChunkIDs []string
 	field RewrittenQuery string
 	field Round int

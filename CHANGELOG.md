@@ -6,6 +6,44 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [v1.0.6] - 2026-05-23
+
+Additive, no breaking changes — covered by the v1.x additive-only
+promise.
+
+### Added
+
+- `ReflectionRoundDiagnostics` and `ReflectionRoundTrace` now capture
+  per-round routing intel: `RoutePath`, `AutoRoutePath`,
+  `AutoRouteCandidates`, `SearchTrajectory`, `GraphTrace` (on
+  Diagnostics); `AutoRoutePath` (on Trace). Previously only the last
+  round's routing was visible in `Answer.Trace`; multi-round
+  reflections now expose each round's routing decision separately,
+  enabling "why did round N pick a different route than round N-1"
+  debugging. (D4 closure)
+- `ReflectionRoundDiagnostics.RawDecisionText` and `DecisionPrompt`
+  preserve the model's raw reflection-decision reply and the prompt
+  sent to the model, for post-hoc debugging of decision drift. Empty
+  in rule mode and in hybrid rounds where the rule path stopped
+  first. (D5 closure)
+- `ReflectionRoundTrace.RawDecisionText` mirrors the diagnostic-side
+  equivalent for observer-facing trace consumers.
+
+### Changed
+
+- `parseReflectionDecision` now accepts any case for decision values
+  (`Stop`, `STOP`, `Continue`, `Rewrite_and_continue`, etc.). The
+  protocol documented in `reflectionDecisionPrompt` still asks for
+  lowercase, but real-world model output drifts; we normalize the
+  value with `strings.ToLower` before the enum match. (D3 closure)
+
+### Compatibility
+
+- Pure additive: existing reflection tests stay green unchanged.
+- API snapshot increment is additive only (7 new fields, 0 removals,
+  0 renames).
+- stdlib-only invariant preserved (no new third-party imports).
+
 ## [v1.0.5] - 2026-05-23
 
 Additive, no breaking changes — covered by the v1.x additive-only
