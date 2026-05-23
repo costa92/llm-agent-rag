@@ -68,6 +68,40 @@ type Diagnostics struct {
 	// local follow-up loop, and the synthesis. It is the zero value for an
 	// ordinary Ask or AskGlobal — the field is additive.
 	Drift DriftDiagnostics
+	// Reflection attributes a bounded self-reflection Ask run. It is the
+	// zero value for an ordinary single-round Ask — the field is additive.
+	Reflection ReflectionDiagnostics
+}
+
+// ReflectionDiagnostics attributes one reflection-capable System.Ask run:
+// how many rounds executed, which round was adopted, and the per-round
+// retrieval and decision signals gathered along the way.
+type ReflectionDiagnostics struct {
+	Mode               ReflectionMode               // Mode is the configured reflection policy.
+	Rounds             int                          // Rounds is the number of reflection rounds actually run.
+	AdoptedRound       int                          // AdoptedRound is the final round chosen for the answer.
+	StopReason         string                       // StopReason explains why reflection stopped.
+	FailureFallback    bool                         // FailureFallback reports whether fail-open returned a prior round.
+	FailureReason      string                       // FailureReason records the reflection failure cause, if any.
+	DecisionModelCalls int                          // DecisionModelCalls counts reflection decision-model invocations.
+	RewriteModelCalls  int                          // RewriteModelCalls counts reflection rewrite-model invocations.
+	RoundDetails       []ReflectionRoundDiagnostics // RoundDetails records the per-round signals and decisions.
+}
+
+// ReflectionRoundDiagnostics records the retrieval and decision summary for
+// one reflection round.
+type ReflectionRoundDiagnostics struct {
+	Round            int            // Round is the 1-based reflection round index.
+	InputQuery       string         // InputQuery is the query fed into the round.
+	EffectiveQuery   string         // EffectiveQuery is the retriever's final effective query.
+	RewrittenQuery   string         // RewrittenQuery is the next-round rewrite produced by reflection.
+	ReturnedChunkIDs []string       // ReturnedChunkIDs are the chunks returned by retrieval.
+	PromptChunkIDs   []string       // PromptChunkIDs are the chunks packed into the answer prompt.
+	UniqueDocCount   int            // UniqueDocCount is the number of unique documents supporting the round.
+	TopScore         float64        // TopScore is the top retrieval score for the round.
+	Decision         string         // Decision is stop, continue, or rewrite_and_continue.
+	DecisionMode     ReflectionMode // DecisionMode is the policy that made the round decision.
+	DecisionReason   string         // DecisionReason explains why the round decision was made.
 }
 
 // DriftDiagnostics attributes one System.AskDrift run: which communities the
@@ -133,6 +167,29 @@ type Trace struct {
 	DroppedChunkIDs     []string                  // DroppedChunkIDs are chunks dropped by the packer.
 	SelectedChunkIDs    []string                  // SelectedChunkIDs are the chunks the answer used.
 	SearchTrajectory    []retrieve.TrajectoryStep // SearchTrajectory records each route searched.
+	Reflection          ReflectionTrace           // Reflection is the additive self-reflection trace detail.
+}
+
+// ReflectionTrace is the observer-facing trace summary for a reflection Ask
+// run: configured mode, adopted round, stop reason, and the per-round trail.
+type ReflectionTrace struct {
+	Mode         ReflectionMode         // Mode is the configured reflection policy.
+	AdoptedRound int                    // AdoptedRound is the final round chosen for the answer.
+	StopReason   string                 // StopReason explains why reflection stopped.
+	Rounds       []ReflectionRoundTrace // Rounds records the per-round trace trail.
+}
+
+// ReflectionRoundTrace records the observer-facing per-round reflection
+// details for one Ask round.
+type ReflectionRoundTrace struct {
+	Round            int      // Round is the 1-based reflection round index.
+	InputQuery       string   // InputQuery is the query fed into the round.
+	EffectiveQuery   string   // EffectiveQuery is the retriever's final effective query.
+	RewrittenQuery   string   // RewrittenQuery is the next-round rewrite produced by reflection.
+	ReturnedChunkIDs []string // ReturnedChunkIDs are the chunks returned by retrieval.
+	PromptChunkIDs   []string // PromptChunkIDs are the chunks packed into the answer prompt.
+	Decision         string   // Decision is stop, continue, or rewrite_and_continue.
+	DecisionReason   string   // DecisionReason explains why the round decision was made.
 }
 
 // System is the top-level RAG pipeline and the front door of the SDK. It is

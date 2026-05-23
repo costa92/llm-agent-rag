@@ -37,13 +37,38 @@ type SearchOptions struct {
 	ExpansionDepth               int            // ExpansionDepth bounds tree-expansion depth.
 }
 
+// ReflectionMode selects how Ask evaluates whether to stop, continue, or
+// rewrite across bounded self-reflection rounds.
+type ReflectionMode string
+
+const (
+	ReflectionModeOff    ReflectionMode = "off"
+	ReflectionModeRule   ReflectionMode = "rule"
+	ReflectionModeModel  ReflectionMode = "model"
+	ReflectionModeHybrid ReflectionMode = "hybrid"
+)
+
+// ReflectionOptions configures the optional bounded self-reflection loop for
+// System.Ask.
+type ReflectionOptions struct {
+	Mode             ReflectionMode // Mode selects the reflection policy.
+	MaxRounds        int            // MaxRounds bounds the number of Ask rounds.
+	MinHits          int            // MinHits is the minimum retrieved-hit threshold.
+	MinScore         float64        // MinScore is the minimum top-score threshold.
+	MinUniqueDocs    int            // MinUniqueDocs is the minimum unique-document threshold.
+	RequireCitations bool           // RequireCitations requires prompt citations before stopping.
+	AllowRewrite     bool           // AllowRewrite permits query rewrites between rounds.
+	FailOpen         bool           // FailOpen returns the best usable round after reflection failure.
+}
+
 // AskOptions configures System.Ask — the standard retrieve-pack-generate
 // answer path.
 type AskOptions struct {
-	Search    SearchOptions   // Search configures the retrieval stage.
-	Template  prompt.Template // Template overrides the prompt template; nil uses the System default.
-	Metadata  map[string]any  // Metadata is caller-supplied passthrough sent to the model.
-	MaxTokens int             // MaxTokens caps the packed context token budget.
+	Search     SearchOptions      // Search configures the retrieval stage.
+	Template   prompt.Template    // Template overrides the prompt template; nil uses the System default.
+	Metadata   map[string]any     // Metadata is caller-supplied passthrough sent to the model.
+	MaxTokens  int                // MaxTokens caps the packed context token budget.
+	Reflection *ReflectionOptions // Reflection configures the optional bounded self-reflection loop.
 }
 
 // GlobalOptions configures System.AskGlobal — the map-reduce global-search

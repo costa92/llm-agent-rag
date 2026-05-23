@@ -158,6 +158,27 @@ func TestAskCarriesTraceAndFilters(t *testing.T) {
 	}
 }
 
+func TestAskOptionsExposeReflectionConfig(t *testing.T) {
+	opts := AskOptions{
+		Reflection: &ReflectionOptions{
+			Mode:             ReflectionModeRule,
+			MaxRounds:        2,
+			MinHits:          1,
+			MinScore:         0.4,
+			MinUniqueDocs:    1,
+			RequireCitations: true,
+			AllowRewrite:     true,
+			FailOpen:         true,
+		},
+	}
+	if opts.Reflection == nil {
+		t.Fatal("Reflection = nil, want config attached")
+	}
+	if opts.Reflection.Mode != ReflectionModeRule {
+		t.Fatalf("Mode = %q, want %q", opts.Reflection.Mode, ReflectionModeRule)
+	}
+}
+
 func TestImportPreservesLineageMetadataIntoStore(t *testing.T) {
 	mem := store.NewInMemoryStore(32)
 	sys := New(Options{Store: mem})
