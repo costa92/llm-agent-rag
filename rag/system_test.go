@@ -201,7 +201,7 @@ func TestAskRuleModeStopsAfterSatisfiedFirstRound(t *testing.T) {
 		Search: SearchOptions{Namespace: "geo", TopK: 1},
 		Reflection: &ReflectionOptions{
 			Mode:             ReflectionModeRule,
-			MaxRounds:        3,
+			MaxRounds:        2,
 			MinHits:          1,
 			MinScore:         0,
 			MinUniqueDocs:    1,

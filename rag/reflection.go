@@ -2,7 +2,7 @@ package rag
 
 import "github.com/costa92/llm-agent-rag/store"
 
-const defaultReflectionMaxRounds = 2
+const defaultReflectionMaxRounds = 1
 
 type reflectionDecisionResult struct {
 	decision   ReflectionDecision
