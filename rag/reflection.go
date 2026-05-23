@@ -20,6 +20,14 @@ type reflectionDecisionResult struct {
 	nextQuery  string
 	mode       ReflectionMode
 	metrics    metricsSnapshot
+	// rawText is the model's verbatim reflection-decision reply. It is
+	// empty when no model decision was made (rule mode, or hybrid mode
+	// rule-path stops).
+	rawText string
+	// decisionPrompt is the user-content of the reflection decision
+	// prompt sent to the model. It is empty when no model decision was
+	// made.
+	decisionPrompt string
 }
 
 type reflectionRound struct {
@@ -102,18 +110,26 @@ func buildReflectionRound(mode ReflectionMode, roundIndex int, inputQuery string
 	if decision.mode != "" {
 		decisionMode = decision.mode
 	}
+	autoRoute := append([]string(nil), round.answer.Trace.AutoRoutePath...)
 	diag := ReflectionRoundDiagnostics{
-		Round:            roundIndex,
-		InputQuery:       inputQuery,
-		EffectiveQuery:   round.effectiveQuery,
-		RewrittenQuery:   decision.nextQuery,
-		ReturnedChunkIDs: append([]string(nil), round.answer.Diagnostics.ReturnedChunkIDs...),
-		PromptChunkIDs:   append([]string(nil), round.answer.Diagnostics.PromptChunkIDs...),
-		UniqueDocCount:   round.uniqueDocCount,
-		TopScore:         round.topScore,
-		Decision:         decision.decision,
-		DecisionMode:     decisionMode,
-		DecisionReason:   decision.reason,
+		Round:               roundIndex,
+		InputQuery:          inputQuery,
+		EffectiveQuery:      round.effectiveQuery,
+		RewrittenQuery:      decision.nextQuery,
+		ReturnedChunkIDs:    append([]string(nil), round.answer.Diagnostics.ReturnedChunkIDs...),
+		PromptChunkIDs:      append([]string(nil), round.answer.Diagnostics.PromptChunkIDs...),
+		UniqueDocCount:      round.uniqueDocCount,
+		TopScore:            round.topScore,
+		Decision:            decision.decision,
+		DecisionMode:        decisionMode,
+		DecisionReason:      decision.reason,
+		RawDecisionText:     decision.rawText,
+		DecisionPrompt:      decision.decisionPrompt,
+		RoutePath:           append([]string(nil), round.answer.Trace.RoutePath...),
+		AutoRoutePath:       append([]string(nil), autoRoute...),
+		AutoRouteCandidates: cloneAskRouteCandidates(round.answer.Trace.AutoRouteCandidates),
+		SearchTrajectory:    cloneTrajectory(round.answer.Trace.SearchTrajectory),
+		GraphTrace:          round.answer.Diagnostics.GraphTrace,
 	}
 	trace := ReflectionRoundTrace{
 		Round:            roundIndex,
@@ -124,6 +140,8 @@ func buildReflectionRound(mode ReflectionMode, roundIndex int, inputQuery string
 		PromptChunkIDs:   append([]string(nil), round.answer.Diagnostics.PromptChunkIDs...),
 		Decision:         decision.decision,
 		DecisionReason:   decision.reason,
+		RawDecisionText:  decision.rawText,
+		AutoRoutePath:    append([]string(nil), autoRoute...),
 	}
 	return reflectionRound{
 		round:      diag,
@@ -263,11 +281,12 @@ func clampDecisionAtMaxRounds(decision reflectionDecisionResult, mode Reflection
 }
 
 func decideWithModel(ctx context.Context, model generate.Model, originalQuestion string, opts ReflectionOptions, round askRoundResult) (reflectionDecisionResult, error) {
+	promptContent := reflectionDecisionPrompt(originalQuestion, opts, round)
 	req := generate.Request{
 		SystemPrompt: "You decide whether a self-RAG system should stop, continue, or rewrite before continuing.",
 		Messages: []generate.Message{{
 			Role:    "user",
-			Content: reflectionDecisionPrompt(originalQuestion, opts, round),
+			Content: promptContent,
 		}},
 	}
 	start := time.Now()
@@ -284,10 +303,12 @@ func decideWithModel(ctx context.Context, model generate.Model, originalQuestion
 		reason = "model decision"
 	}
 	result := reflectionDecisionResult{
-		decision:  decision,
-		reason:    reason,
-		nextQuery: strings.TrimSpace(rewrite),
-		mode:      ReflectionModeModel,
+		decision:       decision,
+		reason:         reason,
+		nextQuery:      strings.TrimSpace(rewrite),
+		mode:           ReflectionModeModel,
+		rawText:        resp.Text,
+		decisionPrompt: promptContent,
 		metrics: metricsSnapshot{
 			Stages: []stageTimingSnapshot{{
 				Stage:    "reflect",
@@ -391,9 +412,15 @@ func parseReflectionDecision(text string) (ReflectionDecision, string, string, e
 		switch key {
 		case "decision":
 			found = true
-			switch ReflectionDecision(value) {
+			// Normalize the value to lowercase before enum match so the
+			// parser accepts model drift on capitalization (Stop, STOP,
+			// Rewrite_and_continue, etc.). The protocol documented in
+			// reflectionDecisionPrompt still asks for lowercase; this is
+			// just defensive robustness for real-world model output.
+			normalized := ReflectionDecision(strings.ToLower(value))
+			switch normalized {
 			case ReflectionDecisionStop, ReflectionDecisionContinue, ReflectionDecisionRewriteAndContinue:
-				decision = ReflectionDecision(value)
+				decision = normalized
 			default:
 				return "", "", "", fmt.Errorf("invalid reflection decision %q", value)
 			}

@@ -123,6 +123,31 @@ type ReflectionRoundDiagnostics struct {
 	Decision         ReflectionDecision // Decision is the round-level reflection outcome.
 	DecisionMode     ReflectionMode     // DecisionMode is the policy that made the round decision.
 	DecisionReason   string             // DecisionReason explains why the round decision was made.
+	// RawDecisionText is the model's full raw reply for the reflection
+	// decision call, captured verbatim for post-hoc debugging. It is
+	// empty in rule mode (no model call) and in hybrid mode rounds
+	// where the rule path stops first.
+	RawDecisionText string
+	// DecisionPrompt is the user-content portion of the reflection
+	// decision prompt sent to the model. It is empty when no model
+	// decision occurred this round.
+	DecisionPrompt string
+	// RoutePath is the pinned section route for THIS round, if any.
+	// Captured per round so multi-round reflection runs do not lose
+	// the earlier rounds' routing decisions to last-round-wins.
+	RoutePath []string
+	// AutoRoutePath is the route auto-routing selected for THIS round.
+	// Captured per round (see RoutePath).
+	AutoRoutePath []string
+	// AutoRouteCandidates are the candidates auto-routing considered
+	// for THIS round. Captured per round (see RoutePath).
+	AutoRouteCandidates []retrieve.RouteCandidate
+	// SearchTrajectory records each route searched for THIS round.
+	// Captured per round (see RoutePath).
+	SearchTrajectory []retrieve.TrajectoryStep
+	// GraphTrace records the graph-retrieval traversal for THIS round.
+	// Captured per round (see RoutePath).
+	GraphTrace retrieve.GraphTrace
 }
 
 // DriftDiagnostics attributes one System.AskDrift run: which communities the
@@ -220,6 +245,13 @@ type ReflectionRoundTrace struct {
 	PromptChunkIDs   []string           // PromptChunkIDs are the chunks packed into the answer prompt.
 	Decision         ReflectionDecision // Decision is the round-level reflection outcome.
 	DecisionReason   string             // DecisionReason explains why the round decision was made.
+	// RawDecisionText mirrors ReflectionRoundDiagnostics.RawDecisionText.
+	// It is empty when no model decision occurred this round.
+	RawDecisionText string
+	// AutoRoutePath is the route auto-routing selected for THIS round.
+	// Captured per round so multi-round reflection runs do not lose
+	// earlier rounds' routing decisions to last-round-wins.
+	AutoRoutePath []string
 }
 
 // System is the top-level RAG pipeline and the front door of the SDK. It is
