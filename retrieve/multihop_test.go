@@ -2,6 +2,7 @@ package retrieve
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/costa92/llm-agent-rag/store"
@@ -9,11 +10,17 @@ import (
 
 type hopStubRetriever struct {
 	byQuery map[string][]store.Hit
+	mu      sync.Mutex
 	calls   []string
 }
 
 func (s *hopStubRetriever) Retrieve(_ context.Context, req Request) ([]store.Hit, Trace, error) {
+	// HybridRetriever now fans out its sub-retrievers concurrently — when
+	// the same stub instance is reused for multiple roles (Dense, Lexical,
+	// etc.), calls must be appended under a mutex.
+	s.mu.Lock()
 	s.calls = append(s.calls, req.Query)
+	s.mu.Unlock()
 	return s.byQuery[req.Query], Trace{OriginalQuery: req.Query}, nil
 }
 

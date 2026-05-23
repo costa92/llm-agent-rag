@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/costa92/llm-agent-rag/advanced"
 	"github.com/costa92/llm-agent-rag/embed"
@@ -981,32 +982,49 @@ type HybridRetriever struct {
 // Retrieve fuses the configured retrieval signals for req via reciprocal
 // rank fusion.
 func (r HybridRetriever) Retrieve(ctx context.Context, req Request) ([]store.Hit, Trace, error) {
-	denseHits, denseTrace, err := r.Dense.Retrieve(ctx, req)
-	if err != nil {
-		return nil, Trace{}, err
+	// Fan out Dense, Lexical, Structure, and Graph retrievers concurrently —
+	// wall-clock cost drops from sum-of-N to max-of-N. We preserve the
+	// original sequential error precedence (Dense > Lexical > Structure >
+	// Graph) by writing each goroutine's result into a fixed-index slot and
+	// scanning slots in order after wg.Wait(). Disabled retrievers leave
+	// their slot at the zero value, identical to the sequential path.
+	type slot struct {
+		hits  []store.Hit
+		trace Trace
+		err   error
 	}
-	lexHits, _, err := r.Lexical.Retrieve(ctx, req)
-	if err != nil {
-		return nil, Trace{}, err
-	}
+	var slots [4]slot
 
-	var structureHits []store.Hit
-	var structureTrace Trace
+	var wg sync.WaitGroup
+	run := func(idx int, fn func() ([]store.Hit, Trace, error)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h, t, e := fn()
+			slots[idx] = slot{hits: h, trace: t, err: e}
+		}()
+	}
+	run(0, func() ([]store.Hit, Trace, error) { return r.Dense.Retrieve(ctx, req) })
+	run(1, func() ([]store.Hit, Trace, error) { return r.Lexical.Retrieve(ctx, req) })
 	if req.EnableStructure && r.Structure != nil {
-		structureHits, structureTrace, err = r.Structure.Retrieve(ctx, req)
-		if err != nil {
-			return nil, Trace{}, err
-		}
+		run(2, func() ([]store.Hit, Trace, error) { return r.Structure.Retrieve(ctx, req) })
 	}
-
-	var graphHits []store.Hit
-	var graphTrace Trace
 	if req.EnableGraph && r.Graph != nil {
-		graphHits, graphTrace, err = r.Graph.Retrieve(ctx, req)
-		if err != nil {
-			return nil, Trace{}, err
+		run(3, func() ([]store.Hit, Trace, error) { return r.Graph.Retrieve(ctx, req) })
+	}
+	wg.Wait()
+
+	// Error precedence: pick the first non-nil error in the original
+	// sequential order (Dense > Lexical > Structure > Graph).
+	for i := 0; i < 4; i++ {
+		if slots[i].err != nil {
+			return nil, Trace{}, slots[i].err
 		}
 	}
+	denseHits, denseTrace := slots[0].hits, slots[0].trace
+	lexHits := slots[1].hits
+	structureHits, structureTrace := slots[2].hits, slots[2].trace
+	graphHits, graphTrace := slots[3].hits, slots[3].trace
 
 	fused := make(map[string]store.Hit, len(denseHits)+len(lexHits))
 	rrfScores := make(map[string]float64, len(denseHits)+len(lexHits)+len(structureHits))
