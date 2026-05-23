@@ -66,6 +66,66 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, rounds)
 			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, rounds)
 			round.answer = answer
+		case ReflectionModeModel, ReflectionModeHybrid:
+			query := question
+			var rounds []reflectionRound
+			for roundIndex := 1; roundIndex <= reflection.MaxRounds; roundIndex++ {
+				round, err = s.askRound(ctx, question, query, opts)
+				if err != nil {
+					return Answer{}, err
+				}
+				var decision reflectionDecisionResult
+				if reflection.Mode == ReflectionModeHybrid {
+					ruleDecision := decideRule(roundIndex, reflection, round)
+					if ruleDecision.decision == ReflectionDecisionStop {
+						ruleDecision.mode = ReflectionModeHybrid
+						decision = ruleDecision
+					} else {
+						decision, err = decideWithModel(ctx, s.model, question, reflection, round)
+						if err != nil {
+							return Answer{}, err
+						}
+						if roundIndex >= reflection.MaxRounds && decision.decision != ReflectionDecisionStop {
+							decision = reflectionDecisionResult{
+								decision:   ReflectionDecisionStop,
+								reason:     "max rounds reached",
+								stopReason: "max_rounds",
+								mode:       ReflectionModeHybrid,
+							}
+						}
+					}
+				} else {
+					decision, err = decideWithModel(ctx, s.model, question, reflection, round)
+					if err != nil {
+						return Answer{}, err
+					}
+					if roundIndex >= reflection.MaxRounds && decision.decision != ReflectionDecisionStop {
+						decision = reflectionDecisionResult{
+							decision:   ReflectionDecisionStop,
+							reason:     "max rounds reached",
+							stopReason: "max_rounds",
+							mode:       ReflectionModeModel,
+						}
+					}
+				}
+				rounds = append(rounds, buildReflectionRound(reflection.Mode, roundIndex, query, round, decision))
+				if decision.decision == ReflectionDecisionStop {
+					break
+				}
+				if decision.decision == ReflectionDecisionRewriteAndContinue && decision.nextQuery != "" {
+					query = decision.nextQuery
+					continue
+				}
+				query = question
+			}
+			answer := round.answer
+			metrics := aggregateReflectionMetrics(rounds)
+			metrics.Calls = answer.Diagnostics.Metrics.Calls
+			metrics.TotalDuration = answer.Diagnostics.Metrics.TotalDuration
+			answer.Diagnostics.Metrics = metrics
+			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, rounds)
+			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, rounds)
+			round.answer = answer
 		default:
 			round, err = s.askRound(ctx, question, question, opts)
 			if err != nil {

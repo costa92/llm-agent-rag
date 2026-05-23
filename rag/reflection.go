@@ -1,8 +1,12 @@
 package rag
 
 import (
+	"context"
+	"fmt"
+	"strings"
 	"time"
 
+	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/obs"
 	"github.com/costa92/llm-agent-rag/store"
 )
@@ -14,6 +18,7 @@ type reflectionDecisionResult struct {
 	reason     string
 	stopReason string
 	nextQuery  string
+	mode       ReflectionMode
 }
 
 type reflectionRound struct {
@@ -66,6 +71,7 @@ func decideRule(roundIndex int, opts ReflectionOptions, round askRoundResult) re
 			decision:   ReflectionDecisionStop,
 			reason:     "rule thresholds satisfied",
 			stopReason: "satisfied",
+			mode:       ReflectionModeRule,
 		}
 	}
 	if roundIndex >= opts.MaxRounds {
@@ -73,6 +79,7 @@ func decideRule(roundIndex int, opts ReflectionOptions, round askRoundResult) re
 			decision:   ReflectionDecisionStop,
 			reason:     "max rounds reached",
 			stopReason: "max_rounds",
+			mode:       ReflectionModeRule,
 		}
 	}
 	return reflectionDecisionResult{
@@ -80,26 +87,33 @@ func decideRule(roundIndex int, opts ReflectionOptions, round askRoundResult) re
 		reason:     "rule thresholds not satisfied",
 		stopReason: "continue",
 		nextQuery:  "",
+		mode:       ReflectionModeRule,
 	}
 }
 
 func buildReflectionRound(mode ReflectionMode, roundIndex int, inputQuery string, round askRoundResult, decision reflectionDecisionResult) reflectionRound {
+	decisionMode := mode
+	if decision.mode != "" {
+		decisionMode = decision.mode
+	}
 	diag := ReflectionRoundDiagnostics{
 		Round:            roundIndex,
 		InputQuery:       inputQuery,
 		EffectiveQuery:   round.effectiveQuery,
+		RewrittenQuery:   decision.nextQuery,
 		ReturnedChunkIDs: append([]string(nil), round.answer.Diagnostics.ReturnedChunkIDs...),
 		PromptChunkIDs:   append([]string(nil), round.answer.Diagnostics.PromptChunkIDs...),
 		UniqueDocCount:   round.uniqueDocCount,
 		TopScore:         round.topScore,
 		Decision:         decision.decision,
-		DecisionMode:     mode,
+		DecisionMode:     decisionMode,
 		DecisionReason:   decision.reason,
 	}
 	trace := ReflectionRoundTrace{
 		Round:            roundIndex,
 		InputQuery:       inputQuery,
 		EffectiveQuery:   round.effectiveQuery,
+		RewrittenQuery:   decision.nextQuery,
 		ReturnedChunkIDs: append([]string(nil), round.answer.Diagnostics.ReturnedChunkIDs...),
 		PromptChunkIDs:   append([]string(nil), round.answer.Diagnostics.PromptChunkIDs...),
 		Decision:         decision.decision,
@@ -123,11 +137,12 @@ func reflectionDiagnosticsFromRounds(mode ReflectionMode, rounds []reflectionRou
 	}
 	last := rounds[len(rounds)-1]
 	return ReflectionDiagnostics{
-		Mode:         mode,
-		Rounds:       len(rounds),
-		AdoptedRound: last.round.Round,
-		StopReason:   last.stopReason,
-		RoundDetails: details,
+		Mode:               mode,
+		Rounds:             len(rounds),
+		AdoptedRound:       last.round.Round,
+		StopReason:         last.stopReason,
+		DecisionModelCalls: countDecisionModelCalls(rounds),
+		RoundDetails:       details,
 	}
 }
 
@@ -212,4 +227,98 @@ func aggregateReflectionMetrics(rounds []reflectionRound) obs.Metrics {
 	}
 	aggregated.Tokens.Estimated = !allReported
 	return aggregated
+}
+
+func countDecisionModelCalls(rounds []reflectionRound) int {
+	count := 0
+	for _, round := range rounds {
+		if round.round.DecisionMode == ReflectionModeModel {
+			count++
+		}
+	}
+	return count
+}
+
+func decideWithModel(ctx context.Context, model generate.Model, originalQuestion string, opts ReflectionOptions, round askRoundResult) (reflectionDecisionResult, error) {
+	req := generate.Request{
+		SystemPrompt: "You decide whether a self-RAG system should stop, continue, or rewrite before continuing.",
+		Messages: []generate.Message{{
+			Role:    "user",
+			Content: reflectionDecisionPrompt(originalQuestion, opts, round),
+		}},
+	}
+	resp, err := model.Generate(ctx, req)
+	if err != nil {
+		return reflectionDecisionResult{}, err
+	}
+	decision, reason, rewrite := parseReflectionDecision(resp.Text)
+	if reason == "" {
+		reason = "model decision"
+	}
+	result := reflectionDecisionResult{
+		decision:  decision,
+		reason:    reason,
+		nextQuery: strings.TrimSpace(rewrite),
+		mode:      ReflectionModeModel,
+	}
+	switch decision {
+	case ReflectionDecisionStop:
+		result.stopReason = "model_stop"
+	case ReflectionDecisionContinue:
+		result.stopReason = "continue"
+	case ReflectionDecisionRewriteAndContinue:
+		result.stopReason = "continue"
+		if !opts.AllowRewrite || result.nextQuery == "" {
+			result.decision = ReflectionDecisionContinue
+			result.nextQuery = ""
+			result.reason = "model requested rewrite but rewrite is unavailable"
+		}
+	default:
+		result.decision = ReflectionDecisionStop
+		result.stopReason = "model_stop"
+	}
+	return result, nil
+}
+
+func reflectionDecisionPrompt(originalQuestion string, opts ReflectionOptions, round askRoundResult) string {
+	return fmt.Sprintf(
+		"Original question: %s\nCurrent answer: %s\nRetrieved hits: %d\nUnique docs: %d\nTop score: %.6f\nCitations: %d\nAllow rewrite: %t\n\nRespond with lines:\ndecision=<stop|continue|rewrite_and_continue>\nreason=<short reason>\nrewrite=<next query, only when rewriting>",
+		originalQuestion,
+		round.answer.Text,
+		len(round.answer.Hits),
+		round.uniqueDocCount,
+		round.topScore,
+		len(round.answer.Citations),
+		opts.AllowRewrite,
+	)
+}
+
+func parseReflectionDecision(text string) (ReflectionDecision, string, string) {
+	decision := ReflectionDecisionStop
+	var reason string
+	var rewrite string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.ToLower(strings.TrimSpace(key))
+		value = strings.TrimSpace(value)
+		switch key {
+		case "decision":
+			switch ReflectionDecision(value) {
+			case ReflectionDecisionStop, ReflectionDecisionContinue, ReflectionDecisionRewriteAndContinue:
+				decision = ReflectionDecision(value)
+			}
+		case "reason":
+			reason = value
+		case "rewrite":
+			rewrite = value
+		}
+	}
+	return decision, reason, rewrite
 }

@@ -2,12 +2,14 @@ package rag
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/ingest"
 	"github.com/costa92/llm-agent-rag/pack"
+	"github.com/costa92/llm-agent-rag/prompt"
 	"github.com/costa92/llm-agent-rag/retrieve"
 	"github.com/costa92/llm-agent-rag/store"
 )
@@ -32,6 +34,35 @@ func (m *scriptedUsageModel) Generate(_ context.Context, req generate.Request) (
 			resp.Text = req.Messages[0].Content
 		}
 		return resp, nil
+	}
+	return generate.Response{Text: req.Messages[0].Content}, nil
+}
+
+type promptRoutingTemplate struct{}
+
+func (promptRoutingTemplate) Render(_ context.Context, rc prompt.RenderContext) (generate.Request, error) {
+	ids := make([]string, 0, len(rc.Hits))
+	for _, hit := range rc.Hits {
+		ids = append(ids, hit.Chunk.ID)
+	}
+	return generate.Request{
+		Messages: []generate.Message{{
+			Role:    "user",
+			Content: fmt.Sprintf("QUESTION=%s\nHITS=%s", rc.Question, strings.Join(ids, ",")),
+		}},
+	}, nil
+}
+
+type scriptedReflectionModel struct {
+	responses []generate.Response
+	requests  []generate.Request
+}
+
+func (m *scriptedReflectionModel) Generate(_ context.Context, req generate.Request) (generate.Response, error) {
+	m.requests = append(m.requests, req)
+	idx := len(m.requests) - 1
+	if idx < len(m.responses) {
+		return m.responses[idx], nil
 	}
 	return generate.Response{Text: req.Messages[0].Content}, nil
 }
@@ -429,6 +460,160 @@ func TestAskRuleModeAggregatesMetricsAcrossRounds(t *testing.T) {
 	}
 	if ans.Text != "round 2" {
 		t.Fatalf("final adopted answer text = %q, want round 2 output", ans.Text)
+	}
+}
+
+func TestAskModelModeRewritesAndContinues(t *testing.T) {
+	model := &scriptedReflectionModel{
+		responses: []generate.Response{
+			{Text: "answer round 1"},
+			{Text: "decision=rewrite_and_continue\nreason=need better evidence\nrewrite=paris capital france"},
+			{Text: "answer round 2"},
+			{Text: "decision=stop\nreason=sufficient evidence"},
+		},
+	}
+	sys := New(Options{Model: model})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Berlin is in Germany."},
+		{ID: "doc2", Content: "Paris is the capital of France."},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	ans, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 1},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:         ReflectionModeModel,
+			MaxRounds:    2,
+			AllowRewrite: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if got := len(model.requests); got != 4 {
+		t.Fatalf("model call count = %d, want 4 (answer, reflect, answer, reflect)", got)
+	}
+	if ans.Diagnostics.Reflection.Mode != ReflectionModeModel {
+		t.Fatalf("Reflection.Mode = %q, want %q", ans.Diagnostics.Reflection.Mode, ReflectionModeModel)
+	}
+	if ans.Diagnostics.Reflection.Rounds != 2 {
+		t.Fatalf("Reflection.Rounds = %d, want 2", ans.Diagnostics.Reflection.Rounds)
+	}
+	if ans.Diagnostics.Reflection.AdoptedRound != 2 {
+		t.Fatalf("Reflection.AdoptedRound = %d, want 2", ans.Diagnostics.Reflection.AdoptedRound)
+	}
+	if ans.Diagnostics.Reflection.StopReason == "" {
+		t.Fatal("Reflection.StopReason empty, want model stop reason")
+	}
+	if ans.Diagnostics.Reflection.DecisionModelCalls != 2 {
+		t.Fatalf("Reflection.DecisionModelCalls = %d, want 2", ans.Diagnostics.Reflection.DecisionModelCalls)
+	}
+	if ans.Diagnostics.Reflection.RewriteModelCalls != 0 {
+		t.Fatalf("Reflection.RewriteModelCalls = %d, want 0 for single-call structured decision", ans.Diagnostics.Reflection.RewriteModelCalls)
+	}
+	if ans.Diagnostics.Reflection.RoundDetails[0].Decision != ReflectionDecisionRewriteAndContinue {
+		t.Fatalf(
+			"round 1 decision = %q, want %q",
+			ans.Diagnostics.Reflection.RoundDetails[0].Decision,
+			ReflectionDecisionRewriteAndContinue,
+		)
+	}
+	if ans.Diagnostics.Reflection.RoundDetails[0].DecisionMode != ReflectionModeModel {
+		t.Fatalf("round 1 decision mode = %q, want %q", ans.Diagnostics.Reflection.RoundDetails[0].DecisionMode, ReflectionModeModel)
+	}
+	if ans.Diagnostics.Reflection.RoundDetails[0].RewrittenQuery != "paris capital france" {
+		t.Fatalf(
+			"round 1 rewritten query = %q, want %q",
+			ans.Diagnostics.Reflection.RoundDetails[0].RewrittenQuery,
+			"paris capital france",
+		)
+	}
+	if ans.Trace.Reflection.Rounds[0].RewrittenQuery != "paris capital france" {
+		t.Fatalf(
+			"trace round 1 rewritten query = %q, want %q",
+			ans.Trace.Reflection.Rounds[0].RewrittenQuery,
+			"paris capital france",
+		)
+	}
+	if ans.Trace.Reflection.Rounds[1].InputQuery != "paris capital france" {
+		t.Fatalf(
+			"trace round 2 input query = %q, want rewritten query",
+			ans.Trace.Reflection.Rounds[1].InputQuery,
+		)
+	}
+	if ans.Trace.Question != "capital of france" {
+		t.Fatalf("Trace.Question = %q, want original question anchor", ans.Trace.Question)
+	}
+	if ans.Text != "answer round 2" {
+		t.Fatalf("final answer text = %q, want adopted round 2 text", ans.Text)
+	}
+	if len(ans.Hits) != 1 || ans.Hits[0].Chunk.ID != "doc2:0" {
+		t.Fatalf("final adopted hits = %+v, want rewritten round hit doc2:0", ans.Hits)
+	}
+	if len(ans.Citations) != 1 || ans.Citations[0].ChunkID != "doc2:0" {
+		t.Fatalf("final adopted citations = %+v, want doc2:0 only", ans.Citations)
+	}
+	if !strings.Contains(ans.Prompt.Messages[0].Content, "HITS=doc2:0") {
+		t.Fatalf("final adopted prompt = %q, want round 2 prompt", ans.Prompt.Messages[0].Content)
+	}
+}
+
+func TestAskHybridModeSkipsReflectionModelWhenRulesAlreadyPass(t *testing.T) {
+	model := &scriptedReflectionModel{
+		responses: []generate.Response{
+			{Text: "answer round 1"},
+		},
+	}
+	sys := New(Options{Model: model})
+	_, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Paris is the capital of France."},
+	}, ingest.ImportOptions{Namespace: "geo"})
+	if err != nil {
+		t.Fatalf("Import(): %v", err)
+	}
+
+	ans, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 1},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:             ReflectionModeHybrid,
+			MaxRounds:        2,
+			MinHits:          1,
+			MinScore:         0,
+			MinUniqueDocs:    1,
+			RequireCitations: true,
+			AllowRewrite:     true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask(): %v", err)
+	}
+	if got := len(model.requests); got != 1 {
+		t.Fatalf("model call count = %d, want 1 answer-only call when rules pass", got)
+	}
+	if ans.Diagnostics.Reflection.Mode != ReflectionModeHybrid {
+		t.Fatalf("Reflection.Mode = %q, want %q", ans.Diagnostics.Reflection.Mode, ReflectionModeHybrid)
+	}
+	if ans.Diagnostics.Reflection.Rounds != 1 {
+		t.Fatalf("Reflection.Rounds = %d, want 1", ans.Diagnostics.Reflection.Rounds)
+	}
+	if ans.Diagnostics.Reflection.DecisionModelCalls != 0 {
+		t.Fatalf("Reflection.DecisionModelCalls = %d, want 0 when hybrid short-circuits", ans.Diagnostics.Reflection.DecisionModelCalls)
+	}
+	if ans.Diagnostics.Reflection.RoundDetails[0].Decision != ReflectionDecisionStop {
+		t.Fatalf("round 1 decision = %q, want %q", ans.Diagnostics.Reflection.RoundDetails[0].Decision, ReflectionDecisionStop)
+	}
+	if ans.Diagnostics.Reflection.RoundDetails[0].DecisionMode != ReflectionModeHybrid {
+		t.Fatalf("round 1 decision mode = %q, want %q", ans.Diagnostics.Reflection.RoundDetails[0].DecisionMode, ReflectionModeHybrid)
+	}
+	if ans.Diagnostics.Reflection.RoundDetails[0].RewrittenQuery != "" {
+		t.Fatalf("round 1 rewritten query = %q, want empty", ans.Diagnostics.Reflection.RoundDetails[0].RewrittenQuery)
+	}
+	if ans.Text != "answer round 1" {
+		t.Fatalf("final answer text = %q, want first-round answer", ans.Text)
 	}
 }
 
