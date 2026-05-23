@@ -465,6 +465,7 @@ const ReflectionModeOff ReflectionMode = "off"
 const ReflectionModeRule ReflectionMode = "rule"
 const SelectionModeBestByScore
 const SelectionModeLastRound SelectionMode = iota
+func ExportGraderDataset(ans Answer) []GraderExample
 func New(opts Options) *System
 method (NoopGrader) ScoreRelevance(_ context.Context, _ string, _ store.Hit) (float64, string, error)
 method (NoopGrader) ScoreSupport(_ context.Context, _ string, _ store.Hit) (float64, string, error)
@@ -544,6 +545,16 @@ type GlobalOptions struct
 type Grader interface
 	method ScoreRelevance(ctx context.Context, query string, hit store.Hit) (score float64, reason string, err error)
 	method ScoreSupport(ctx context.Context, answer string, hit store.Hit) (score float64, reason string, err error)
+type GraderExample struct
+	field Adopted bool
+	field Answer string
+	field ChunkContent string
+	field ChunkID string
+	field Query string
+	field Reason string
+	field Relevance float64
+	field Round int
+	field Support float64
 type ImportTrace struct
 	field ChunkIDs []string
 	field Chunks int
