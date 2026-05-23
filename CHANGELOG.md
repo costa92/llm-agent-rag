@@ -6,6 +6,17 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [v1.0.4] - 2026-05-23
+
+### Changed
+
+- `HybridRetriever.Retrieve` now fans out Dense/Lexical/Structure/Graph
+  retrievers concurrently. Wall-clock latency for hybrid queries drops
+  from sum-of-4 to max-of-4 (typical 2-4× reduction). Behavior is
+  byte-identical: fusion (RRF) is deterministic-by-construction, and
+  the Dense > Lexical > Structure > Graph error precedence is preserved
+  by waiting for all goroutines and selecting by original order. (P1-15)
+
 ## [v1.0.3] - 2026-05-23
 
 Additive, no breaking changes — covered by the v1.x additive-only
