@@ -63,13 +63,14 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			metrics.Calls = answer.Diagnostics.Metrics.Calls
 			metrics.TotalDuration = answer.Diagnostics.Metrics.TotalDuration
 			answer.Diagnostics.Metrics = metrics
-			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, rounds)
+			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, rounds, 0)
 			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, rounds)
 			round.answer = answer
 		case ReflectionModeModel, ReflectionModeHybrid:
 			query := question
 			var rounds []reflectionRound
 			var previousRound *askRoundResult
+			decisionModelCalls := 0
 			for roundIndex := 1; roundIndex <= reflection.MaxRounds; roundIndex++ {
 				round, err = s.askRound(ctx, question, query, opts)
 				if err != nil {
@@ -85,8 +86,19 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 						unchangedDecision.mode = ReflectionModeHybrid
 						decision = unchangedDecision
 					} else {
+						decisionModelCalls++
 						decision, err = decideWithModel(ctx, s.model, question, reflection, round)
 						if err != nil {
+							if reflection.FailOpen {
+								decision = reflectionDecisionResult{
+									decision:   ReflectionDecisionStop,
+									reason:     "reflection decision failed; returning usable answer",
+									stopReason: "decision_error",
+									mode:       ReflectionModeHybrid,
+								}
+								rounds = append(rounds, buildReflectionRound(reflection.Mode, roundIndex, query, round, decision))
+								break
+							}
 							return Answer{}, err
 						}
 						outcome := orchestrateModelReflection(query, decision)
@@ -104,8 +116,19 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 					if unchangedDecision, stop := stopForUnchangedEvidence(round, previousRound); stop {
 						decision = unchangedDecision
 					} else {
+						decisionModelCalls++
 						decision, err = decideWithModel(ctx, s.model, question, reflection, round)
 						if err != nil {
+							if reflection.FailOpen {
+								decision = reflectionDecisionResult{
+									decision:   ReflectionDecisionStop,
+									reason:     "reflection decision failed; returning usable answer",
+									stopReason: "decision_error",
+									mode:       ReflectionModeModel,
+								}
+								rounds = append(rounds, buildReflectionRound(reflection.Mode, roundIndex, query, round, decision))
+								break
+							}
 							return Answer{}, err
 						}
 						outcome := orchestrateModelReflection(query, decision)
@@ -137,7 +160,12 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			metrics.Calls = answer.Diagnostics.Metrics.Calls
 			metrics.TotalDuration = answer.Diagnostics.Metrics.TotalDuration
 			answer.Diagnostics.Metrics = metrics
-			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, rounds)
+			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, rounds, decisionModelCalls)
+			if err != nil && reflection.FailOpen && len(rounds) > 0 {
+				answer.Diagnostics.Reflection.FailureFallback = true
+				answer.Diagnostics.Reflection.FailureReason = err.Error()
+				err = nil
+			}
 			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, rounds)
 			round.answer = answer
 		default:
@@ -151,7 +179,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 				stopReason: "mode_not_implemented",
 			})
 			answer := round.answer
-			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, []reflectionRound{singleRound})
+			answer.Diagnostics.Reflection = reflectionDiagnosticsFromRounds(reflection.Mode, []reflectionRound{singleRound}, 0)
 			answer.Trace.Reflection = reflectionTraceFromRounds(reflection.Mode, []reflectionRound{singleRound})
 			round.answer = answer
 		}

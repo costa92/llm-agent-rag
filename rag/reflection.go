@@ -132,7 +132,7 @@ func buildReflectionRound(mode ReflectionMode, roundIndex int, inputQuery string
 	}
 }
 
-func reflectionDiagnosticsFromRounds(mode ReflectionMode, rounds []reflectionRound) ReflectionDiagnostics {
+func reflectionDiagnosticsFromRounds(mode ReflectionMode, rounds []reflectionRound, decisionModelCalls int) ReflectionDiagnostics {
 	if len(rounds) == 0 {
 		return ReflectionDiagnostics{}
 	}
@@ -146,7 +146,7 @@ func reflectionDiagnosticsFromRounds(mode ReflectionMode, rounds []reflectionRou
 		Rounds:             len(rounds),
 		AdoptedRound:       last.round.Round,
 		StopReason:         last.stopReason,
-		DecisionModelCalls: countDecisionModelCalls(rounds),
+		DecisionModelCalls: decisionModelCalls,
 		RoundDetails:       details,
 	}
 }
@@ -234,16 +234,6 @@ func aggregateReflectionMetrics(rounds []reflectionRound) obs.Metrics {
 	return aggregated
 }
 
-func countDecisionModelCalls(rounds []reflectionRound) int {
-	count := 0
-	for _, round := range rounds {
-		if round.round.DecisionMode == ReflectionModeModel {
-			count++
-		}
-	}
-	return count
-}
-
 func decideWithModel(ctx context.Context, model generate.Model, originalQuestion string, opts ReflectionOptions, round askRoundResult) (reflectionDecisionResult, error) {
 	req := generate.Request{
 		SystemPrompt: "You decide whether a self-RAG system should stop, continue, or rewrite before continuing.",
@@ -256,7 +246,10 @@ func decideWithModel(ctx context.Context, model generate.Model, originalQuestion
 	if err != nil {
 		return reflectionDecisionResult{}, err
 	}
-	decision, reason, rewrite := parseReflectionDecision(resp.Text)
+	decision, reason, rewrite, err := parseReflectionDecision(resp.Text)
+	if err != nil {
+		return reflectionDecisionResult{}, err
+	}
 	if reason == "" {
 		reason = "model decision"
 	}
@@ -335,10 +328,13 @@ func reflectionDecisionPrompt(originalQuestion string, opts ReflectionOptions, r
 	)
 }
 
-func parseReflectionDecision(text string) (ReflectionDecision, string, string) {
-	decision := ReflectionDecisionStop
-	var reason string
-	var rewrite string
+func parseReflectionDecision(text string) (ReflectionDecision, string, string, error) {
+	var (
+		decision ReflectionDecision
+		reason   string
+		rewrite  string
+		found    bool
+	)
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -352,9 +348,12 @@ func parseReflectionDecision(text string) (ReflectionDecision, string, string) {
 		value = strings.TrimSpace(value)
 		switch key {
 		case "decision":
+			found = true
 			switch ReflectionDecision(value) {
 			case ReflectionDecisionStop, ReflectionDecisionContinue, ReflectionDecisionRewriteAndContinue:
 				decision = ReflectionDecision(value)
+			default:
+				return "", "", "", fmt.Errorf("invalid reflection decision %q", value)
 			}
 		case "reason":
 			reason = value
@@ -362,15 +361,26 @@ func parseReflectionDecision(text string) (ReflectionDecision, string, string) {
 			rewrite = value
 		}
 	}
-	return decision, reason, rewrite
+	if !found {
+		return "", "", "", fmt.Errorf("missing reflection decision")
+	}
+	return decision, reason, rewrite, nil
 }
 
 func evidenceSetsEqual(left, right []string) bool {
-	if len(left) != len(right) {
+	leftSet := make(map[string]struct{}, len(left))
+	for _, id := range left {
+		leftSet[id] = struct{}{}
+	}
+	rightSet := make(map[string]struct{}, len(right))
+	for _, id := range right {
+		rightSet[id] = struct{}{}
+	}
+	if len(leftSet) != len(rightSet) {
 		return false
 	}
-	for i := range left {
-		if left[i] != right[i] {
+	for id := range leftSet {
+		if _, ok := rightSet[id]; !ok {
 			return false
 		}
 	}
