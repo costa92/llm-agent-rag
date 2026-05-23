@@ -469,8 +469,10 @@ func ExportGraderDataset(ans Answer) []GraderExample
 func New(opts Options) *System
 method (NoopGrader) ScoreRelevance(_ context.Context, _ string, _ store.Hit) (float64, string, error)
 method (NoopGrader) ScoreSupport(_ context.Context, _ string, _ store.Hit) (float64, string, error)
+method (NoopQueryPlanner) PlanFollowups(_ context.Context, _ string, _ string, _ []ChunkScore) ([]string, error)
 method (PromptGrader) ScoreRelevance(ctx context.Context, query string, hit store.Hit) (float64, string, error)
 method (PromptGrader) ScoreSupport(ctx context.Context, answer string, hit store.Hit) (float64, string, error)
+method (PromptQueryPlanner) PlanFollowups(ctx context.Context, question string, prevAnswer string, scores []ChunkScore) ([]string, error)
 method (*System) Ask(ctx context.Context, question string, opts AskOptions) (Answer, error)
 method (*System) AskDrift(ctx context.Context, question string, opts DriftOptions) (Answer, error)
 method (*System) AskGlobal(ctx context.Context, question string, opts GlobalOptions) (Answer, error)
@@ -570,6 +572,7 @@ type InjectionFinding struct
 	field ChunkID string
 	field Patterns []string
 type NoopGrader struct
+type NoopQueryPlanner struct
 type Observer struct
 	field OnAsk func(ctx context.Context, trace Trace)
 	field OnImport func(ctx context.Context, trace ImportTrace)
@@ -587,6 +590,7 @@ type Options struct
 	field Observer Observer
 	field Packer pack.Packer
 	field Preprocessor retrieve.QueryPreprocessor
+	field QueryPlanner QueryPlanner
 	field Redactor guard.Redactor
 	field Reranker rerank.Reranker
 	field Retriever retrieve.Retriever
@@ -596,12 +600,18 @@ type Options struct
 	field Template prompt.Template
 type PromptGrader struct
 	field Model generate.Model
+type PromptQueryPlanner struct
+	field MaxQueries int
+	field Model generate.Model
+type QueryPlanner interface
+	method PlanFollowups(ctx context.Context, question string, prevAnswer string, scores []ChunkScore) ([]string, error)
 type ReflectionDecision string
 type ReflectionDiagnostics struct
 	field AdoptedRound int
 	field DecisionModelCalls int
 	field FailureFallback bool
 	field FailureReason string
+	field FollowupQueriesUsed int
 	field Mode ReflectionMode
 	field RewriteModelCalls int
 	field RoundDetails []ReflectionRoundDiagnostics
@@ -609,13 +619,17 @@ type ReflectionDiagnostics struct
 	field StopReason string
 type ReflectionMode string
 type ReflectionOptions struct
+	field ActiveRetrievalRelevanceFloor float64
 	field AdaptiveRetrieval bool
 	field AdaptiveRetrievalThreshold float64
 	field AllowRewrite bool
+	field EnableActiveRetrieval bool
 	field EnableChunkGrading bool
 	field FailOpen bool
 	field GraderRelevanceWeight float64
 	field GraderSupportWeight float64
+	field MaxFollowupQueries int
+	field MaxFollowupQueriesPerAsk int
 	field MaxRounds int
 	field MinHits int
 	field MinScore float64
@@ -632,6 +646,7 @@ type ReflectionRoundDiagnostics struct
 	field DecisionPrompt string
 	field DecisionReason string
 	field EffectiveQuery string
+	field FollowupQueries []string
 	field GraphTrace retrieve.GraphTrace
 	field InputQuery string
 	field PromptChunkIDs []string
@@ -649,6 +664,7 @@ type ReflectionRoundTrace struct
 	field Decision ReflectionDecision
 	field DecisionReason string
 	field EffectiveQuery string
+	field FollowupQueries []string
 	field InputQuery string
 	field PromptChunkIDs []string
 	field RawDecisionText string
