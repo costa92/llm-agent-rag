@@ -16,3 +16,27 @@ type Embedder interface {
 	// Dimension reports the fixed length of vectors this Embedder produces.
 	Dimension() int
 }
+
+// BatchEmbedder is an optional sibling capability for embedders that can
+// embed many texts in a single round-trip — useful for bulk-import
+// workflows where N sequential single-text Embed calls would be
+// wasteful. The returned slice has the same length as texts and matches
+// it positionally: out[i] is the embedding of texts[i].
+//
+// Added in v1.0.2 (P1-16). Plain Embedder callers see no behavior
+// change — the rag.Importer type-asserts to BatchEmbedder and falls
+// back to per-chunk Embed when the assertion fails, so v1 callers that
+// only implement Embedder continue to work unchanged.
+//
+// Callers can type-assert to gain the batch fast path:
+//
+//	if be, ok := e.(BatchEmbedder); ok {
+//	    vecs, err := be.EmbedBatch(ctx, texts)
+//	    // ...
+//	}
+type BatchEmbedder interface {
+	// EmbedBatch returns embeddings for texts in input order: out[i]
+	// is the embedding of texts[i]. Implementations must preserve
+	// context cancellation — returning ctx.Err() when ctx is done.
+	EmbedBatch(ctx context.Context, texts []string) ([]Vector, error)
+}

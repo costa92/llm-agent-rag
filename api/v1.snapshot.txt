@@ -39,6 +39,8 @@ func CosineSimilarity(a, b Vector) float64
 method (*HashEmbedder) Dimension() int
 method (*HashEmbedder) Embed(_ context.Context, text string) (Vector, error)
 func NewHashEmbedder(dim int) *HashEmbedder
+type BatchEmbedder interface
+	method EmbedBatch(ctx context.Context, texts []string) ([]Vector, error)
 type Embedder interface
 	method Dimension() int
 	method Embed(ctx context.Context, text string) (Vector, error)
