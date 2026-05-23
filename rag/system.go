@@ -303,6 +303,8 @@ type System struct {
 	communitySummarizer graph.CommunitySummarizer
 
 	grader Grader
+
+	queryPlanner QueryPlanner
 }
 
 // New constructs a System from opts, filling unset dependencies with the
@@ -400,6 +402,8 @@ func New(opts Options) *System {
 		communitySummarizer: opts.CommunitySummarizer,
 
 		grader: opts.Grader,
+
+		queryPlanner: opts.QueryPlanner,
 	}
 }
 
@@ -427,4 +431,17 @@ func (s *System) effectiveGrader() Grader {
 		return NoopGrader{}
 	}
 	return s.grader
+}
+
+// effectiveQueryPlanner returns the configured QueryPlanner, or a
+// NoopQueryPlanner when none was set. Callers can rely on the returned
+// value being non-nil so the EnableActiveRetrieval wiring always has a
+// planner to consult — even on misconfiguration, active retrieval then
+// degrades to a no-op rather than breaking the Ask call. Mirrors
+// effectiveGrader.
+func (s *System) effectiveQueryPlanner() QueryPlanner {
+	if s.queryPlanner == nil {
+		return NoopQueryPlanner{}
+	}
+	return s.queryPlanner
 }
