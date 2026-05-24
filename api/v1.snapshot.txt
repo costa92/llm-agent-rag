@@ -98,6 +98,8 @@ type BenchmarkMetrics struct
 	field F1Token float64
 	field FollowupQueriesUsedMean float64
 	field GraderAdoptionRate float64
+	field MeanAnswerRelevance float64
+	field MeanGroundedness float64
 	field ReflectionRoundsMean float64
 	field RequiredPhraseRecall float64
 type BenchmarkResult struct

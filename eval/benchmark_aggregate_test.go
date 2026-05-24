@@ -189,6 +189,93 @@ func TestBenchmarkMetricsActiveRetrievalFireRate(t *testing.T) {
 	}
 }
 
+// scriptedAggJudge returns a pre-scripted sequence of Judgements, one
+// per call, regardless of request content. Used to drive aggregation
+// tests where the runner must call Judge once per example.
+type scriptedAggJudge struct {
+	verdicts []eval.Judgement
+	calls    int
+}
+
+func (s *scriptedAggJudge) Judge(_ context.Context, _ eval.JudgeRequest) (eval.Judgement, error) {
+	v := s.verdicts[s.calls]
+	s.calls++
+	return v, nil
+}
+
+// TestBenchmarkMetricsJudgeMeansComputeOverDataset pins the new flat
+// MeanGroundedness / MeanAnswerRelevance fields. Three examples with
+// scripted verdicts {0.4,0.6}, {0.8,0.4}, {0.6,0.5} → means 0.6, 0.5.
+func TestBenchmarkMetricsJudgeMeansComputeOverDataset(t *testing.T) {
+	asker := &scriptedAsker{byQuery: map[string]rag.Answer{
+		"q1": {Text: "a"},
+		"q2": {Text: "b"},
+		"q3": {Text: "c"},
+	}}
+	judge := &scriptedAggJudge{verdicts: []eval.Judgement{
+		{Groundedness: 0.4, AnswerRelevance: 0.6},
+		{Groundedness: 0.8, AnswerRelevance: 0.4},
+		{Groundedness: 0.6, AnswerRelevance: 0.5},
+	}}
+	ds := eval.AnswerDataset{Name: "agg", TopK: 3, Examples: []eval.AnswerExample{
+		{Example: eval.Example{Query: "q1"}},
+		{Example: eval.Example{Query: "q2"}},
+		{Example: eval.Example{Query: "q3"}},
+	}}
+	res, err := (eval.AnswerBenchmark{Asker: asker, Judge: judge}).Run(context.Background(), ds)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if math.Abs(res.Metrics.MeanGroundedness-0.6) > 1e-9 {
+		t.Errorf("MeanGroundedness = %v, want 0.6", res.Metrics.MeanGroundedness)
+	}
+	if math.Abs(res.Metrics.MeanAnswerRelevance-0.5) > 1e-9 {
+		t.Errorf("MeanAnswerRelevance = %v, want 0.5", res.Metrics.MeanAnswerRelevance)
+	}
+}
+
+// TestBenchmarkMetricsJudgeMeansNaNWhenJudgeNil asserts both judge-side
+// flat means are math.NaN() when Judge is nil — they carry the
+// "no information" sentinel just like the reflection-feature metrics.
+func TestBenchmarkMetricsJudgeMeansNaNWhenJudgeNil(t *testing.T) {
+	asker := &scriptedAsker{byQuery: map[string]rag.Answer{
+		"q1": {Text: "a"},
+		"q2": {Text: "b"},
+	}}
+	ds := eval.AnswerDataset{Name: "no-judge", TopK: 3, Examples: []eval.AnswerExample{
+		{Example: eval.Example{Query: "q1"}},
+		{Example: eval.Example{Query: "q2"}},
+	}}
+	res, err := (eval.AnswerBenchmark{Asker: asker}).Run(context.Background(), ds)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !math.IsNaN(res.Metrics.MeanGroundedness) {
+		t.Errorf("MeanGroundedness = %v, want NaN (Judge nil)", res.Metrics.MeanGroundedness)
+	}
+	if !math.IsNaN(res.Metrics.MeanAnswerRelevance) {
+		t.Errorf("MeanAnswerRelevance = %v, want NaN (Judge nil)", res.Metrics.MeanAnswerRelevance)
+	}
+}
+
+// TestBenchmarkMetricsJudgeMeansEmptyDatasetNaN asserts both flat means
+// are NaN over the empty-dataset branch, even though a non-nil Judge is
+// configured.
+func TestBenchmarkMetricsJudgeMeansEmptyDatasetNaN(t *testing.T) {
+	asker := &scriptedAsker{}
+	ds := eval.AnswerDataset{Name: "empty", TopK: 3}
+	res, err := (eval.AnswerBenchmark{Asker: asker, Judge: wordOverlapJudge{}}).Run(context.Background(), ds)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !math.IsNaN(res.Metrics.MeanGroundedness) {
+		t.Errorf("MeanGroundedness = %v, want NaN (empty dataset)", res.Metrics.MeanGroundedness)
+	}
+	if !math.IsNaN(res.Metrics.MeanAnswerRelevance) {
+		t.Errorf("MeanAnswerRelevance = %v, want NaN (empty dataset)", res.Metrics.MeanAnswerRelevance)
+	}
+}
+
 // TestBenchmarkMetricsRequiredPhraseRecallMissingDenominator asserts the
 // micro-recall metric is NaN when no example labeled any required
 // phrase (zero denominator avoidance).

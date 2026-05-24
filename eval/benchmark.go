@@ -135,6 +135,9 @@ type BenchmarkMetrics struct {
 	GraderAdoptionRate      float64 // GraderAdoptionRate is the fraction of grading-enabled examples whose AdoptedRound != last round; NaN when grading was off everywhere.
 	FollowupQueriesUsedMean float64 // FollowupQueriesUsedMean is the mean FollowupQueriesUsed over active-retrieval-enabled examples; NaN when active retrieval was off everywhere.
 	ActiveRetrievalFireRate float64 // ActiveRetrievalFireRate is the fraction of active-retrieval-enabled examples that emitted at least one follow-up; NaN when active retrieval was off everywhere.
+
+	MeanGroundedness    float64 // MeanGroundedness is the mean Judgement.Groundedness over judge-applied examples; NaN when Judge=nil or dataset empty. v1.4.0.
+	MeanAnswerRelevance float64 // MeanAnswerRelevance is the mean Judgement.AnswerRelevance over judge-applied examples; NaN when Judge=nil or dataset empty. v1.4.0.
 }
 
 // AnswerExampleResult is the per-example trace behind a BenchmarkResult.
@@ -249,6 +252,8 @@ func aggregateBenchmarkMetrics(per []AnswerExampleResult) BenchmarkMetrics {
 		metrics.GraderAdoptionRate = math.NaN()
 		metrics.FollowupQueriesUsedMean = math.NaN()
 		metrics.ActiveRetrievalFireRate = math.NaN()
+		metrics.MeanGroundedness = math.NaN()
+		metrics.MeanAnswerRelevance = math.NaN()
 		return metrics
 	}
 
@@ -263,6 +268,8 @@ func aggregateBenchmarkMetrics(per []AnswerExampleResult) BenchmarkMetrics {
 		activeApplicable                    int
 		activeFollowupsSum                  int
 		activeFired                         int
+		judgeApplicable                     int
+		sumGroundedness, sumRelevance       float64
 	)
 
 	for _, r := range per {
@@ -293,6 +300,11 @@ func aggregateBenchmarkMetrics(per []AnswerExampleResult) BenchmarkMetrics {
 			if r.ActiveFired {
 				activeFired++
 			}
+		}
+		if r.JudgeApplied {
+			judgeApplicable++
+			sumGroundedness += r.Judgement.Groundedness
+			sumRelevance += r.Judgement.AnswerRelevance
 		}
 	}
 
@@ -331,6 +343,14 @@ func aggregateBenchmarkMetrics(per []AnswerExampleResult) BenchmarkMetrics {
 	} else {
 		metrics.FollowupQueriesUsedMean = math.NaN()
 		metrics.ActiveRetrievalFireRate = math.NaN()
+	}
+
+	if judgeApplicable > 0 {
+		metrics.MeanGroundedness = sumGroundedness / float64(judgeApplicable)
+		metrics.MeanAnswerRelevance = sumRelevance / float64(judgeApplicable)
+	} else {
+		metrics.MeanGroundedness = math.NaN()
+		metrics.MeanAnswerRelevance = math.NaN()
 	}
 
 	return metrics
