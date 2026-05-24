@@ -48,6 +48,8 @@ type HashEmbedder struct
 	field Dim int
 type Vector []float32
 package github.com/costa92/llm-agent-rag/eval
+const JitterEqual JitterMode = "equal"
+const JitterNone JitterMode = ""
 method (AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (BenchmarkResult, error)
 method (DriftEvalResult) Summary() string
 method (DriftEvaluator) Run(ctx context.Context, dataset Dataset) (DriftEvalResult, error)
@@ -56,6 +58,9 @@ method (GlobalEvaluator) Run(ctx context.Context, dataset Dataset) (GlobalEvalRe
 method (LLMJudge) Judge(ctx context.Context, req JudgeRequest) (Judgement, error)
 func LoadAnswerJSONL(path string) (AnswerDataset, error)
 func LoadJSONL(path string) (Dataset, error)
+func NewCostObservingJudge(inner LLMJudge, hook GenerateUsageHook) Judge
+func NewRetryAsker(inner Asker, policy RetryPolicy) Asker
+func NewRetryJudge(inner Judge, policy RetryPolicy) Judge
 method (RetrievalEvaluator) Run(ctx context.Context, dataset Dataset) (RetrievalResult, error)
 func RunGraphAB(ctx context.Context, retriever Retriever, base rag.SearchOptions, dataset Dataset) (GraphABResult, error)
 method (TriadEvaluator) Run(ctx context.Context, dataset Dataset) (TriadResult, error)
@@ -141,6 +146,7 @@ type ExampleResult struct
 	field RankOfFirstGoldDoc int
 	field RetrievedDocs []string
 	field RetrievedIDs []string
+type GenerateUsageHook func(ctx context.Context, stage string, usage obs.TokenUsage)
 type GenerationMetrics struct
 	field Examples int
 	field MeanAnswerRelevance float64
@@ -166,6 +172,7 @@ type GraphABResult struct
 	field GraphOn Metrics
 	field MRRDelta float64
 	field RecallDelta float64
+type JitterMode string
 type Judge interface
 	method Judge(ctx context.Context, req JudgeRequest) (Judgement, error)
 type JudgeRequest struct
@@ -194,6 +201,12 @@ type RetrievalResult struct
 	field PerExample []ExampleResult
 type Retriever interface
 	method Retrieve(ctx context.Context, query string, opts rag.SearchOptions) ([]store.Hit, error)
+type RetryPolicy struct
+	field BaseDelay time.Duration
+	field Classify func(error) bool
+	field Jitter JitterMode
+	field MaxAttempts int
+	field MaxDelay time.Duration
 type TriadEvaluator struct
 	field Asker Asker
 	field Judge Judge
@@ -415,19 +428,29 @@ method (*Counter) AddGenerate(n int)
 method (*Counter) Counts() CallCounts
 func CounterFrom(ctx context.Context) *Counter
 func NewCounter() *Counter
+func NewStageUsageAccumulator() *StageUsageAccumulator
+method (*StageUsageAccumulator) Append(stage string, usage TokenUsage)
+method (*StageUsageAccumulator) Snapshot() []StageTokenUsage
+func StageUsageFrom(ctx context.Context) *StageUsageAccumulator
 func WithCounter(ctx context.Context, c *Counter) context.Context
+func WithStageUsage(ctx context.Context, a *StageUsageAccumulator) context.Context
 type CallCounts struct
 	field Embed int
 	field Generate int
 type Counter struct
 type Metrics struct
 	field Calls CallCounts
+	field StageTokenUsage []StageTokenUsage
 	field Stages []StageTiming
 	field Tokens TokenUsage
 	field TotalDuration time.Duration
 type StageTiming struct
 	field Duration time.Duration
 	field Stage string
+type StageTokenUsage struct
+	field Stage string
+	field Usage TokenUsage
+type StageUsageAccumulator struct
 type TokenUsage struct
 	field CompletionTokens int
 	field Estimated bool
@@ -623,6 +646,7 @@ type NoopQueryPlanner struct
 type Observer struct
 	field OnAsk func(ctx context.Context, trace Trace)
 	field OnFollowupRetrieve func(ctx context.Context, query string, hits []store.Hit, err error)
+	field OnGenerateUsage func(ctx context.Context, stage string, usage obs.TokenUsage)
 	field OnImport func(ctx context.Context, trace ImportTrace)
 	field OnPlanFollowups func(ctx context.Context, question string, scores []ChunkScore, planned []string)
 	field OnRetrieve func(ctx context.Context, trace retrieve.Trace)

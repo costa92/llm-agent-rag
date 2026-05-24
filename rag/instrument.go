@@ -51,16 +51,51 @@ func (e countingBatchEmbedder) EmbedBatch(ctx context.Context, texts []string) (
 	return e.innerBatch.EmbedBatch(ctx, texts)
 }
 
-// countingModel wraps a generate.Model and increments the obs.Counter on
-// the call context once per Generate call. New wraps the system model in
-// this so generation calls nested inside the default preprocessor wiring
-// (LLMExpansionPreprocessor MQE/HyDE) are counted alongside the answer
-// generation in Ask.
+// countingModel wraps a generate.Model and instruments each Generate call
+// with three independent side-effects:
+//
+//  1. Increment the obs.Counter on the call context (legacy v1.0.0 path —
+//     CallCounts.Generate).
+//  2. Append a StageTokenUsage entry to the obs.StageUsageAccumulator on
+//     the call context, tagged with stage.
+//  3. Fire Observer.OnGenerateUsage(ctx, stage, usage) when the wrapped
+//     Observer pointer is non-nil and exposes a non-nil hook.
+//
+// New wraps the system model with four per-stage instances ("ask",
+// "reflection_decision", "grader", "planner") so generation calls nested
+// inside the default preprocessor wiring (LLMExpansionPreprocessor MQE/HyDE)
+// and the v1.5.0 CostObserver consumers can attribute spend.
+//
+// Side effects (2) and (3) fire ONLY on success (err == nil). Partial usage
+// from a failed Generate is unreliable, so this wrapper suppresses it.
 type countingModel struct {
-	inner generate.Model
+	inner    generate.Model
+	stage    string
+	observer *Observer
+}
+
+// wrapCounting returns a countingModel wrapping inner for the given stage,
+// pointing at obs (which may be nil — the hook then never fires). Stage is
+// a free-form string; the v1.5.0 standard values are "ask",
+// "reflection_decision", "grader", "planner", "judge_eval". A nil inner
+// returns nil so callers' nil-handling in rag.New continues to work.
+func wrapCounting(inner generate.Model, stage string, observer *Observer) generate.Model {
+	if inner == nil {
+		return nil
+	}
+	return countingModel{inner: inner, stage: stage, observer: observer}
 }
 
 func (m countingModel) Generate(ctx context.Context, req generate.Request) (generate.Response, error) {
 	obs.CounterFrom(ctx).AddGenerate(1)
-	return m.inner.Generate(ctx, req)
+	resp, err := m.inner.Generate(ctx, req)
+	if err != nil {
+		return resp, err
+	}
+	usage := deriveTokenUsage(req, resp)
+	obs.StageUsageFrom(ctx).Append(m.stage, usage)
+	if m.observer != nil && m.observer.OnGenerateUsage != nil {
+		m.observer.OnGenerateUsage(ctx, m.stage, usage)
+	}
+	return resp, nil
 }

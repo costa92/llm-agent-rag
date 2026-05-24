@@ -6,6 +6,7 @@ package obs
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -33,13 +34,28 @@ type TokenUsage struct {
 	Estimated        bool // Estimated is true when counts came from a token counter, not the model.
 }
 
+// StageTokenUsage is the token accounting for one named generation stage
+// (e.g. "ask", "reflection_decision", "grader", "planner") of a top-level
+// rag operation. It is the per-Generate audit counterpart of Metrics.Tokens
+// — Metrics.Tokens reports the answer-leg's deriveTokenUsage(req, resp);
+// StageTokenUsage records every Generate call the operation made.
+//
+// The sum across a Metrics.StageTokenUsage slice is NOT equal to
+// Metrics.Tokens — they aggregate different things (cross-stage audit vs.
+// answer-leg accounting). Both are reported independently and additively.
+type StageTokenUsage struct {
+	Stage string     // Stage is the named generation stage (e.g. "ask").
+	Usage TokenUsage // Usage is the token accounting for that Generate call.
+}
+
 // Metrics is the cost-and-latency record for one RAG operation. Stages are
 // in execution order; TotalDuration is the end-to-end wall clock.
 type Metrics struct {
-	TotalDuration time.Duration // TotalDuration is the end-to-end wall clock.
-	Stages        []StageTiming // Stages are the per-stage timings in execution order.
-	Calls         CallCounts    // Calls is the external model-call accounting.
-	Tokens        TokenUsage    // Tokens is the token accounting for the operation.
+	TotalDuration    time.Duration     // TotalDuration is the end-to-end wall clock.
+	Stages           []StageTiming     // Stages are the per-stage timings in execution order.
+	Calls            CallCounts        // Calls is the external model-call accounting.
+	Tokens           TokenUsage        // Tokens is the token accounting for the operation.
+	StageTokenUsage  []StageTokenUsage // StageTokenUsage is the per-Generate token audit, in call order.
 }
 
 // Counter accumulates model-call counts for one operation. It is safe for
@@ -79,7 +95,52 @@ func (c *Counter) Counts() CallCounts {
 	}
 }
 
+// StageUsageAccumulator accumulates per-Generate StageTokenUsage entries
+// for one top-level Ask/AskGlobal/AskDrift call. It is safe for concurrent
+// use — the v1.2.1 ParallelFollowups and v1.4.0 AnswerBenchmark.Parallelism
+// paths may fire Generate calls from multiple goroutines, and the
+// accumulator absorbs that fan-out under a sync.Mutex.
+//
+// Attach an accumulator to a context with WithStageUsage; instrumented
+// counting models append to whichever accumulator rides the call context.
+// A nil *StageUsageAccumulator is a no-op, so callers may pass the result
+// of StageUsageFrom straight through.
+type StageUsageAccumulator struct {
+	mu      sync.Mutex
+	entries []StageTokenUsage
+}
+
+// NewStageUsageAccumulator returns a zeroed StageUsageAccumulator.
+func NewStageUsageAccumulator() *StageUsageAccumulator { return &StageUsageAccumulator{} }
+
+// Append records one StageTokenUsage entry. A nil accumulator is a no-op.
+func (a *StageUsageAccumulator) Append(stage string, usage TokenUsage) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.entries = append(a.entries, StageTokenUsage{Stage: stage, Usage: usage})
+	a.mu.Unlock()
+}
+
+// Snapshot returns a defensive copy of the entries recorded so far, in the
+// order Append was called. A nil accumulator returns nil.
+func (a *StageUsageAccumulator) Snapshot() []StageTokenUsage {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.entries) == 0 {
+		return nil
+	}
+	out := make([]StageTokenUsage, len(a.entries))
+	copy(out, a.entries)
+	return out
+}
+
 type counterKey struct{}
+type stageUsageKey struct{}
 
 // WithCounter returns a context carrying c. Instrumented embedders and
 // models increment it on each call.
@@ -92,4 +153,18 @@ func WithCounter(ctx context.Context, c *Counter) context.Context {
 func CounterFrom(ctx context.Context) *Counter {
 	c, _ := ctx.Value(counterKey{}).(*Counter)
 	return c
+}
+
+// WithStageUsage returns a context carrying a. Instrumented counting
+// models append per-Generate StageTokenUsage entries to it.
+func WithStageUsage(ctx context.Context, a *StageUsageAccumulator) context.Context {
+	return context.WithValue(ctx, stageUsageKey{}, a)
+}
+
+// StageUsageFrom returns the StageUsageAccumulator on ctx, or nil if none
+// is attached. The result is safe to use directly — Append and Snapshot are
+// nil-safe.
+func StageUsageFrom(ctx context.Context) *StageUsageAccumulator {
+	a, _ := ctx.Value(stageUsageKey{}).(*StageUsageAccumulator)
+	return a
 }

@@ -65,8 +65,12 @@ func (s *System) AskGlobal(ctx context.Context, question string, opts GlobalOpti
 	}
 	// AskGlobal is top-level: install a fresh obs.Counter so the map and
 	// reduce generations — and any lazy summarization — are counted.
+	// Alongside, install a fresh StageUsageAccumulator (v1.5.0) for the
+	// per-Generate stage-token audit.
 	counter := obs.NewCounter()
 	ctx = obs.WithCounter(ctx, counter)
+	stageUsage := obs.NewStageUsageAccumulator()
+	ctx = obs.WithStageUsage(ctx, stageUsage)
 	metrics := obs.Metrics{}
 	start := time.Now()
 
@@ -75,6 +79,7 @@ func (s *System) AskGlobal(ctx context.Context, question string, opts GlobalOpti
 	if !ok {
 		metrics.Calls = counter.Counts()
 		metrics.TotalDuration = time.Since(start)
+		metrics.StageTokenUsage = stageUsage.Snapshot()
 		return Answer{Diagnostics: Diagnostics{Metrics: metrics}}, nil
 	}
 
@@ -85,6 +90,7 @@ func (s *System) AskGlobal(ctx context.Context, question string, opts GlobalOpti
 	if len(communities) == 0 {
 		metrics.Calls = counter.Counts()
 		metrics.TotalDuration = time.Since(start)
+		metrics.StageTokenUsage = stageUsage.Snapshot()
 		return Answer{Diagnostics: Diagnostics{Metrics: metrics}}, nil
 	}
 
@@ -158,6 +164,7 @@ func (s *System) AskGlobal(ctx context.Context, question string, opts GlobalOpti
 
 	metrics.Calls = counter.Counts()
 	metrics.TotalDuration = time.Since(start)
+	metrics.StageTokenUsage = stageUsage.Snapshot()
 
 	return Answer{
 		Text: finalText,
