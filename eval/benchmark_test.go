@@ -168,6 +168,36 @@ func TestAnswerBenchmarkAbortsOnAskError(t *testing.T) {
 	}
 }
 
+// TestAnswerExampleResultJudgementZeroValueWhenNoJudge asserts that when
+// AnswerBenchmark.Judge is nil, every per-example trace carries
+// JudgeApplied=false and a zero-value Judgement. This pins the
+// "no judge configured" sentinel introduced in v1.4.0.
+func TestAnswerExampleResultJudgementZeroValueWhenNoJudge(t *testing.T) {
+	asker := &scriptedAsker{byQuery: map[string]rag.Answer{
+		"q1": {Text: "a"},
+		"q2": {Text: "b"},
+	}}
+	ds := eval.AnswerDataset{Name: "no-judge", TopK: 3, Examples: []eval.AnswerExample{
+		{Example: eval.Example{Query: "q1"}, GoldAnswers: []string{"a"}},
+		{Example: eval.Example{Query: "q2"}, GoldAnswers: []string{"b"}},
+	}}
+	res, err := (eval.AnswerBenchmark{Asker: asker}).Run(context.Background(), ds)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.PerExample) != 2 {
+		t.Fatalf("PerExample len = %d, want 2", len(res.PerExample))
+	}
+	for i, r := range res.PerExample {
+		if r.JudgeApplied {
+			t.Errorf("PerExample[%d].JudgeApplied = true, want false (Judge nil)", i)
+		}
+		if r.Judgement != (eval.Judgement{}) {
+			t.Errorf("PerExample[%d].Judgement = %+v, want zero", i, r.Judgement)
+		}
+	}
+}
+
 // TestAnswerBenchmarkOverlaysNamespaceFromExample asserts the runner
 // applies the example's Namespace into the Ask opts, and that
 // dataset.TopK propagates to opts.Search.TopK.

@@ -82,6 +82,8 @@ type AnswerExampleResult struct
 	field F1Token float64
 	field FollowupsUsed int
 	field GraderEnabled bool
+	field JudgeApplied bool
+	field Judgement Judgement
 	field ReflectionRounds int
 	field RequiredPhraseHits int
 	field RequiredPhraseTotal int

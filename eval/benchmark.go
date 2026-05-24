@@ -157,6 +157,8 @@ type AnswerExampleResult struct {
 	ActiveFired         bool          // ActiveFired is true when any round had non-empty FollowupQueries.
 	GraderEnabled       bool          // GraderEnabled is true when any round had non-empty ChunkScores (grading actually ran).
 	ActiveEnabled       bool          // ActiveEnabled mirrors Options.Reflection.EnableActiveRetrieval at run time.
+	Judgement           Judgement     // Judgement is the LLM-as-judge verdict on this example; zero value when JudgeApplied=false. v1.4.0.
+	JudgeApplied        bool          // JudgeApplied is true when AnswerBenchmark.Judge was non-nil AND the judge call returned no error. v1.4.0.
 }
 
 // BenchmarkResult is the full output of an AnswerBenchmark run: the
