@@ -263,3 +263,112 @@ func strSliceEq(a, b []string) bool {
 	}
 	return true
 }
+
+// --- v1.7.0 C3 DriftReport.Markdown tests ---------------------------------
+
+// TestDriftReportMarkdown_TableHeaderAndOrder pins the pipe-table header
+// and the metric order (matches Deltas slice order).
+func TestDriftReportMarkdown_TableHeaderAndOrder(t *testing.T) {
+	prev := emptyMetrics()
+	prev.ExactMatch = 0.7
+	prev.F1Token = 0.5
+	curr := emptyMetrics()
+	curr.ExactMatch = 0.8
+	curr.F1Token = 0.6
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	md := r.Markdown()
+	// Header row + alignment row.
+	if !strings.Contains(md, "| Metric | Prev | Curr | Δ | Direction |") {
+		t.Fatalf("Markdown missing header row:\n%s", md)
+	}
+	if !strings.Contains(md, "| --- | --- | --- | --- | --- |") {
+		t.Fatalf("Markdown missing alignment row:\n%s", md)
+	}
+	// Order: same as Deltas (Examples comes first).
+	emIdx := strings.Index(md, "ExactMatch")
+	f1Idx := strings.Index(md, "F1Token")
+	if emIdx < 0 || f1Idx < 0 {
+		t.Fatalf("Markdown missing ExactMatch or F1Token line:\n%s", md)
+	}
+	if emIdx >= f1Idx {
+		t.Fatalf("Markdown ExactMatch (%d) should appear before F1Token (%d):\n%s", emIdx, f1Idx, md)
+	}
+}
+
+// TestDriftReportMarkdown_NaNRendersNa asserts NaN scalars render as "n/a".
+func TestDriftReportMarkdown_NaNRendersNa(t *testing.T) {
+	prev := emptyMetrics() // ExactMatch already NaN
+	curr := emptyMetrics() // ExactMatch already NaN
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	md := r.Markdown()
+	if !strings.Contains(md, "n/a") {
+		t.Fatalf("Markdown should render NaN as n/a, got:\n%s", md)
+	}
+}
+
+// TestDriftReportMarkdown_DirectionLabels asserts all four direction
+// labels appear when the dataset surfaces each one.
+func TestDriftReportMarkdown_DirectionLabels(t *testing.T) {
+	prev := emptyMetrics()
+	prev.ExactMatch = 0.5
+	prev.F1Token = 0.8
+	prev.FollowupQueriesUsedMean = 2.0
+	prev.ReflectionRoundsMean = 1.0
+	curr := emptyMetrics()
+	curr.ExactMatch = 0.7              // improved
+	curr.F1Token = 0.6                 // regressed
+	curr.FollowupQueriesUsedMean = 2.0 // unchanged
+	curr.ReflectionRoundsMean = 5.0    // undefined (polarity undefined)
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	md := r.Markdown()
+	wantLabels := []string{"improved", "regressed", "unchanged", "undefined"}
+	for _, want := range wantLabels {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown missing direction label %q:\n%s", want, md)
+		}
+	}
+}
+
+// TestDriftReportMarkdown_FooterListsNewAndDropped asserts the New /
+// Dropped examples footer renders as bullets when populated.
+func TestDriftReportMarkdown_FooterListsNewAndDropped(t *testing.T) {
+	prev := benchmarkOf("d", emptyMetrics())
+	prev.Dataset.Examples = []eval.AnswerExample{
+		{Example: eval.Example{Query: "alpha"}},
+		{Example: eval.Example{Query: "beta"}},
+	}
+	curr := benchmarkOf("d", emptyMetrics())
+	curr.Dataset.Examples = []eval.AnswerExample{
+		{Example: eval.Example{Query: "beta"}},
+		{Example: eval.Example{Query: "gamma"}},
+	}
+	r := eval.CompareBenchmarks(prev, curr)
+	md := r.Markdown()
+	if !strings.Contains(md, "**New examples:**") {
+		t.Errorf("Markdown missing **New examples:** header:\n%s", md)
+	}
+	if !strings.Contains(md, "* gamma") {
+		t.Errorf("Markdown missing bullet for new example 'gamma':\n%s", md)
+	}
+	if !strings.Contains(md, "**Dropped examples:**") {
+		t.Errorf("Markdown missing **Dropped examples:** header:\n%s", md)
+	}
+	if !strings.Contains(md, "* alpha") {
+		t.Errorf("Markdown missing bullet for dropped example 'alpha':\n%s", md)
+	}
+}
+
+// TestDriftReportMarkdown_EmptyExamplesNoFooter asserts the footer
+// sections are omitted entirely when New/Dropped are empty.
+func TestDriftReportMarkdown_EmptyExamplesNoFooter(t *testing.T) {
+	prev := emptyMetrics()
+	curr := emptyMetrics()
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	md := r.Markdown()
+	if strings.Contains(md, "New examples") {
+		t.Errorf("Markdown should omit New examples section when empty:\n%s", md)
+	}
+	if strings.Contains(md, "Dropped examples") {
+		t.Errorf("Markdown should omit Dropped examples section when empty:\n%s", md)
+	}
+}

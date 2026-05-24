@@ -263,3 +263,63 @@ func formatDelta(f float64) string {
 	}
 	return fmt.Sprintf("%+.3f", f)
 }
+
+// Markdown renders the DriftReport as a Markdown scoreboard. The output
+// is composed of three sections (each omitted when empty):
+//
+//  1. A pipe-table per-metric scoreboard with columns
+//     | Metric | Prev | Curr | Δ | Direction |
+//     in Deltas-slice order. NaN scalars render as "n/a".
+//  2. Optional **New examples:** and **Dropped examples:** bullet lists
+//     when NewExamples / DroppedExamples are non-empty.
+//  3. Optional ### Histograms section (v1.7.0 C4) per non-empty
+//     Histograms entry — one pipe-table plus an "L1=<value>" line.
+//
+// Format structure (columns, metric order, direction labels, section
+// ordering) is a stable contract. Whitespace, decimal precision, and
+// bullet-list formatting may evolve in minor releases. v1.7.0.
+func (r DriftReport) Markdown() string {
+	var b strings.Builder
+	b.WriteString("| Metric | Prev | Curr | Δ | Direction |\n")
+	b.WriteString("| --- | --- | --- | --- | --- |\n")
+	for _, d := range r.Deltas {
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n",
+			d.Name,
+			formatMarkdownScalar(d.Prev),
+			formatMarkdownScalar(d.Curr),
+			formatMarkdownDelta(d.Delta),
+			string(d.Direction),
+		)
+	}
+	if len(r.NewExamples) > 0 {
+		b.WriteString("\n**New examples:**\n")
+		for _, q := range r.NewExamples {
+			fmt.Fprintf(&b, "* %s\n", q)
+		}
+	}
+	if len(r.DroppedExamples) > 0 {
+		b.WriteString("\n**Dropped examples:**\n")
+		for _, q := range r.DroppedExamples {
+			fmt.Fprintf(&b, "* %s\n", q)
+		}
+	}
+	return b.String()
+}
+
+// formatMarkdownScalar renders a float scalar for the Markdown table.
+// NaN renders as "n/a"; finite values use three decimal places.
+func formatMarkdownScalar(f float64) string {
+	if math.IsNaN(f) {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.3f", f)
+}
+
+// formatMarkdownDelta renders a delta for the Markdown table. NaN
+// renders as "n/a"; finite values use three decimals with a sign.
+func formatMarkdownDelta(f float64) string {
+	if math.IsNaN(f) {
+		return "n/a"
+	}
+	return fmt.Sprintf("%+.3f", f)
+}

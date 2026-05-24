@@ -60,6 +60,7 @@ func ClassifyTransientHTTP(err error) bool
 func CompareBenchmarks(prev, curr BenchmarkResult) DriftReport
 method (DriftEvalResult) Summary() string
 method (DriftEvaluator) Run(ctx context.Context, dataset Dataset) (DriftEvalResult, error)
+method (DriftReport) Markdown() string
 method (DriftReport) Summary() string
 method (GlobalEvalResult) Summary() string
 method (GlobalEvaluator) Run(ctx context.Context, dataset Dataset) (GlobalEvalResult, error)
