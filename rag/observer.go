@@ -62,4 +62,25 @@ type Observer struct {
 	// implementations must be thread-safe (e.g., guard shared state
 	// with a sync.Mutex or use sync/atomic).
 	OnFollowupRetrieve func(ctx context.Context, query string, hits []store.Hit, err error)
+	// OnGenerateUsage fires once per successful generate.Model.Generate
+	// call made inside a top-level Ask/AskGlobal/AskDrift. The stage
+	// argument identifies which leg of the pipeline issued the call.
+	// Standard stages: "ask" (answer leg, including the LLMExpansion
+	// query preprocessor), "reflection_decision" (the reflection-mode
+	// decision call), "grader" (PromptGrader chunk scoring),
+	// "planner" (PromptQueryPlanner active-retrieval follow-ups).
+	//
+	// Hook fires ONLY on success — partial usage on error is unreliable
+	// and is suppressed. Custom user-supplied Grader / QueryPlanner
+	// implementations are NOT auto-wrapped; only the shipped
+	// PromptGrader / PromptQueryPlanner have their Model rebuilt during
+	// New(opts). Custom implementations must wrap their own model to
+	// fire this hook.
+	//
+	// Nil-safe: an unset callback skips the dispatch without allocation.
+	// Thread safety: under v1.2.1 ParallelFollowups and v1.4.0
+	// AnswerBenchmark.Parallelism, the hook MAY fire concurrently from
+	// multiple goroutines. Caller implementations must be thread-safe
+	// (e.g., guard shared state with a sync.Mutex).
+	OnGenerateUsage func(ctx context.Context, stage string, usage obs.TokenUsage)
 }

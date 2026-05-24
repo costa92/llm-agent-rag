@@ -633,6 +633,7 @@ type NoopQueryPlanner struct
 type Observer struct
 	field OnAsk func(ctx context.Context, trace Trace)
 	field OnFollowupRetrieve func(ctx context.Context, query string, hits []store.Hit, err error)
+	field OnGenerateUsage func(ctx context.Context, stage string, usage obs.TokenUsage)
 	field OnImport func(ctx context.Context, trace ImportTrace)
 	field OnPlanFollowups func(ctx context.Context, question string, scores []ChunkScore, planned []string)
 	field OnRetrieve func(ctx context.Context, trace retrieve.Trace)

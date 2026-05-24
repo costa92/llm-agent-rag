@@ -301,14 +301,19 @@ type System struct {
 	embedder embed.Embedder
 	store    store.Store
 	model    generate.Model
-	template prompt.Template
-	pre      retrieve.QueryPreprocessor
-	ret      retrieve.Retriever
-	reranker rerank.Reranker
-	packer   pack.Packer
-	maxChars int
-	observer Observer
-	redactor guard.Redactor
+	// reflectionModel is the per-stage counting wrapper used by the
+	// reflection-decision leg (v1.5.0 CostObserver). It is built by New
+	// alongside model so each leg attributes its Generate calls to a
+	// distinct stage tag.
+	reflectionModel generate.Model
+	template        prompt.Template
+	pre             retrieve.QueryPreprocessor
+	ret             retrieve.Retriever
+	reranker        rerank.Reranker
+	packer          pack.Packer
+	maxChars        int
+	observer        Observer
+	redactor        guard.Redactor
 
 	injectionScanner guard.InjectionScanner
 	sanitizeMode     guard.SanitizeMode
@@ -353,10 +358,6 @@ func New(opts Options) *System {
 	} else {
 		emb = countingEmbedder{inner: emb}
 	}
-	var model generate.Model
-	if opts.Model != nil {
-		model = countingModel{inner: opts.Model}
-	}
 	splitter := opts.Splitter
 	if splitter == nil {
 		splitter = ingest.CharSplitter{Overlap: 50}
@@ -364,20 +365,6 @@ func New(opts Options) *System {
 	tpl := opts.Template
 	if tpl == nil {
 		tpl = prompt.DefaultQATemplate{}
-	}
-	pre := opts.Preprocessor
-	if pre == nil {
-		pre = retrieve.LLMExpansionPreprocessor{Model: model}
-	}
-	ret := opts.Retriever
-	if ret == nil {
-		ret = retrieve.VariantRetriever{
-			Base: retrieve.HybridRetriever{
-				Dense:     retrieve.DenseRetriever{Embedder: emb, Store: st},
-				Lexical:   retrieve.LexicalRetriever{Store: st},
-				Structure: retrieve.StructureRetriever{Store: st},
-			},
-		}
 	}
 	rr := opts.Reranker
 	if rr == nil {
@@ -395,14 +382,15 @@ func New(opts Options) *System {
 	if entityResolver == nil {
 		entityResolver = graph.NoopEntityResolver{}
 	}
-	return &System{
+	// Allocate the System first so the per-stage counting models can carry
+	// a stable pointer into s.observer. This way a single
+	// Observer.OnGenerateUsage hook value reaches every stage even though
+	// Observer is value-copied into the System struct.
+	s := &System{
 		splitter: splitter,
 		embedder: emb,
 		store:    st,
-		model:    model,
 		template: tpl,
-		pre:      pre,
-		ret:      ret,
 		reranker: rr,
 		packer:   pk,
 		maxChars: maxChars,
@@ -421,6 +409,48 @@ func New(opts Options) *System {
 
 		queryPlanner: opts.QueryPlanner,
 	}
+	// Build the per-stage counting models. A nil opts.Model stays nil so
+	// Ask still returns ErrModelRequired; both s.model and s.reflectionModel
+	// remain nil in that case.
+	if opts.Model != nil {
+		s.model = wrapCounting(opts.Model, "ask", &s.observer)
+		s.reflectionModel = wrapCounting(opts.Model, "reflection_decision", &s.observer)
+	}
+	// Type-assert the shipped PromptGrader / PromptQueryPlanner and rebuild
+	// them with stage-tagged counting models. Custom user-supplied
+	// implementations are intentionally NOT auto-wrapped — they would
+	// need their own seam to know which model to substitute. Documented
+	// on Observer.OnGenerateUsage and in CHANGELOG v1.5.0 compat.
+	if opts.Model != nil {
+		if pg, ok := s.grader.(PromptGrader); ok {
+			s.grader = PromptGrader{Model: wrapCounting(pg.Model, "grader", &s.observer)}
+		}
+		if pp, ok := s.queryPlanner.(PromptQueryPlanner); ok {
+			s.queryPlanner = PromptQueryPlanner{
+				Model:      wrapCounting(pp.Model, "planner", &s.observer),
+				MaxQueries: pp.MaxQueries,
+			}
+		}
+	}
+	pre := opts.Preprocessor
+	if pre == nil {
+		// LLMExpansionPreprocessor keeps the "ask"-tagged model — sub-stage
+		// distinction (e.g. "ask_mqe", "ask_hyde") is future-additive.
+		pre = retrieve.LLMExpansionPreprocessor{Model: s.model}
+	}
+	s.pre = pre
+	ret := opts.Retriever
+	if ret == nil {
+		ret = retrieve.VariantRetriever{
+			Base: retrieve.HybridRetriever{
+				Dense:     retrieve.DenseRetriever{Embedder: emb, Store: st},
+				Lexical:   retrieve.LexicalRetriever{Store: st},
+				Structure: retrieve.StructureRetriever{Store: st},
+			},
+		}
+	}
+	s.ret = ret
+	return s
 }
 
 // Remove deletes the chunk with the given ID from the store.
