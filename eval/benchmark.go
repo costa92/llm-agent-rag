@@ -23,6 +23,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/costa92/llm-agent-rag/rag"
 )
@@ -199,10 +200,18 @@ func normalizeParallelism(p int) int {
 	return p
 }
 
-// Run executes the benchmark sequentially. The base Options is copied
-// per example; Search.TopK is set from dataset.TopK and Search.Namespace
-// is overlaid from the example's Namespace when non-empty. The runner
-// aborts on the first Ask error, wrapping it with the offending query.
+// Run executes the benchmark. The base Options is copied per example;
+// Search.TopK is set from dataset.TopK and Search.Namespace is overlaid
+// from the example's Namespace when non-empty. The runner aborts on the
+// first Ask or Judge error, wrapping it with the offending query.
+//
+// Dispatch is sequential when normalizeParallelism(b.Parallelism) == 1
+// (the v1.3.0 behavior — preserved byte-for-byte). When Parallelism>=2,
+// examples are fanned out via a buffered-channel semaphore + WaitGroup
+// worker pool that mirrors rag.System.runFollowupsParallel
+// (rag/active_retrieval.go:278-313). PerExample order matches
+// dataset.Examples order under both modes (index-keyed write into a
+// pre-allocated slice).
 func (b AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (BenchmarkResult, error) {
 	if b.Asker == nil {
 		return BenchmarkResult{}, errors.New("eval: Asker is required")
@@ -210,29 +219,23 @@ func (b AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (Benchm
 	if dataset.TopK <= 0 {
 		return BenchmarkResult{}, fmt.Errorf("eval: dataset %q has TopK <= 0", dataset.Name)
 	}
+
+	workers := normalizeParallelism(b.Parallelism)
+	if workers == 1 {
+		return b.runSequential(ctx, dataset)
+	}
+	return b.runParallel(ctx, dataset, workers)
+}
+
+// runSequential is the v1.3.0 sequential dispatch path, unchanged in
+// shape: a single goroutine walks the dataset in order and aborts on
+// the first Ask or Judge error.
+func (b AnswerBenchmark) runSequential(ctx context.Context, dataset AnswerDataset) (BenchmarkResult, error) {
 	per := make([]AnswerExampleResult, 0, len(dataset.Examples))
 	for _, ex := range dataset.Examples {
-		opts := b.Options
-		opts.Search.TopK = dataset.TopK
-		if ex.Namespace != "" {
-			opts.Search.Namespace = ex.Namespace
-		}
-		ans, err := b.Asker.Ask(ctx, ex.Query, opts)
+		r, err := b.runOne(ctx, dataset, ex)
 		if err != nil {
-			return BenchmarkResult{}, fmt.Errorf("eval: ask %q: %w", ex.Query, err)
-		}
-		r := scoreAnswerExample(ex, ans, opts)
-		if b.Judge != nil {
-			j, jerr := b.Judge.Judge(ctx, JudgeRequest{
-				Query:   ex.Query,
-				Answer:  ans.Text,
-				Context: contextPassages(ans),
-			})
-			if jerr != nil {
-				return BenchmarkResult{}, fmt.Errorf("eval: judge %q: %w", ex.Query, jerr)
-			}
-			r.Judgement = j
-			r.JudgeApplied = true
+			return BenchmarkResult{}, err
 		}
 		per = append(per, r)
 	}
@@ -241,6 +244,95 @@ func (b AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (Benchm
 		Metrics:    aggregateBenchmarkMetrics(per),
 		PerExample: per,
 	}, nil
+}
+
+// runParallel dispatches examples over a bounded worker pool. The
+// semaphore is a buffered chan with capacity `workers`. Results are
+// written by index into a pre-allocated slice so the per-example order
+// matches dataset.Examples regardless of completion order. Errors are
+// sticky: the first Ask or Judge error wins via errMu/firstErr; siblings
+// finish naturally (no context cancellation of siblings — see v1.4.0
+// design Q-G).
+func (b AnswerBenchmark) runParallel(ctx context.Context, dataset AnswerDataset, workers int) (BenchmarkResult, error) {
+	results := make([]AnswerExampleResult, len(dataset.Examples))
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+
+	for i, ex := range dataset.Examples {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i int, ex AnswerExample) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			// Sticky-error gate: if a sibling already failed, skip
+			// further work. In-flight workers still finish naturally.
+			errMu.Lock()
+			already := firstErr != nil
+			errMu.Unlock()
+			if already {
+				return
+			}
+
+			r, err := b.runOne(ctx, dataset, ex)
+			if err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+				return
+			}
+			results[i] = r
+		}(i, ex)
+	}
+	wg.Wait()
+
+	if firstErr != nil {
+		return BenchmarkResult{}, firstErr
+	}
+	return BenchmarkResult{
+		Dataset:    dataset,
+		Metrics:    aggregateBenchmarkMetrics(results),
+		PerExample: results,
+	}, nil
+}
+
+// runOne executes the Ask + (optional) Judge step for a single example,
+// returning the scored AnswerExampleResult or an error wrapped with the
+// offending query. It is the unit of work shared by the sequential and
+// parallel dispatch paths.
+//
+// Concurrency: when called from runParallel, multiple goroutines may
+// execute runOne in parallel; the Asker and Judge implementations MUST
+// be safe for concurrent use under that mode. The local rag.AskOptions
+// is a fresh copy of b.Options per call, so no Options mutation races.
+func (b AnswerBenchmark) runOne(ctx context.Context, dataset AnswerDataset, ex AnswerExample) (AnswerExampleResult, error) {
+	opts := b.Options
+	opts.Search.TopK = dataset.TopK
+	if ex.Namespace != "" {
+		opts.Search.Namespace = ex.Namespace
+	}
+	ans, err := b.Asker.Ask(ctx, ex.Query, opts)
+	if err != nil {
+		return AnswerExampleResult{}, fmt.Errorf("eval: ask %q: %w", ex.Query, err)
+	}
+	r := scoreAnswerExample(ex, ans, opts)
+	if b.Judge != nil {
+		j, jerr := b.Judge.Judge(ctx, JudgeRequest{
+			Query:   ex.Query,
+			Answer:  ans.Text,
+			Context: contextPassages(ans),
+		})
+		if jerr != nil {
+			return AnswerExampleResult{}, fmt.Errorf("eval: judge %q: %w", ex.Query, jerr)
+		}
+		r.Judgement = j
+		r.JudgeApplied = true
+	}
+	return r, nil
 }
 
 // aggregateBenchmarkMetrics reduces the per-example trace into the

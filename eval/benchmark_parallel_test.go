@@ -185,6 +185,77 @@ func TestAnswerBenchmarkParallelismNegativeCoercesToSequential(t *testing.T) {
 	}
 }
 
+// TestAnswerBenchmarkParallelismActuallyOverlaps asserts that under
+// Parallelism=3 with three sleeping examples, at least two Ask calls
+// run concurrently — i.e. the worker pool actually fans out.
+func TestAnswerBenchmarkParallelismActuallyOverlaps(t *testing.T) {
+	asker := newSleepingAsker(3, 50*time.Millisecond)
+	ds := sleepingDataset(3, 50*time.Millisecond)
+	bench := eval.AnswerBenchmark{Asker: asker, Parallelism: 3}
+	if _, err := bench.Run(context.Background(), ds); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := asker.peakActive(); got < 2 {
+		t.Fatalf("peakActive = %d, want >= 2 (Parallelism=3 should overlap)", got)
+	}
+}
+
+// TestAnswerBenchmarkParallelismCapsAtConfiguredValue asserts the
+// semaphore caps in-flight work at Parallelism, even when the dataset
+// is larger.
+func TestAnswerBenchmarkParallelismCapsAtConfiguredValue(t *testing.T) {
+	asker := newSleepingAsker(4, 40*time.Millisecond)
+	ds := sleepingDataset(4, 40*time.Millisecond)
+	bench := eval.AnswerBenchmark{Asker: asker, Parallelism: 2}
+	if _, err := bench.Run(context.Background(), ds); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := asker.peakActive(); got > 2 {
+		t.Fatalf("peakActive = %d, want <= 2 (Parallelism=2 cap)", got)
+	}
+	if got := asker.peakActive(); got < 2 {
+		t.Fatalf("peakActive = %d, want >= 2 (some overlap expected)", got)
+	}
+}
+
+// TestAnswerBenchmarkParallelPerExampleOrderMatchesDataset asserts that
+// PerExample[i] corresponds to dataset.Examples[i] regardless of the
+// completion order under parallel dispatch — exercise with sleeps that
+// make completion order != dispatch order.
+func TestAnswerBenchmarkParallelPerExampleOrderMatchesDataset(t *testing.T) {
+	asker := &sleepInjectingAsker{
+		sleepFor: map[string]time.Duration{
+			"q1": 80 * time.Millisecond, // finishes last
+			"q2": 20 * time.Millisecond,
+			"q3": 50 * time.Millisecond,
+			"q4": 10 * time.Millisecond, // finishes first
+		},
+		byQuery: map[string]rag.Answer{
+			"q1": {Text: "ans1"},
+			"q2": {Text: "ans2"},
+			"q3": {Text: "ans3"},
+			"q4": {Text: "ans4"},
+		},
+	}
+	ds := sleepingDataset(4, 0)
+	bench := eval.AnswerBenchmark{Asker: asker, Parallelism: 4}
+	res, err := bench.Run(context.Background(), ds)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.PerExample) != 4 {
+		t.Fatalf("PerExample len = %d, want 4", len(res.PerExample))
+	}
+	for i, want := range []string{"q1", "q2", "q3", "q4"} {
+		if got := res.PerExample[i].Example.Query; got != want {
+			t.Errorf("PerExample[%d].Example.Query = %q, want %q (order must match dataset)", i, got, want)
+		}
+		if got := res.PerExample[i].Answer; got != "ans"+fmt.Sprintf("%d", i+1) {
+			t.Errorf("PerExample[%d].Answer = %q, want ans%d", i, got, i+1)
+		}
+	}
+}
+
 // keep unused imports happy for tests that come in later commits
 var (
 	_ = errors.New
