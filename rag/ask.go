@@ -83,6 +83,9 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 				planner:         s.effectiveQueryPlanner(),
 				used:            &followupsUsedThisAsk,
 				prevAnswer:      prevAnswerText,
+				// v1.2.1 parallel dispatch — defaults zero (sequential).
+				parallel:    reflection.ParallelFollowups,
+				concurrency: reflection.MaxFollowupConcurrency,
 			}
 		}
 		switch reflection.Mode {
