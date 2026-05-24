@@ -6,6 +6,7 @@ import (
 	"github.com/costa92/llm-agent-rag/guard"
 	"github.com/costa92/llm-agent-rag/obs"
 	"github.com/costa92/llm-agent-rag/retrieve"
+	"github.com/costa92/llm-agent-rag/store"
 )
 
 // ImportTrace captures observable data from a successful Import call.
@@ -34,4 +35,31 @@ type Observer struct {
 	OnImport   func(ctx context.Context, trace ImportTrace)    // OnImport fires after a successful Import.
 	OnRetrieve func(ctx context.Context, trace retrieve.Trace) // OnRetrieve fires after a successful Search.
 	OnAsk      func(ctx context.Context, trace Trace)          // OnAsk fires after a successful Ask.
+	// OnPlanFollowups fires once per reflection round after the active-
+	// retrieval QueryPlanner emits a non-empty plan. It runs BEFORE any
+	// follow-up retrieval dispatches, so observers can record the
+	// pre-grade signal and the planner's intent in one place.
+	//
+	// scores carries the pre-graded relevance scores on the seed hit
+	// set (also stashed back into ReflectionRoundDiagnostics.ChunkScores).
+	// planned is the planner's emitted queries in planner output order,
+	// already truncated by the per-round and per-Ask caps.
+	//
+	// Nil-safe: an unset callback skips the dispatch without allocation.
+	// Thread safety: this callback fires from a single goroutine even
+	// under ParallelFollowups, but observers should still be safe to
+	// invoke from any goroutine because some host adapters re-dispatch.
+	OnPlanFollowups func(ctx context.Context, question string, scores []ChunkScore, planned []string)
+	// OnFollowupRetrieve fires once per executed follow-up retrieval —
+	// regardless of dispatch mode (sequential or parallel). hits is the
+	// retrieved hit slice (nil on error); err is the retrieval error
+	// (nil on success). Active retrieval is fail-open: an error here is
+	// observed but does not abort the round.
+	//
+	// Nil-safe: an unset callback skips the dispatch without allocation.
+	// Thread safety: under ReflectionOptions.ParallelFollowups=true the
+	// callback MAY fire concurrently from multiple goroutines. Caller
+	// implementations must be thread-safe (e.g., guard shared state
+	// with a sync.Mutex or use sync/atomic).
+	OnFollowupRetrieve func(ctx context.Context, query string, hits []store.Hit, err error)
 }

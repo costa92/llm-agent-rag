@@ -61,7 +61,23 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 		// prevAnswerText is updated after each round (commit 6 wires the
 		// rewrite composition; commit 5 keeps it empty before the first
 		// round and updates as rounds run for rule/model/hybrid modes).
-		activeEnabled := reflection.EnableActiveRetrieval && s.queryPlanner != nil
+		//
+		// Resolve the per-Ask QueryPlanner override (v1.2.1): the
+		// per-Ask AskOptions.QueryPlanner takes precedence over
+		// Options.QueryPlanner. When both are nil, effectiveQueryPlanner
+		// returns NoopQueryPlanner so active retrieval still wires
+		// without panic.
+		resolvedPlanner := opts.QueryPlanner
+		if resolvedPlanner == nil {
+			resolvedPlanner = s.effectiveQueryPlanner()
+		}
+		// activeEnabled tracks whether reflection asked for active
+		// retrieval AND a non-Noop planner is wired (per-Ask override
+		// or system-level). When neither slot has a real planner we
+		// behave like v1.2.0: trigger short-circuits, planner is never
+		// consulted, no follow-ups fire.
+		_, isNoop := resolvedPlanner.(NoopQueryPlanner)
+		activeEnabled := reflection.EnableActiveRetrieval && !isNoop
 		perRoundCap, globalCap, floor := effectiveActiveRetrievalConfig(reflection)
 		var (
 			followupsUsedThisAsk int
@@ -80,9 +96,12 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 				perRoundCap:     perRoundCap,
 				globalRemaining: &followupsRemaining,
 				floor:           floor,
-				planner:         s.effectiveQueryPlanner(),
+				planner:         resolvedPlanner,
 				used:            &followupsUsedThisAsk,
 				prevAnswer:      prevAnswerText,
+				// v1.2.1 parallel dispatch — defaults zero (sequential).
+				parallel:    reflection.ParallelFollowups,
+				concurrency: reflection.MaxFollowupConcurrency,
 			}
 		}
 		switch reflection.Mode {

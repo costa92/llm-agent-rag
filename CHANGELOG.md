@@ -6,6 +6,48 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [1.2.1] - 2026-05-24
+
+Patch release closing v1.2.0's explicit out-of-scope items: parallel
+follow-up dispatch, active-retrieval Observer hooks, and a per-Ask
+QueryPlanner override.
+
+### Added
+
+- `rag.ReflectionOptions.ParallelFollowups bool` (default `false`). When
+  true, active retrieval's follow-up retrievals fire concurrently with
+  bounded parallelism via `sync.WaitGroup` + a buffered-channel semaphore.
+- `rag.ReflectionOptions.MaxFollowupConcurrency int` (default `0`, meaning
+  `MaxFollowupQueries`). Caps parallel fan-out.
+- `rag.AskOptions.QueryPlanner QueryPlanner` — per-Ask planner override
+  that takes precedence over `Options.QueryPlanner`. Nil falls back to
+  the system planner, then to `NoopQueryPlanner`.
+- `rag.Observer.OnPlanFollowups func(ctx, question, scores, planned)` —
+  fires once per reflection round after the planner emits a non-empty
+  plan and the budget caps are applied, BEFORE any follow-up dispatch.
+- `rag.Observer.OnFollowupRetrieve func(ctx, query, hits, err)` — fires
+  once per executed follow-up retrieval, regardless of dispatch mode
+  (sequential or parallel) and regardless of success/error.
+
+### Changed
+
+- (none — all changes are additive; defaults preserve v1.2.0 behavior)
+
+### Compatibility
+
+- Fully additive. Existing v1.2.0 callers unaffected when new fields are
+  left at zero/nil.
+- Determinism invariant preserved: `RoundDiagnostics.FollowupQueries` is
+  in **planner output order**, not completion order, regardless of
+  `ParallelFollowups` setting. Merged hits remain deterministic (sorted
+  by score, stable) because `hitSets` is indexed by planner position.
+- Observer callbacks (`OnFollowupRetrieve` especially) may fire
+  concurrently in parallel mode — caller implementations MUST be
+  thread-safe. Documented on the field godoc.
+- stdlib-only invariant maintained (no new third-party imports).
+- API snapshot diff: 5 lines added, 0 removed, 0 renamed.
+- Race detector clean on all new parallel tests.
+
 ## [1.2.0] - 2026-05-24
 
 Minor release adding Active Retrieval and a pluggable QueryPlanner seam

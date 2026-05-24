@@ -493,6 +493,7 @@ type Answer struct
 type AskOptions struct
 	field MaxTokens int
 	field Metadata map[string]any
+	field QueryPlanner QueryPlanner
 	field Reflection *ReflectionOptions
 	field Search SearchOptions
 	field Template prompt.Template
@@ -575,7 +576,9 @@ type NoopGrader struct
 type NoopQueryPlanner struct
 type Observer struct
 	field OnAsk func(ctx context.Context, trace Trace)
+	field OnFollowupRetrieve func(ctx context.Context, query string, hits []store.Hit, err error)
 	field OnImport func(ctx context.Context, trace ImportTrace)
+	field OnPlanFollowups func(ctx context.Context, question string, scores []ChunkScore, planned []string)
 	field OnRetrieve func(ctx context.Context, trace retrieve.Trace)
 type Options struct
 	field CommunityDetector graph.CommunityDetector
@@ -628,6 +631,7 @@ type ReflectionOptions struct
 	field FailOpen bool
 	field GraderRelevanceWeight float64
 	field GraderSupportWeight float64
+	field MaxFollowupConcurrency int
 	field MaxFollowupQueries int
 	field MaxFollowupQueriesPerAsk int
 	field MaxRounds int
@@ -635,6 +639,7 @@ type ReflectionOptions struct
 	field MinScore float64
 	field MinUniqueDocs int
 	field Mode ReflectionMode
+	field ParallelFollowups bool
 	field RequireCitations bool
 	field SelectionMode SelectionMode
 type ReflectionRoundDiagnostics struct

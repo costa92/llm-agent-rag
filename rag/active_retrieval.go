@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"sort"
+	"sync"
 
 	"github.com/costa92/llm-agent-rag/store"
 )
@@ -27,6 +28,18 @@ type activeRetrievalBudget struct {
 	planner         QueryPlanner
 	used            *int // pointer for diagnostics counter
 	prevAnswer      string
+	// parallel turns on concurrent follow-up retrieval dispatch
+	// (sync.WaitGroup + buffered-channel semaphore). Default false
+	// preserves v1.2.0 sequential dispatch. When true, retrievals fan
+	// out up to concurrency at a time. Determinism invariants
+	// (planner output order in diagnostics; stable score sort in
+	// unionHits) are preserved by construction — hitSets is indexed
+	// by planner position, not completion order.
+	parallel bool
+	// concurrency caps the parallel fan-out. A value <= 0 collapses
+	// to perRoundCap so the default fan-out matches "as parallel as
+	// the per-round cap allows".
+	concurrency int
 }
 
 // activeRetrievalDefaults are the v1.2.0 defaults applied when a field
@@ -195,15 +208,36 @@ func (s *System) runActiveRetrieval(ctx context.Context, originalQuestion string
 	if len(planned) == 0 {
 		return out
 	}
-	// Sequential dispatch.
-	followupHitSets := make([][]store.Hit, 0, len(planned))
-	for _, q := range planned {
-		hits, _, rerr := s.retrieve(ctx, q, opts)
-		if rerr != nil {
-			// Fail-open: skip this query but keep the rest.
-			continue
+	// Observer hook: v1.2.1 active-retrieval visibility. Fires once
+	// per round AFTER the planner emitted (and the budget caps were
+	// applied) but BEFORE any follow-up dispatch. Observers can record
+	// the planner's intent and the pre-grade scores in one place.
+	if s.observer.OnPlanFollowups != nil {
+		s.observer.OnPlanFollowups(ctx, originalQuestion, scores, append([]string(nil), planned...))
+	}
+	// Dispatch follow-up retrievals. The default path is sequential
+	// (v1.2.0 behavior, deterministic for tests). When budget.parallel
+	// is true, retrievals fan out concurrently with bounded parallelism
+	// — but the hitSets slice is pre-allocated and indexed by planner
+	// position so the union order is identical to sequential by
+	// construction, regardless of completion order.
+	var followupHitSets [][]store.Hit
+	if budget.parallel {
+		followupHitSets = s.runFollowupsParallel(ctx, planned, opts, budget)
+	} else {
+		followupHitSets = make([][]store.Hit, 0, len(planned))
+		for _, q := range planned {
+			hits, _, rerr := s.retrieve(ctx, q, opts)
+			// Observer hook fires per follow-up regardless of success/error.
+			if s.observer.OnFollowupRetrieve != nil {
+				s.observer.OnFollowupRetrieve(ctx, q, hits, rerr)
+			}
+			if rerr != nil {
+				// Fail-open: skip this query but keep the rest.
+				continue
+			}
+			followupHitSets = append(followupHitSets, hits)
 		}
-		followupHitSets = append(followupHitSets, hits)
 	}
 	// Union seed + follow-up hits, capped at opts.TopK when set.
 	out.hits = unionHits(seedHits, followupHitSets, opts.TopK)
@@ -218,4 +252,62 @@ func (s *System) runActiveRetrieval(ctx context.Context, originalQuestion string
 		*budget.used += len(planned)
 	}
 	return out
+}
+
+// runFollowupsParallel fans out follow-up retrievals concurrently with
+// bounded parallelism, then returns the per-query hit slices in
+// PLANNER OUTPUT ORDER — not completion order. Index i of the returned
+// slice is the result of planned[i]. A retrieval error on a single
+// query leaves that slot nil (fail-open, matching sequential).
+//
+// Determinism: hitSets is pre-allocated by len(planned) and each
+// goroutine writes only to its own index. unionHits later sorts the
+// merged set by score (stable), so the final hit order is identical
+// to the sequential dispatch.
+//
+// Concurrency: the semaphore is a buffered chan with capacity
+// max(1, budget.concurrency). When budget.concurrency <= 0, the
+// effective cap collapses to len(planned) — fan out as much as the
+// per-round work allows.
+//
+// Thread safety: the only shared mutable state is hitSets[i], written
+// once per goroutine at a distinct index. No locks are required for
+// that write. s.retrieve is safe to call concurrently — it reads
+// immutable System fields and writes through obs.Counter, which is
+// already concurrency-safe (atomic.Int64).
+func (s *System) runFollowupsParallel(ctx context.Context, planned []string, opts SearchOptions, budget activeRetrievalBudget) [][]store.Hit {
+	hitSets := make([][]store.Hit, len(planned))
+	workers := budget.concurrency
+	if workers <= 0 {
+		workers = len(planned)
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	for i, q := range planned {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, q string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			hits, _, rerr := s.retrieve(ctx, q, opts)
+			// Observer hook fires per follow-up regardless of
+			// success/error. Under parallel dispatch this MAY fire
+			// from multiple goroutines simultaneously — observer
+			// implementations must be thread-safe.
+			if s.observer.OnFollowupRetrieve != nil {
+				s.observer.OnFollowupRetrieve(ctx, q, hits, rerr)
+			}
+			if rerr != nil {
+				// Fail-open: leave hitSets[i] nil. Matches the
+				// sequential path which skips the failed query.
+				return
+			}
+			hitSets[i] = hits
+		}(i, q)
+	}
+	wg.Wait()
+	return hitSets
 }
