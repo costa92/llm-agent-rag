@@ -20,11 +20,14 @@ package rag
 
 import (
 	"container/list"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/costa92/llm-agent-rag/store"
 )
 
 // Mode constants for GraderCacheKey. They are exported because the mode
@@ -184,4 +187,75 @@ func GraderCacheKey(query, hitID, answer, mode string) string {
 	h.Write([]byte{0})
 	h.Write([]byte(mode))
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// cachingGrader is the WrapGrader implementation. It composes any Grader
+// with any GraderCache. Cache hits short-circuit the inner Grader; cache
+// misses run the inner Grader and cache its result. Failures from the
+// inner Grader are NOT cached — a subsequent retry sees a cache miss.
+//
+// Cache hits BYPASS Observer.OnGenerateUsage and AskOptions.MaxTotalTokens
+// budget consumption (since no Generate fires on a hit). This is the
+// intended behavior — see CHANGELOG v1.8.0.
+type cachingGrader struct {
+	inner Grader
+	cache GraderCache
+}
+
+// WrapGrader composes inner with cache. When cache is nil, WrapGrader
+// returns inner unchanged (no allocation, no wrapping). Otherwise every
+// ScoreRelevance / ScoreSupport call is keyed by GraderCacheKey using
+// the corresponding mode constant.
+//
+// Cache hits BYPASS the underlying Generate, so neither
+// Observer.OnGenerateUsage nor AskOptions.MaxTotalTokens consume budget
+// on a hit. This is intentional but worth noting when reading dashboards
+// of grader spend. Inner-Grader errors are propagated untouched and NOT
+// cached.
+//
+// Thread-safety: WrapGrader is safe for concurrent use iff `inner` is
+// safe for concurrent use. The shipping MemoryGraderCache is safe for
+// concurrent use.
+func WrapGrader(inner Grader, cache GraderCache) Grader {
+	if cache == nil {
+		return inner
+	}
+	return cachingGrader{inner: inner, cache: cache}
+}
+
+// NewCachingGrader is a convenience constructor combining
+// NewMemoryGraderCache(cap) and WrapGrader. The cap follows the
+// MemoryGraderCache rule: cap <= 0 → 1024.
+func NewCachingGrader(inner Grader, cap int) Grader {
+	return WrapGrader(inner, NewMemoryGraderCache(cap))
+}
+
+// ScoreRelevance implements Grader. Cache key uses GraderCacheModeRelevance
+// with answer="" (relevance does not depend on answer text).
+func (c cachingGrader) ScoreRelevance(ctx context.Context, query string, hit store.Hit) (float64, string, error) {
+	key := GraderCacheKey(query, hit.Chunk.ID, "", GraderCacheModeRelevance)
+	if cs, ok := c.cache.Get(key); ok {
+		return cs.Relevance, cs.Reason, nil
+	}
+	score, reason, err := c.inner.ScoreRelevance(ctx, query, hit)
+	if err != nil {
+		return score, reason, err
+	}
+	c.cache.Put(key, ChunkScore{HitID: hit.Chunk.ID, Relevance: score, Reason: reason})
+	return score, reason, nil
+}
+
+// ScoreSupport implements Grader. Cache key uses GraderCacheModeSupport
+// with query="" (support does not depend on query text).
+func (c cachingGrader) ScoreSupport(ctx context.Context, answer string, hit store.Hit) (float64, string, error) {
+	key := GraderCacheKey("", hit.Chunk.ID, answer, GraderCacheModeSupport)
+	if cs, ok := c.cache.Get(key); ok {
+		return cs.Support, cs.Reason, nil
+	}
+	score, reason, err := c.inner.ScoreSupport(ctx, answer, hit)
+	if err != nil {
+		return score, reason, err
+	}
+	c.cache.Put(key, ChunkScore{HitID: hit.Chunk.ID, Support: score, Reason: reason})
+	return score, reason, nil
 }
