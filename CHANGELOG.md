@@ -6,6 +6,30 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [1.5.1] - 2026-05-24
+
+Patch release closing v1.5.0's explicit out-of-scope items: sub-stage tags for AskGlobal/AskDrift, RetryPolicy observability hook, and pre-built error classifiers.
+
+### Added
+
+- `rag.StageAsk`, `rag.StageReflectionDecision`, `rag.StageGrader`, `rag.StagePlanner`, `rag.StageJudgeEval` — exported as named constants for the existing stage tags introduced in v1.5.0.
+- `rag.StageAskGlobalMap`, `rag.StageAskGlobalReduce` — sub-stages now tagged on map/reduce inner Generate calls during `AskGlobal`.
+- `rag.StageAskDriftPrimer`, `rag.StageAskDriftLocal`, `rag.StageAskDriftSynth` — sub-stages now tagged on the 3 inner Generate calls during `AskDrift`.
+- `eval.RetryPolicy.OnRetry func(ctx, attempt int, err error)` — fires between failed attempts and the next sleep. Does NOT fire on terminal failure or on non-retryable (Classify=false) errors. Nil-safe.
+- `eval.ClassifyTransientHTTP(err error) bool` — best-effort classifier matching net timeouts and HTTP 408/429/500-504.
+- `eval.ClassifyRateLimited(err error) bool` — best-effort classifier matching HTTP 429 and common rate-limit substrings.
+
+### Changed
+
+- (none — fully additive)
+
+### Compatibility
+
+- Single `"ask"` stage tag still emitted by the top-level Ask call (unchanged). Only the INNER Generate calls in AskGlobal/AskDrift get sub-stage tags.
+- Existing OnGenerateUsage consumers see additional distinct stage values from AskGlobal/AskDrift paths; if previously summing under `stage="ask"` they will now see those entries under more specific tags. Documented.
+- ClassifyTransientHTTP and ClassifyRateLimited are best-effort heuristics. Production users with known SDK error shapes should write their own classifier — the builtins are intended for unknown / mixed SDK environments.
+- API snapshot diff: ~13 lines added, 0 removed.
+
 ## [1.5.0] - 2026-05-24
 
 Minor release bundling two closely-coupled cost-and-resilience features: the CostObserver hook for per-stage token attribution and the RetryWrap adapters for resilient Asker/Judge under transient errors. Both are fully additive.
