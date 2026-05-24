@@ -6,6 +6,32 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [1.5.0] - 2026-05-24
+
+Minor release bundling two closely-coupled cost-and-resilience features: the CostObserver hook for per-stage token attribution and the RetryWrap adapters for resilient Asker/Judge under transient errors. Both are fully additive.
+
+### Added
+
+- `rag.Observer.OnGenerateUsage func(ctx, stage string, usage obs.TokenUsage)` — fires per successful `generate.Model.Generate` call; standard stages: `ask`, `reflection_decision`, `grader`, `planner`. Nil-safe. May fire concurrently under ParallelFollowups / AnswerBenchmark.Parallelism>=2 — implementations must be thread-safe.
+- `obs.StageTokenUsage{Stage, Usage}` + `obs.Metrics.StageTokenUsage []StageTokenUsage` — append-only audit of every Generate during a top-level Ask/AskGlobal/AskDrift.
+- `obs.StageUsageAccumulator`, `obs.WithStageUsage(ctx, *StageUsageAccumulator)`, `obs.StageUsageFrom(ctx)` — context-attached aggregator; thread-safe via sync.Mutex.
+- `eval.RetryPolicy{MaxAttempts, BaseDelay, MaxDelay, Jitter, Classify}` and `eval.JitterMode` (`JitterNone`, `JitterEqual`).
+- `eval.NewRetryAsker(inner Asker, policy RetryPolicy) Asker` and `eval.NewRetryJudge(inner Judge, policy RetryPolicy) Judge` — exponential backoff base 2, cap at MaxDelay, optional equal jitter, ctx-cancel short-circuits during sleep. Classify==nil retries all errors.
+- `eval.NewCostObservingJudge(inner LLMJudge, hook GenerateUsageHook) Judge` — eval-side counterpart firing stage="judge_eval". Lives in `eval` to avoid `eval → rag.countingModel` import cycle.
+
+### Changed
+
+- (none — fully additive)
+
+### Compatibility
+
+- `Metrics.Tokens` unchanged byte-for-byte. `StageTokenUsage` is additive; the SUM across entries is NOT equal to `Tokens` (different aggregation semantics — Tokens is the answer-leg's `deriveTokenUsage(req, resp)`; StageTokenUsage is per-Generate audit).
+- Custom user-supplied `Grader` / `QueryPlanner` implementations do NOT get auto-wrapped — only the shipped `PromptGrader` / `PromptQueryPlanner` have their `.Model` rebuilt during `New(opts)`. Custom implementations must wrap their own model to fire OnGenerateUsage.
+- Single `"ask"` stage tag covers Ask/AskGlobal/AskDrift inner Generate calls. Sub-stages (`global_map`, `drift_primer`, etc.) are future-additive.
+- stdlib-only invariant maintained (math/rand/v2 is stdlib Go 1.22+).
+- API snapshot diff: ~14 lines added, 0 removed, 0 renamed.
+- Race-detector clean on parallel retry tests and parallel observer tests.
+
 ## [1.4.0] - 2026-05-24
 
 Minor release bundling two closely-coupled additions to the v1.3.0 AnswerBenchmark harness: an optional LLM-as-judge pass (C-BenchJudge) and bounded parallel example dispatch (C-BenchPar). Both are fully additive and zero-impact on v1.3.0 callers.

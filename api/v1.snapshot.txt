@@ -58,6 +58,7 @@ method (GlobalEvaluator) Run(ctx context.Context, dataset Dataset) (GlobalEvalRe
 method (LLMJudge) Judge(ctx context.Context, req JudgeRequest) (Judgement, error)
 func LoadAnswerJSONL(path string) (AnswerDataset, error)
 func LoadJSONL(path string) (Dataset, error)
+func NewCostObservingJudge(inner LLMJudge, hook GenerateUsageHook) Judge
 func NewRetryAsker(inner Asker, policy RetryPolicy) Asker
 func NewRetryJudge(inner Judge, policy RetryPolicy) Judge
 method (RetrievalEvaluator) Run(ctx context.Context, dataset Dataset) (RetrievalResult, error)
@@ -145,6 +146,7 @@ type ExampleResult struct
 	field RankOfFirstGoldDoc int
 	field RetrievedDocs []string
 	field RetrievedIDs []string
+type GenerateUsageHook func(ctx context.Context, stage string, usage obs.TokenUsage)
 type GenerationMetrics struct
 	field Examples int
 	field MeanAnswerRelevance float64

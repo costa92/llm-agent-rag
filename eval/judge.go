@@ -113,3 +113,26 @@ func clamp01(v float64) float64 {
 	}
 	return v
 }
+
+// NewCostObservingJudge wraps the inner LLMJudge so every successful
+// generate.Model.Generate call inside Judge fires hook with
+// stage="judge_eval". The wrapped Judge satisfies the Judge interface and
+// can be passed to AnswerBenchmark / TriadEvaluator directly.
+//
+// Eval-side wrapping is the v1.5.0 counterpart to the rag-side
+// OnGenerateUsage hook — eval is below rag in the import graph, and
+// rag.countingModel is unexported, so we mirror the wrapper inside this
+// package rather than importing through a rag seam. See eval/instrument.go.
+//
+// Hook semantics:
+//   - Fires only on successful Generate (err == nil).
+//   - May fire concurrently under AnswerBenchmark.Parallelism>=2 — the
+//     supplied hook must be thread-safe.
+//   - A nil hook is safe: the wrapper still composes but emits nothing.
+func NewCostObservingJudge(inner LLMJudge, hook GenerateUsageHook) Judge {
+	return LLMJudge{Model: evalCountingModel{
+		inner: inner.Model,
+		stage: "judge_eval",
+		hook:  hook,
+	}}
+}
