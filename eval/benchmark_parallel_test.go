@@ -256,8 +256,122 @@ func TestAnswerBenchmarkParallelPerExampleOrderMatchesDataset(t *testing.T) {
 	}
 }
 
+// countingFinishAsker is a sleeping asker that counts completed Ask
+// calls regardless of success/error. It also lets us error on a specific
+// query while other workers are still in flight, then assert every
+// dispatched goroutine eventually wakes up.
+type countingFinishAsker struct {
+	sleepInjectingAsker
+	finished int32
+}
+
+func (a *countingFinishAsker) Ask(ctx context.Context, q string, opts rag.AskOptions) (rag.Answer, error) {
+	defer atomic.AddInt32(&a.finished, 1)
+	return a.sleepInjectingAsker.Ask(ctx, q, opts)
+}
+
+func newCountingAsker(n int, d time.Duration) *countingFinishAsker {
+	sleep := make(map[string]time.Duration, n)
+	by := make(map[string]rag.Answer, n)
+	for i := 1; i <= n; i++ {
+		q := fmt.Sprintf("q%d", i)
+		sleep[q] = d
+		by[q] = rag.Answer{Text: q}
+	}
+	return &countingFinishAsker{
+		sleepInjectingAsker: sleepInjectingAsker{sleepFor: sleep, byQuery: by},
+	}
+}
+
+// TestAnswerBenchmarkParallelAskerErrorReturnsWrappedFirstError asserts
+// that when an Ask error fires under parallel dispatch, the returned
+// error names the failing query and wraps the inner error message.
+func TestAnswerBenchmarkParallelAskerErrorReturnsWrappedFirstError(t *testing.T) {
+	asker := &sleepInjectingAsker{
+		sleepFor: map[string]time.Duration{
+			"q1": 50 * time.Millisecond,
+			"q2": 10 * time.Millisecond, // errors first
+			"q3": 50 * time.Millisecond,
+		},
+		byQuery: map[string]rag.Answer{
+			"q1": {Text: "ans1"},
+			"q3": {Text: "ans3"},
+		},
+		errBy: map[string]error{"q2": errors.New("ask-boom")},
+	}
+	ds := sleepingDataset(3, 0)
+	bench := eval.AnswerBenchmark{Asker: asker, Parallelism: 3}
+	_, err := bench.Run(context.Background(), ds)
+	if err == nil {
+		t.Fatalf("Run: want error")
+	}
+	if !contains(err.Error(), "q2") {
+		t.Fatalf("error %q does not mention failing query q2", err)
+	}
+	if !contains(err.Error(), "ask-boom") {
+		t.Fatalf("error %q does not wrap inner error", err)
+	}
+	if !contains(err.Error(), "eval: ask") {
+		t.Fatalf("error %q does not carry 'eval: ask' prefix", err)
+	}
+}
+
+// TestAnswerBenchmarkParallelJudgeErrorReturnsWrapped asserts the
+// Judge-side error is wrapped with the "eval: judge %q" prefix under
+// parallel dispatch.
+func TestAnswerBenchmarkParallelJudgeErrorReturnsWrapped(t *testing.T) {
+	asker := newSleepingAsker(3, 30*time.Millisecond)
+	judge := &atomicScriptedJudge{
+		verdictBy: map[string]eval.Judgement{
+			"q1": {Groundedness: 0.5, AnswerRelevance: 0.5},
+			"q2": {Groundedness: 0.5, AnswerRelevance: 0.5},
+			"q3": {Groundedness: 0.5, AnswerRelevance: 0.5},
+		},
+		errBy: map[string]error{"q1": errors.New("judge-boom")},
+	}
+	ds := sleepingDataset(3, 0)
+	bench := eval.AnswerBenchmark{Asker: asker, Judge: judge, Parallelism: 3}
+	_, err := bench.Run(context.Background(), ds)
+	if err == nil {
+		t.Fatalf("Run: want error")
+	}
+	if !contains(err.Error(), `eval: judge "q1"`) {
+		t.Fatalf("error %q missing 'eval: judge \"q1\"' prefix", err)
+	}
+	if !contains(err.Error(), "judge-boom") {
+		t.Fatalf("error %q does not wrap inner error", err)
+	}
+}
+
+// TestAnswerBenchmarkParallelOtherWorkersFinish asserts that when a
+// goroutine errors mid-batch, the in-flight siblings complete naturally
+// (no context cancellation). All four dispatched goroutines must record
+// a finish. Race-detector clean is the second half of this gate.
+func TestAnswerBenchmarkParallelOtherWorkersFinish(t *testing.T) {
+	asker := newCountingAsker(4, 40*time.Millisecond)
+	asker.errBy = map[string]error{"q2": errors.New("transient")}
+	ds := sleepingDataset(4, 0)
+	bench := eval.AnswerBenchmark{Asker: asker, Parallelism: 4}
+	_, err := bench.Run(context.Background(), ds)
+	if err == nil {
+		t.Fatalf("Run: want error")
+	}
+	got := atomic.LoadInt32(&asker.finished)
+	if got != 4 {
+		t.Fatalf("finished = %d, want 4 (no context cancellation; all workers complete)", got)
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
 // keep unused imports happy for tests that come in later commits
 var (
-	_ = errors.New
 	_ = sort.Slice
 )
