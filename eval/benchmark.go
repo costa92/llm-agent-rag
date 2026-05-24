@@ -185,6 +185,65 @@ type BenchmarkResult struct {
 	PerExample []AnswerExampleResult // PerExample is the per-example detail.
 }
 
+// Markdown returns a pipe-table scoreboard suitable for pasting into a
+// CI summary, an issue comment, or a docs page. The output has two
+// sections:
+//
+//  1. # Benchmark: <Dataset.Name>
+//  2. ## Metrics (a 2-column pipe table; rows in BenchmarkMetrics field
+//     order — Examples, ExactMatch, F1Token, RequiredPhraseRecall,
+//     ReflectionRoundsMean, GraderAdoptionRate, FollowupQueriesUsedMean,
+//     ActiveRetrievalFireRate, MeanGroundedness, MeanAnswerRelevance)
+//  3. ## AdoptedRound Distribution (a 2-column pipe table; included only
+//     when AdoptedRoundCounts is non-empty)
+//
+// NaN values render as "n/a"; finite floats use three decimal places.
+// Examples always emits as a plain integer (no decimal). Per-example
+// rows are NOT rendered in v1.8.0 — that is a future v1.9+ extension.
+//
+// Structure (sections, column order, metric order) is stable; whitespace,
+// decimal precision, and bullet-list formatting may evolve in minor
+// releases. v1.8.0.
+func (r BenchmarkResult) Markdown() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Benchmark: %s\n\n", r.Dataset.Name)
+	b.WriteString("## Metrics\n\n")
+	b.WriteString("| Metric | Value |\n")
+	b.WriteString("| --- | --- |\n")
+	fmt.Fprintf(&b, "| Examples | %d |\n", r.Metrics.Examples)
+	fmt.Fprintf(&b, "| ExactMatch | %s |\n", formatBenchmarkScalar(r.Metrics.ExactMatch))
+	fmt.Fprintf(&b, "| F1Token | %s |\n", formatBenchmarkScalar(r.Metrics.F1Token))
+	fmt.Fprintf(&b, "| RequiredPhraseRecall | %s |\n", formatBenchmarkScalar(r.Metrics.RequiredPhraseRecall))
+	fmt.Fprintf(&b, "| ReflectionRoundsMean | %s |\n", formatBenchmarkScalar(r.Metrics.ReflectionRoundsMean))
+	fmt.Fprintf(&b, "| GraderAdoptionRate | %s |\n", formatBenchmarkScalar(r.Metrics.GraderAdoptionRate))
+	fmt.Fprintf(&b, "| FollowupQueriesUsedMean | %s |\n", formatBenchmarkScalar(r.Metrics.FollowupQueriesUsedMean))
+	fmt.Fprintf(&b, "| ActiveRetrievalFireRate | %s |\n", formatBenchmarkScalar(r.Metrics.ActiveRetrievalFireRate))
+	fmt.Fprintf(&b, "| MeanGroundedness | %s |\n", formatBenchmarkScalar(r.Metrics.MeanGroundedness))
+	fmt.Fprintf(&b, "| MeanAnswerRelevance | %s |\n", formatBenchmarkScalar(r.Metrics.MeanAnswerRelevance))
+
+	if len(r.Metrics.AdoptedRoundCounts) > 0 {
+		b.WriteString("\n## AdoptedRound Distribution\n\n")
+		b.WriteString("| Bucket | Count |\n")
+		b.WriteString("| --- | --- |\n")
+		for i, count := range r.Metrics.AdoptedRoundCounts {
+			fmt.Fprintf(&b, "| %d | %d |\n", i, count)
+		}
+	}
+	return b.String()
+}
+
+// formatBenchmarkScalar renders a float scalar for the Markdown table.
+// NaN renders as "n/a"; finite values use three decimal places. Mirror
+// of eval.formatMarkdownScalar in compare.go — kept private to
+// benchmark.go so future per-metric formatting (e.g. percentages) can
+// diverge from the drift report.
+func formatBenchmarkScalar(f float64) string {
+	if math.IsNaN(f) {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.3f", f)
+}
+
 // AnswerBenchmark runs an AnswerDataset through an Asker and scores
 // each generated answer on ExactMatch, token F1, and required-phrase
 // recall, plus reflection / active-retrieval / grading signal
