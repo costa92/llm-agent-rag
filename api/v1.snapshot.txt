@@ -48,25 +48,35 @@ type HashEmbedder struct
 	field Dim int
 type Vector []float32
 package github.com/costa92/llm-agent-rag/eval
+const DirectionImproved Direction = "improved"
+const DirectionRegressed Direction = "regressed"
+const DirectionUnchanged Direction = "unchanged"
+const DirectionUndefined Direction = "undefined"
 const JitterEqual JitterMode = "equal"
 const JitterNone JitterMode = ""
 method (AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (BenchmarkResult, error)
 func ClassifyRateLimited(err error) bool
 func ClassifyTransientHTTP(err error) bool
+func CompareBenchmarks(prev, curr BenchmarkResult) DriftReport
 method (DriftEvalResult) Summary() string
 method (DriftEvaluator) Run(ctx context.Context, dataset Dataset) (DriftEvalResult, error)
+method (DriftReport) Summary() string
 method (GlobalEvalResult) Summary() string
 method (GlobalEvaluator) Run(ctx context.Context, dataset Dataset) (GlobalEvalResult, error)
 method (LLMJudge) Judge(ctx context.Context, req JudgeRequest) (Judgement, error)
 func LoadAnswerJSONL(path string) (AnswerDataset, error)
 func LoadJSONL(path string) (Dataset, error)
+func MarshalBenchmark(r BenchmarkResult) ([]byte, error)
 func NewCostObservingJudge(inner LLMJudge, hook GenerateUsageHook) Judge
 func NewRetryAsker(inner Asker, policy RetryPolicy) Asker
 func NewRetryJudge(inner Judge, policy RetryPolicy) Judge
+func ReadBenchmarkJSONL(r io.Reader) (BenchmarkResult, error)
 method (RetrievalEvaluator) Run(ctx context.Context, dataset Dataset) (RetrievalResult, error)
 func RunGraphAB(ctx context.Context, retriever Retriever, base rag.SearchOptions, dataset Dataset) (GraphABResult, error)
 method (TriadEvaluator) Run(ctx context.Context, dataset Dataset) (TriadResult, error)
 method (TriadResult) Summary() string
+func UnmarshalBenchmark(b []byte) (BenchmarkResult, error)
+func WriteBenchmarkJSONL(w io.Writer, r BenchmarkResult) error
 func WriteJSONL(w io.Writer, r TriadResult) error
 type AnswerBenchmark struct
 	field Asker Asker
@@ -118,6 +128,7 @@ type Dataset struct
 	field Examples []Example
 	field Name string
 	field TopK int
+type Direction string
 type DriftAsker interface
 	method AskDrift(ctx context.Context, question string, opts rag.DriftOptions) (rag.Answer, error)
 type DriftEvalResult struct
@@ -136,6 +147,11 @@ type DriftExampleResult struct
 	field Judgement Judgement
 	field PrimerCommunityIDs []string
 	field Rounds int
+type DriftReport struct
+	field Dataset string
+	field Deltas []MetricDelta
+	field DroppedExamples []string
+	field NewExamples []string
 type Example struct
 	field GoldChunkIDs []string
 	field GoldDocIDs []string
@@ -187,6 +203,12 @@ type Judgement struct
 	field Rationale string
 type LLMJudge struct
 	field Model generate.Model
+type MetricDelta struct
+	field Curr float64
+	field Delta float64
+	field Direction Direction
+	field Name string
+	field Prev float64
 type Metrics struct
 	field Examples int
 	field GroundingAtK float64
@@ -224,6 +246,7 @@ type TriadResult struct
 	field Generation GenerationMetrics
 	field PerExample []TriadExampleResult
 	field Retrieval Metrics
+var ErrEmptyBenchmark = errors.New("eval: empty benchmark JSONL")
 var ErrJudgeModelRequired = errors.New("eval: judge model required")
 package github.com/costa92/llm-agent-rag/feedback
 func BuildExample(trace rag.Trace, goldDocIDs, goldChunkIDs []string, notes string) eval.Example
@@ -548,6 +571,7 @@ const StageJudgeEval = "judge_eval"
 const StagePlanner = "planner"
 const StageReflectionDecision = "reflection_decision"
 func ExportGraderDataset(ans Answer) []GraderExample
+func MarshalDiagnostics(d Diagnostics) ([]byte, error)
 func New(opts Options) *System
 method (NoopGrader) ScoreRelevance(_ context.Context, _ string, _ store.Hit) (float64, string, error)
 method (NoopGrader) ScoreSupport(_ context.Context, _ string, _ store.Hit) (float64, string, error)
@@ -565,6 +589,7 @@ method (*System) PrewarmCommunityReports(ctx context.Context, namespace string) 
 method (*System) Remove(ctx context.Context, id string) error
 method (*System) Retrieve(ctx context.Context, query string, opts SearchOptions) ([]store.Hit, error)
 method (*System) Stats(ctx context.Context, namespace string) (store.Stats, error)
+func UnmarshalDiagnostics(b []byte) (Diagnostics, error)
 type Answer struct
 	field Citations []Citation
 	field Diagnostics Diagnostics
