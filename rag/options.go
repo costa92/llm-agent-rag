@@ -230,6 +230,19 @@ type DriftOptions struct {
 	// TopK caps how many provenance chunks each local round packs into the
 	// model context. A value <= 0 selects driftDefaultTopK.
 	TopK int
+	// MaxTotalTokens caps the cumulative TotalTokens across every Generate
+	// call within one AskDrift — the per-community primer-map calls, every
+	// local-round Generate, and the final synthesis call. A value <= 0
+	// (default zero) is unlimited and preserves v1.8.0 behavior
+	// byte-for-byte. When non-zero and the cumulative StageTokenUsage
+	// exceeds this cap after any successful sub-stage Generate, AskDrift
+	// aborts and returns (Answer{}, *BudgetExceededError) with
+	// PartialDiagnostics.Drift carrying the trace collected up to the
+	// abort (PrimerCommunityIDs/Rounds/RoundEntityIDs/ConsultedReports).
+	// The BudgetExceededError.Stage carries the sub-stage tag that tripped
+	// (StageAskDriftPrimer, StageAskDriftLocal, or StageAskDriftSynth).
+	// v1.9.0.
+	MaxTotalTokens int
 }
 
 // Options is the construction config for a System — every dependency New
