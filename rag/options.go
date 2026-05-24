@@ -165,6 +165,14 @@ type AskOptions struct {
 	Metadata   map[string]any     // Metadata is caller-supplied passthrough sent to the model.
 	MaxTokens  int                // MaxTokens caps the packed context token budget.
 	Reflection *ReflectionOptions // Reflection configures the optional bounded self-reflection loop.
+	// QueryPlanner is a per-Ask override for the active-retrieval
+	// QueryPlanner. When non-nil it takes precedence over
+	// Options.QueryPlanner for this Ask call only (the system-level
+	// planner is unaffected). When nil, the resolved planner falls back
+	// to the system-level QueryPlanner — and then to NoopQueryPlanner
+	// if neither is set. Active retrieval still requires
+	// Reflection.EnableActiveRetrieval=true to fire.
+	QueryPlanner QueryPlanner
 }
 
 // GlobalOptions configures System.AskGlobal — the map-reduce global-search
