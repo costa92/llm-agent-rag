@@ -48,6 +48,8 @@ type HashEmbedder struct
 	field Dim int
 type Vector []float32
 package github.com/costa92/llm-agent-rag/eval
+const JitterEqual JitterMode = "equal"
+const JitterNone JitterMode = ""
 method (AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (BenchmarkResult, error)
 method (DriftEvalResult) Summary() string
 method (DriftEvaluator) Run(ctx context.Context, dataset Dataset) (DriftEvalResult, error)
@@ -56,6 +58,8 @@ method (GlobalEvaluator) Run(ctx context.Context, dataset Dataset) (GlobalEvalRe
 method (LLMJudge) Judge(ctx context.Context, req JudgeRequest) (Judgement, error)
 func LoadAnswerJSONL(path string) (AnswerDataset, error)
 func LoadJSONL(path string) (Dataset, error)
+func NewRetryAsker(inner Asker, policy RetryPolicy) Asker
+func NewRetryJudge(inner Judge, policy RetryPolicy) Judge
 method (RetrievalEvaluator) Run(ctx context.Context, dataset Dataset) (RetrievalResult, error)
 func RunGraphAB(ctx context.Context, retriever Retriever, base rag.SearchOptions, dataset Dataset) (GraphABResult, error)
 method (TriadEvaluator) Run(ctx context.Context, dataset Dataset) (TriadResult, error)
@@ -166,6 +170,7 @@ type GraphABResult struct
 	field GraphOn Metrics
 	field MRRDelta float64
 	field RecallDelta float64
+type JitterMode string
 type Judge interface
 	method Judge(ctx context.Context, req JudgeRequest) (Judgement, error)
 type JudgeRequest struct
@@ -194,6 +199,12 @@ type RetrievalResult struct
 	field PerExample []ExampleResult
 type Retriever interface
 	method Retrieve(ctx context.Context, query string, opts rag.SearchOptions) ([]store.Hit, error)
+type RetryPolicy struct
+	field BaseDelay time.Duration
+	field Classify func(error) bool
+	field Jitter JitterMode
+	field MaxAttempts int
+	field MaxDelay time.Duration
 type TriadEvaluator struct
 	field Asker Asker
 	field Judge Judge
