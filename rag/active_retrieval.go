@@ -208,6 +208,13 @@ func (s *System) runActiveRetrieval(ctx context.Context, originalQuestion string
 	if len(planned) == 0 {
 		return out
 	}
+	// Observer hook: v1.2.1 active-retrieval visibility. Fires once
+	// per round AFTER the planner emitted (and the budget caps were
+	// applied) but BEFORE any follow-up dispatch. Observers can record
+	// the planner's intent and the pre-grade scores in one place.
+	if s.observer.OnPlanFollowups != nil {
+		s.observer.OnPlanFollowups(ctx, originalQuestion, scores, append([]string(nil), planned...))
+	}
 	// Dispatch follow-up retrievals. The default path is sequential
 	// (v1.2.0 behavior, deterministic for tests). When budget.parallel
 	// is true, retrievals fan out concurrently with bounded parallelism
@@ -221,6 +228,10 @@ func (s *System) runActiveRetrieval(ctx context.Context, originalQuestion string
 		followupHitSets = make([][]store.Hit, 0, len(planned))
 		for _, q := range planned {
 			hits, _, rerr := s.retrieve(ctx, q, opts)
+			// Observer hook fires per follow-up regardless of success/error.
+			if s.observer.OnFollowupRetrieve != nil {
+				s.observer.OnFollowupRetrieve(ctx, q, hits, rerr)
+			}
 			if rerr != nil {
 				// Fail-open: skip this query but keep the rest.
 				continue
@@ -282,6 +293,13 @@ func (s *System) runFollowupsParallel(ctx context.Context, planned []string, opt
 			defer wg.Done()
 			defer func() { <-sem }()
 			hits, _, rerr := s.retrieve(ctx, q, opts)
+			// Observer hook fires per follow-up regardless of
+			// success/error. Under parallel dispatch this MAY fire
+			// from multiple goroutines simultaneously — observer
+			// implementations must be thread-safe.
+			if s.observer.OnFollowupRetrieve != nil {
+				s.observer.OnFollowupRetrieve(ctx, q, hits, rerr)
+			}
 			if rerr != nil {
 				// Fail-open: leave hitSets[i] nil. Matches the
 				// sequential path which skips the failed query.
