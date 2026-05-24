@@ -6,6 +6,33 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [1.4.0] - 2026-05-24
+
+Minor release bundling two closely-coupled additions to the v1.3.0 AnswerBenchmark harness: an optional LLM-as-judge pass (C-BenchJudge) and bounded parallel example dispatch (C-BenchPar). Both are fully additive and zero-impact on v1.3.0 callers.
+
+### Added
+
+- `eval.AnswerBenchmark.Judge eval.Judge` — optional LLM-as-judge. When non-nil, every example's generated answer is scored against its retrieved context with the same `JudgeRequest{Query, Answer, Context}` shape used by `TriadEvaluator`. When nil, judge-side metrics are NaN.
+- `eval.AnswerBenchmark.Parallelism int` — bounded worker pool over dataset examples. `0` or `1` runs the v1.3.0 sequential path byte-for-byte. `>=2` fans out via `sync.WaitGroup` + buffered-channel semaphore, mirroring the v1.2.1 active-retrieval pattern. Negative values coerce to sequential; large values pass through (no GOMAXPROCS cap — Asker work is I/O-bound).
+- `eval.BenchmarkMetrics.MeanGroundedness` and `eval.BenchmarkMetrics.MeanAnswerRelevance` — dataset-level means. `math.NaN()` when `Judge == nil` or the dataset is empty.
+- `eval.AnswerExampleResult.Judgement eval.Judgement` and `eval.AnswerExampleResult.JudgeApplied bool` — per-example judge trace; the bool discriminates "no judge configured" from "judge returned 0.0/0.0".
+
+### Changed
+
+- (none — fully additive)
+
+### Compatibility
+
+- `eval.Asker` and `eval.Judge` interfaces unchanged.
+- `*rag.System` satisfies `eval.Asker` structurally (unchanged).
+- Cost note: under `Judge != nil`, every example incurs one judge call (no internal rate-limit, no per-example skip). Callers needing sampling layer it externally by wrapping their Judge.
+- Error semantics: Asker and Judge errors both abort-on-first under sequential and parallel modes. Under parallel, the first error wins via a sticky `firstErr`; in-flight siblings complete naturally (context is not cancelled). Documented on the field godoc.
+- Determinism: `PerExample` order matches `dataset.Examples` order regardless of `Parallelism` (index-keyed write into a pre-allocated slice, same trick as `unionHits`).
+- Thread-safety: `Asker` and `Judge` implementations must be safe for concurrent use when `Parallelism >= 2`. `*rag.System` is.
+- stdlib-only invariant maintained (no new third-party imports).
+- API snapshot diff: 6 lines added, 0 removed, 0 renamed.
+- Race detector clean on all new parallel tests.
+
 ## [1.3.0] - 2026-05-24
 
 Minor release adding a C-Eval answer-quality benchmark harness to the `eval` package — a generation-side scoreboard for the Ask path scored on textual match (ExactMatch, token F1, required-phrase recall) plus v1.2.x reflection/active-retrieval signal aggregation. Pure C-Eval: no LLM judge, no external datasets bundled.

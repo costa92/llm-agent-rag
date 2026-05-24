@@ -1,13 +1,24 @@
 package eval
 
-// This file implements the v1.3.0 C-Eval answer-quality benchmark
-// harness — a generation-side scoreboard for the standard System.Ask
-// path. It is deliberately pure C-Eval: ExactMatch, token F1, and
-// required-phrase recall scored against labeled gold answers, with
-// no LLM-as-judge call and no external datasets bundled. Reflection,
-// grading, and active-retrieval signals are read off the answer's
-// existing Diagnostics so the same harness scores v1.0.x and v1.2.x
-// pipelines identically.
+// This file implements the C-Eval answer-quality benchmark harness — a
+// generation-side scoreboard for the standard System.Ask path. v1.3.0
+// shipped the pure C-Eval core (ExactMatch, token F1, required-phrase
+// recall) plus reflection/grading/active-retrieval signal aggregation
+// from existing Diagnostics. v1.4.0 extends the harness with two
+// closely-coupled, fully additive features:
+//
+//   - C-BenchJudge: an optional Judge field on AnswerBenchmark wires the
+//     same JudgeRequest{Query, Answer, Context} contract used by
+//     TriadEvaluator. When set, per-example Judgement is captured and
+//     dataset-level MeanGroundedness / MeanAnswerRelevance are computed.
+//     When nil, all judge-side metrics carry math.NaN() and the v1.3.0
+//     textual scoring path runs byte-for-byte unchanged.
+//   - C-BenchPar: an optional Parallelism field bounds concurrent
+//     example dispatch via a buffered-channel semaphore + WaitGroup
+//     worker pool. Sequential (Parallelism <= 1) flows through the
+//     v1.3.0 single-goroutine loop; parallel (>= 2) writes per-example
+//     results into a pre-allocated slice by index so PerExample order
+//     is deterministic regardless of completion order.
 //
 // The Asker contract is the existing eval.Asker from triad.go — the
 // benchmark introduces no new seam on rag.System. BenchmarkMetrics
