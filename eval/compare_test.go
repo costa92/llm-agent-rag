@@ -358,6 +358,121 @@ func TestDriftReportMarkdown_FooterListsNewAndDropped(t *testing.T) {
 	}
 }
 
+// --- v1.7.0 C4 HistogramDelta + DriftReport.Histograms -------------------
+
+// TestHistogramDelta_ZeroPadsShorter asserts the Delta is zero-padded to
+// max(len(Prev), len(Curr)).
+func TestHistogramDelta_ZeroPadsShorter(t *testing.T) {
+	prev := emptyMetrics()
+	prev.ReflectionRoundsMean = 1.0
+	prev.AdoptedRoundCounts = []int{1, 2}
+	curr := emptyMetrics()
+	curr.ReflectionRoundsMean = 1.0
+	curr.AdoptedRoundCounts = []int{1, 2, 3}
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	if len(r.Histograms) == 0 {
+		t.Fatalf("Histograms empty; expected AdoptedRoundCounts entry")
+	}
+	h := r.Histograms[0]
+	wantDelta := []int{0, 0, 3}
+	if len(h.Delta) != len(wantDelta) {
+		t.Fatalf("Delta len = %d, want %d (%v)", len(h.Delta), len(wantDelta), h.Delta)
+	}
+	for i, want := range wantDelta {
+		if h.Delta[i] != want {
+			t.Errorf("Delta[%d] = %d, want %d", i, h.Delta[i], want)
+		}
+	}
+}
+
+// TestHistogramDelta_L1Distance_Symmetric asserts |Delta| sums match
+// regardless of which side is prev vs curr.
+func TestHistogramDelta_L1Distance_Symmetric(t *testing.T) {
+	cases := []struct {
+		prev, curr []int
+		wantL1     float64
+	}{
+		{[]int{1, 2, 3}, []int{4, 1, 5}, 3 + 1 + 2}, // |3|+|-1|+|2|=6
+		{[]int{4, 1, 5}, []int{1, 2, 3}, 3 + 1 + 2}, // |-3|+|1|+|-2|=6
+	}
+	for i, c := range cases {
+		prev := emptyMetrics()
+		prev.ReflectionRoundsMean = 1.0
+		prev.AdoptedRoundCounts = c.prev
+		curr := emptyMetrics()
+		curr.ReflectionRoundsMean = 1.0
+		curr.AdoptedRoundCounts = c.curr
+		r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+		if len(r.Histograms) == 0 {
+			t.Fatalf("case %d: Histograms empty", i)
+		}
+		if math.Abs(r.Histograms[0].L1Distance-c.wantL1) > 1e-9 {
+			t.Errorf("case %d: L1=%v, want %v", i, r.Histograms[0].L1Distance, c.wantL1)
+		}
+	}
+}
+
+// TestHistogramDelta_AllEqual_ZeroL1 asserts identical histograms produce L1=0.
+func TestHistogramDelta_AllEqual_ZeroL1(t *testing.T) {
+	prev := emptyMetrics()
+	prev.ReflectionRoundsMean = 1.0
+	prev.AdoptedRoundCounts = []int{1, 2, 3}
+	curr := emptyMetrics()
+	curr.ReflectionRoundsMean = 1.0
+	curr.AdoptedRoundCounts = []int{1, 2, 3}
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	if len(r.Histograms) == 0 {
+		t.Fatalf("Histograms empty")
+	}
+	if r.Histograms[0].L1Distance != 0 {
+		t.Errorf("L1=%v, want 0", r.Histograms[0].L1Distance)
+	}
+}
+
+// TestCompareBenchmarks_PopulatesAdoptedRoundCountsHistogram asserts the
+// AdoptedRoundCounts histogram is automatically populated by
+// CompareBenchmarks with Name == "AdoptedRoundCounts".
+func TestCompareBenchmarks_PopulatesAdoptedRoundCountsHistogram(t *testing.T) {
+	prev := emptyMetrics()
+	prev.ReflectionRoundsMean = 1.0
+	prev.AdoptedRoundCounts = []int{5, 10}
+	curr := emptyMetrics()
+	curr.ReflectionRoundsMean = 1.0
+	curr.AdoptedRoundCounts = []int{8, 12}
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	if len(r.Histograms) != 1 {
+		t.Fatalf("Histograms len = %d, want 1", len(r.Histograms))
+	}
+	h := r.Histograms[0]
+	if h.Name != "AdoptedRoundCounts" {
+		t.Errorf("Histograms[0].Name = %q, want %q", h.Name, "AdoptedRoundCounts")
+	}
+	if !intSliceEq(h.Prev, []int{5, 10}) {
+		t.Errorf("Prev=%v, want [5 10]", h.Prev)
+	}
+	if !intSliceEq(h.Curr, []int{8, 12}) {
+		t.Errorf("Curr=%v, want [8 12]", h.Curr)
+	}
+	if !intSliceEq(h.Delta, []int{3, 2}) {
+		t.Errorf("Delta=%v, want [3 2]", h.Delta)
+	}
+	if h.L1Distance != 5 {
+		t.Errorf("L1Distance=%v, want 5", h.L1Distance)
+	}
+}
+
+func intSliceEq(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // TestDriftReportMarkdown_EmptyExamplesNoFooter asserts the footer
 // sections are omitted entirely when New/Dropped are empty.
 func TestDriftReportMarkdown_EmptyExamplesNoFooter(t *testing.T) {

@@ -152,6 +152,7 @@ type DriftReport struct
 	field Dataset string
 	field Deltas []MetricDelta
 	field DroppedExamples []string
+	field Histograms []HistogramDelta
 	field NewExamples []string
 type Example struct
 	field GoldChunkIDs []string
@@ -191,6 +192,12 @@ type GraphABResult struct
 	field GraphOn Metrics
 	field MRRDelta float64
 	field RecallDelta float64
+type HistogramDelta struct
+	field Curr []int
+	field Delta []int
+	field L1Distance float64
+	field Name string
+	field Prev []int
 type JitterMode string
 type Judge interface
 	method Judge(ctx context.Context, req JudgeRequest) (Judgement, error)

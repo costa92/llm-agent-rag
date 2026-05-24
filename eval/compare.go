@@ -74,6 +74,32 @@ type DriftReport struct {
 	Deltas          []MetricDelta
 	NewExamples     []string // queries in Curr but not Prev (sorted, deduplicated)
 	DroppedExamples []string // queries in Prev but not Curr (sorted, deduplicated)
+	// Histograms is the per-histogram diff for any int-bucket histogram
+	// metric. v1.7.0 populates exactly one entry — Name=AdoptedRoundCounts
+	// — from BenchmarkMetrics.AdoptedRoundCounts on both sides. Future
+	// minor versions may append additional histograms; the order matches
+	// the populate order in CompareBenchmarks. Empty when both sides have
+	// no histogram data.
+	Histograms []HistogramDelta
+}
+
+// HistogramDelta is one histogram-typed entry in a DriftReport. It pairs
+// two int-bucket histograms (Prev / Curr) and pre-computes their per-bucket
+// difference and L1 distance.
+//
+//   - Delta is Curr[i] - Prev[i], zero-padded on the shorter side to
+//     len(Delta) == max(len(Prev), len(Curr)).
+//   - L1Distance is sum |Delta[i]| as a float64. The type is float64 to
+//     leave room for weighted variants in future minor releases.
+//
+// Compatibility note: this exported struct may grow additively over time,
+// so keyed composite literals are recommended. v1.7.0.
+type HistogramDelta struct {
+	Name       string
+	Prev       []int
+	Curr       []int
+	Delta      []int
+	L1Distance float64
 }
 
 // polarity is the internal direction-of-betterness for one metric.
@@ -188,6 +214,14 @@ func CompareBenchmarks(prev, curr BenchmarkResult) DriftReport {
 	newExamples := setDiff(currQueries, prevQueries)
 	droppedExamples := setDiff(prevQueries, currQueries)
 
+	// Histograms (v1.7.0 C4). For now: AdoptedRoundCounts only. Skip
+	// emission when both sides are empty so the report stays additive
+	// for v1.6.0 callers that never engaged reflection.
+	var histograms []HistogramDelta
+	if len(pm.AdoptedRoundCounts) > 0 || len(cm.AdoptedRoundCounts) > 0 {
+		histograms = append(histograms, compareHistogram("AdoptedRoundCounts", pm.AdoptedRoundCounts, cm.AdoptedRoundCounts))
+	}
+
 	// Dataset name: prefer curr's; fall back to prev's when curr empty.
 	name := curr.Dataset.Name
 	if name == "" {
@@ -198,6 +232,46 @@ func CompareBenchmarks(prev, curr BenchmarkResult) DriftReport {
 		Deltas:          deltas,
 		NewExamples:     newExamples,
 		DroppedExamples: droppedExamples,
+		Histograms:      histograms,
+	}
+}
+
+// compareHistogram diffs two int-bucket histograms. The Delta slice is
+// zero-padded on the shorter side so len(Delta) == max(len(prev), len(curr)).
+// L1Distance is sum |Delta[i]| as a float64.
+func compareHistogram(name string, prev, curr []int) HistogramDelta {
+	n := len(prev)
+	if len(curr) > n {
+		n = len(curr)
+	}
+	delta := make([]int, n)
+	var l1 float64
+	for i := 0; i < n; i++ {
+		p := 0
+		if i < len(prev) {
+			p = prev[i]
+		}
+		c := 0
+		if i < len(curr) {
+			c = curr[i]
+		}
+		d := c - p
+		delta[i] = d
+		if d < 0 {
+			l1 += float64(-d)
+		} else {
+			l1 += float64(d)
+		}
+	}
+	// Defensive copies so the returned struct does not alias caller slices.
+	prevCopy := append([]int(nil), prev...)
+	currCopy := append([]int(nil), curr...)
+	return HistogramDelta{
+		Name:       name,
+		Prev:       prevCopy,
+		Curr:       currCopy,
+		Delta:      delta,
+		L1Distance: l1,
 	}
 }
 
