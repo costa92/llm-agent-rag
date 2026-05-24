@@ -78,9 +78,12 @@ func (s *System) AskDrift(ctx context.Context, question string, opts DriftOption
 	}
 	// AskDrift is top-level: install a fresh obs.Counter so the primer map
 	// generations, every local-round generation, the synthesis generation,
-	// and any lazy summarization are counted.
+	// and any lazy summarization are counted. Alongside, install a fresh
+	// StageUsageAccumulator (v1.5.0) for the per-Generate stage-token audit.
 	counter := obs.NewCounter()
 	ctx = obs.WithCounter(ctx, counter)
+	stageUsage := obs.NewStageUsageAccumulator()
+	ctx = obs.WithStageUsage(ctx, stageUsage)
 	metrics := obs.Metrics{}
 	start := time.Now()
 
@@ -130,6 +133,7 @@ func (s *System) AskDrift(ctx context.Context, question string, opts DriftOption
 
 	metrics.Calls = counter.Counts()
 	metrics.TotalDuration = time.Since(start)
+	metrics.StageTokenUsage = stageUsage.Snapshot()
 
 	return Answer{
 		Text: finalText,

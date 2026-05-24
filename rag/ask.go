@@ -40,9 +40,13 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	}
 	// Ask is always top-level: install a fresh obs.Counter so embedding
 	// and generation calls — including those nested in retrieve and the
-	// preprocessor — are counted, and time each stage.
+	// preprocessor — are counted, and time each stage. Alongside, install
+	// a fresh obs.StageUsageAccumulator (v1.5.0) so every Generate call
+	// through countingModel records a StageTokenUsage entry.
 	counter := obs.NewCounter()
 	ctx = obs.WithCounter(ctx, counter)
+	stageUsage := obs.NewStageUsageAccumulator()
+	ctx = obs.WithStageUsage(ctx, stageUsage)
 	askStart := time.Now()
 
 	var (
@@ -314,6 +318,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	}
 	answer := round.answer
 	answer.Diagnostics.Metrics = mergeMetrics(answer.Diagnostics.Metrics, counter.Counts(), time.Since(askStart))
+	answer.Diagnostics.Metrics.StageTokenUsage = stageUsage.Snapshot()
 	if s.observer.OnAsk != nil {
 		s.observer.OnAsk(ctx, answer.Trace)
 	}

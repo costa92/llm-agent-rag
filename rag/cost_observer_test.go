@@ -316,6 +316,154 @@ func (fixedGrader) ScoreSupport(_ context.Context, _ string, _ store.Hit) (float
 	return 0.5, "fixed", nil
 }
 
+func TestAskGlobalRecordsStageTokens(t *testing.T) {
+	st, _ := newGlobalTestStore(t, "kb")
+	model := &globalScriptedModel{
+		mapText:   "Score: 80\nThis community is highly relevant to the question.",
+		reduceTxt: "The synthesized final answer.",
+	}
+	summarizer := &countingSummarizer{inner: staticSummarizer{}}
+	sys := New(Options{
+		Model:               model,
+		Store:               st,
+		CommunitySummarizer: summarizer,
+	})
+	ans, err := sys.AskGlobal(context.Background(), "what are the themes",
+		GlobalOptions{Namespace: "kb"})
+	if err != nil {
+		t.Fatalf("AskGlobal: %v", err)
+	}
+	entries := ans.Diagnostics.Metrics.StageTokenUsage
+	if len(entries) == 0 {
+		t.Fatalf("StageTokenUsage empty; want at least one \"ask\" entry")
+	}
+	for _, e := range entries {
+		if e.Stage != "ask" {
+			t.Fatalf("stage = %q, want \"ask\"; got entries %+v", e.Stage, entries)
+		}
+	}
+}
+
+func TestAskDriftRecordsStageTokens(t *testing.T) {
+	rec := &observerRecorder{}
+	// Reuse the AskDrift test harness via its existing test fixtures —
+	// the test below uses the same setup as TestAskDriftPrimerLoopSynthesis.
+	// We import the helper via the test package; here we just want a
+	// minimal AskDrift call that exercises at least one Generate.
+	st, _ := newGlobalTestStore(t, "kb")
+	model := &globalScriptedModel{
+		mapText:   "Score: 80\nThis community contributes.",
+		reduceTxt: "Synthesized answer.",
+	}
+	summarizer := &countingSummarizer{inner: staticSummarizer{}}
+	sys := New(Options{
+		Model:               model,
+		Store:               st,
+		CommunitySummarizer: summarizer,
+		Observer: Observer{
+			OnGenerateUsage: rec.Hook,
+		},
+	})
+	ans, err := sys.AskDrift(context.Background(), "what are the themes",
+		DriftOptions{Namespace: "kb"})
+	if err != nil {
+		t.Fatalf("AskDrift: %v", err)
+	}
+	entries := ans.Diagnostics.Metrics.StageTokenUsage
+	if len(entries) == 0 {
+		t.Fatalf("StageTokenUsage empty; want at least one \"ask\" entry")
+	}
+	for _, e := range entries {
+		if e.Stage != "ask" {
+			t.Fatalf("stage = %q, want \"ask\"; got entries %+v", e.Stage, entries)
+		}
+	}
+}
+
+// TestAskMetricsStageTokenUsagePopulated pins that the v1.5.0 stage-token
+// accumulator surfaces into Metrics.StageTokenUsage with entries in call
+// order.
+func TestAskMetricsStageTokenUsagePopulated(t *testing.T) {
+	model := &scriptedReflectionModel{
+		responses: []generate.Response{
+			{Text: "answer round 1", Usage: generate.Usage{PromptTokens: 11, CompletionTokens: 5, TotalTokens: 16}},
+			{Text: "decision=stop\nreason=ok", Usage: generate.Usage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10}},
+		},
+	}
+	sys := New(Options{Model: model})
+	if _, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Paris is the capital of France."},
+	}, ingest.ImportOptions{Namespace: "geo"}); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	ans, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 1},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:      ReflectionModeModel,
+			MaxRounds: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	entries := ans.Diagnostics.Metrics.StageTokenUsage
+	if len(entries) != 2 {
+		t.Fatalf("StageTokenUsage len = %d, want 2; entries = %+v", len(entries), entries)
+	}
+	if entries[0].Stage != "ask" {
+		t.Fatalf("entries[0].Stage = %q, want %q", entries[0].Stage, "ask")
+	}
+	if entries[1].Stage != "reflection_decision" {
+		t.Fatalf("entries[1].Stage = %q, want %q", entries[1].Stage, "reflection_decision")
+	}
+	if entries[0].Usage.TotalTokens != 16 {
+		t.Fatalf("entries[0].Usage.TotalTokens = %d, want 16", entries[0].Usage.TotalTokens)
+	}
+	if entries[1].Usage.TotalTokens != 10 {
+		t.Fatalf("entries[1].Usage.TotalTokens = %d, want 10", entries[1].Usage.TotalTokens)
+	}
+}
+
+// TestAskMetricsTokensUnchanged pins that Metrics.Tokens stays byte-for-byte
+// equivalent to v1.4.0 for a reflection run — StageTokenUsage is additive
+// and does NOT alter how the answer-leg TokenUsage is computed.
+func TestAskMetricsTokensUnchanged(t *testing.T) {
+	model := &scriptedReflectionModel{
+		responses: []generate.Response{
+			{Text: "answer round 1", Usage: generate.Usage{PromptTokens: 11, CompletionTokens: 5, TotalTokens: 16}},
+			{Text: "decision=stop\nreason=ok", Usage: generate.Usage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10}},
+		},
+	}
+	sys := New(Options{Model: model})
+	if _, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Paris is the capital of France."},
+	}, ingest.ImportOptions{Namespace: "geo"}); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	ans, err := sys.Ask(context.Background(), "capital of france", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 1},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:      ReflectionModeModel,
+			MaxRounds: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	// Existing v1.4.0 contract: per reflection.go aggregateReflectionMetrics
+	// + combineMetricsSnapshots, Tokens.{PromptTokens,CompletionTokens,
+	// TotalTokens} sums the answer-leg AND the decision-leg deriveTokenUsage
+	// for each round. One round here: answer 11/5/16 + decision 7/3/10 =
+	// 18/8/26.
+	want := obs.TokenUsage{PromptTokens: 18, CompletionTokens: 8, TotalTokens: 26, Estimated: false}
+	got := ans.Diagnostics.Metrics.Tokens
+	if got != want {
+		t.Fatalf("Metrics.Tokens = %+v, want %+v (must stay byte-identical to v1.4.0)", got, want)
+	}
+}
+
 func TestCustomGraderNotAutoWrapped(t *testing.T) {
 	rec := &observerRecorder{}
 	sys := New(Options{
