@@ -306,6 +306,22 @@ type System struct {
 	// alongside model so each leg attributes its Generate calls to a
 	// distinct stage tag.
 	reflectionModel generate.Model
+	// globalMapModel and globalReduceModel are the per-sub-stage counting
+	// wrappers used inside AskGlobal (v1.5.1). The map model tags every
+	// per-community map-step Generate call with StageAskGlobalMap; the
+	// reduce model tags the synthesis Generate call with
+	// StageAskGlobalReduce. Both are nil when opts.Model is nil so AskGlobal
+	// still returns ErrModelRequired.
+	globalMapModel    generate.Model
+	globalReduceModel generate.Model
+	// driftPrimerModel, driftLocalModel, and driftSynthModel are the per-
+	// sub-stage counting wrappers used inside AskDrift (v1.5.1). They tag
+	// the primer map step, the local-round body, and the synthesis call
+	// with StageAskDriftPrimer, StageAskDriftLocal, and StageAskDriftSynth
+	// respectively. All three are nil when opts.Model is nil.
+	driftPrimerModel generate.Model
+	driftLocalModel  generate.Model
+	driftSynthModel  generate.Model
 	template        prompt.Template
 	pre             retrieve.QueryPreprocessor
 	ret             retrieve.Retriever
@@ -415,6 +431,15 @@ func New(opts Options) *System {
 	if opts.Model != nil {
 		s.model = wrapCounting(opts.Model, StageAsk, &s.observer)
 		s.reflectionModel = wrapCounting(opts.Model, StageReflectionDecision, &s.observer)
+		// v1.5.1 sub-stage wrappers — each tags its inner Generate calls
+		// with a distinct stage. AskGlobal/AskDrift route through these
+		// instead of s.model so cost-observers can attribute their map /
+		// reduce / primer / local / synth legs separately.
+		s.globalMapModel = wrapCounting(opts.Model, StageAskGlobalMap, &s.observer)
+		s.globalReduceModel = wrapCounting(opts.Model, StageAskGlobalReduce, &s.observer)
+		s.driftPrimerModel = wrapCounting(opts.Model, StageAskDriftPrimer, &s.observer)
+		s.driftLocalModel = wrapCounting(opts.Model, StageAskDriftLocal, &s.observer)
+		s.driftSynthModel = wrapCounting(opts.Model, StageAskDriftSynth, &s.observer)
 	}
 	// Type-assert the shipped PromptGrader / PromptQueryPlanner and rebuild
 	// them with stage-tagged counting models. Custom user-supplied

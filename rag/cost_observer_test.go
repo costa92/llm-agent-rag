@@ -335,11 +335,16 @@ func TestAskGlobalRecordsStageTokens(t *testing.T) {
 	}
 	entries := ans.Diagnostics.Metrics.StageTokenUsage
 	if len(entries) == 0 {
-		t.Fatalf("StageTokenUsage empty; want at least one \"ask\" entry")
+		t.Fatalf("StageTokenUsage empty; want at least one map/reduce entry")
 	}
+	// v1.5.1: AskGlobal's inner Generate calls now tag with the sub-stages
+	// StageAskGlobalMap (per-community map step) and StageAskGlobalReduce
+	// (the synthesis reduce step). The top-level "ask" tag is reserved for
+	// System.Ask. See CHANGELOG v1.5.1 compat notes.
 	for _, e := range entries {
-		if e.Stage != "ask" {
-			t.Fatalf("stage = %q, want \"ask\"; got entries %+v", e.Stage, entries)
+		if e.Stage != StageAskGlobalMap && e.Stage != StageAskGlobalReduce {
+			t.Fatalf("stage = %q, want %q or %q; got entries %+v",
+				e.Stage, StageAskGlobalMap, StageAskGlobalReduce, entries)
 		}
 	}
 }
@@ -371,11 +376,19 @@ func TestAskDriftRecordsStageTokens(t *testing.T) {
 	}
 	entries := ans.Diagnostics.Metrics.StageTokenUsage
 	if len(entries) == 0 {
-		t.Fatalf("StageTokenUsage empty; want at least one \"ask\" entry")
+		t.Fatalf("StageTokenUsage empty; want at least one drift-substage entry")
 	}
+	// v1.5.1: AskDrift's inner Generate calls now tag with the sub-stages
+	// StageAskDriftPrimer (per-community primer map step), StageAskDriftLocal
+	// (per local follow-up round), and StageAskDriftSynth (the synthesis
+	// step). See CHANGELOG v1.5.1 compat notes.
 	for _, e := range entries {
-		if e.Stage != "ask" {
-			t.Fatalf("stage = %q, want \"ask\"; got entries %+v", e.Stage, entries)
+		switch e.Stage {
+		case StageAskDriftPrimer, StageAskDriftLocal, StageAskDriftSynth:
+			// ok — one of the documented drift sub-stages.
+		default:
+			t.Fatalf("stage = %q, want one of %q/%q/%q; got entries %+v",
+				e.Stage, StageAskDriftPrimer, StageAskDriftLocal, StageAskDriftSynth, entries)
 		}
 	}
 }
@@ -493,6 +506,55 @@ func TestCustomGraderNotAutoWrapped(t *testing.T) {
 		if s == "grader" {
 			t.Fatalf("custom Grader was auto-wrapped — got \"grader\" stage in %v", rec.Stages())
 		}
+	}
+}
+
+// TestObserverOnGenerateUsageGlobalMapStage pins that AskGlobal's inner map
+// and reduce Generate calls fire Observer.OnGenerateUsage with the v1.5.1
+// sub-stage tags StageAskGlobalMap and StageAskGlobalReduce — and never with
+// the top-level "ask" tag. The constraint matches the compatibility note in
+// CHANGELOG v1.5.1: AskGlobal/AskDrift now use sub-stage tags.
+func TestObserverOnGenerateUsageGlobalMapStage(t *testing.T) {
+	rec := &observerRecorder{}
+	st, _ := newGlobalTestStore(t, "kb")
+	model := &globalScriptedModel{
+		mapText:   "Score: 80\nThis community is highly relevant to the question.",
+		reduceTxt: "Synthesized answer.",
+	}
+	summarizer := &countingSummarizer{inner: staticSummarizer{}}
+	sys := New(Options{
+		Model:               model,
+		Store:               st,
+		CommunitySummarizer: summarizer,
+		Observer: Observer{
+			OnGenerateUsage: rec.Hook,
+		},
+	})
+	if _, err := sys.AskGlobal(context.Background(), "what are the themes",
+		GlobalOptions{Namespace: "kb"}); err != nil {
+		t.Fatalf("AskGlobal: %v", err)
+	}
+	stages := rec.Stages()
+	if len(stages) == 0 {
+		t.Fatalf("OnGenerateUsage never fired for AskGlobal")
+	}
+	var hasMap, hasReduce bool
+	for _, s := range stages {
+		switch s {
+		case StageAskGlobalMap:
+			hasMap = true
+		case StageAskGlobalReduce:
+			hasReduce = true
+		case StageAsk:
+			t.Fatalf("AskGlobal emitted %q stage — v1.5.1 routes inner calls through %q/%q (got %v)",
+				StageAsk, StageAskGlobalMap, StageAskGlobalReduce, stages)
+		}
+	}
+	if !hasMap {
+		t.Fatalf("missing %q stage in %v", StageAskGlobalMap, stages)
+	}
+	if !hasReduce {
+		t.Fatalf("missing %q stage in %v", StageAskGlobalReduce, stages)
 	}
 }
 
