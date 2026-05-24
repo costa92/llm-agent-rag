@@ -199,7 +199,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 						decision = unchangedDecision
 					} else {
 						decisionModelCalls++
-						decision, err = decideWithModel(ctx, s.model, question, reflection, round)
+						decision, err = decideWithModel(ctx, s.reflectionModel, question, reflection, round)
 						if err != nil {
 							if reflection.FailOpen {
 								decision = reflectionDecisionResult{
@@ -224,7 +224,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 						decision = unchangedDecision
 					} else {
 						decisionModelCalls++
-						decision, err = decideWithModel(ctx, s.model, question, reflection, round)
+						decision, err = decideWithModel(ctx, s.reflectionModel, question, reflection, round)
 						if err != nil {
 							if reflection.FailOpen {
 								decision = reflectionDecisionResult{

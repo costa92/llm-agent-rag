@@ -9,6 +9,7 @@ import (
 	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/ingest"
 	"github.com/costa92/llm-agent-rag/obs"
+	"github.com/costa92/llm-agent-rag/store"
 )
 
 // recordingModel returns a canned generate.Response and records every
@@ -166,3 +167,184 @@ func TestCountingModelSkipsOnError(t *testing.T) {
 		t.Fatalf("hook fired on error path: %+v", snap)
 	}
 }
+
+func TestObserverOnGenerateUsageReflectionStage(t *testing.T) {
+	rec := &observerRecorder{}
+	// Model-mode reflection needs two responses per round (answer + decision).
+	// Use ReflectionModeModel with MaxRounds=1 and an immediate stop verdict.
+	model := &scriptedReflectionModel{
+		responses: []generate.Response{
+			{Text: "answer round 1", Usage: generate.Usage{PromptTokens: 11, CompletionTokens: 5, TotalTokens: 16}},
+			{Text: "decision=stop\nreason=good enough", Usage: generate.Usage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10}},
+		},
+	}
+	sys := New(Options{
+		Model: model,
+		Observer: Observer{
+			OnGenerateUsage: rec.Hook,
+		},
+	})
+	if _, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Paris is the capital of France."},
+	}, ingest.ImportOptions{Namespace: "geo"}); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if _, err := sys.Ask(context.Background(), "capital of France", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 1},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:      ReflectionModeModel,
+			MaxRounds: 1,
+		},
+	}); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	stages := rec.Stages()
+	hasAsk := false
+	hasReflectionDecision := false
+	for _, s := range stages {
+		switch s {
+		case "ask":
+			hasAsk = true
+		case "reflection_decision":
+			hasReflectionDecision = true
+		}
+	}
+	if !hasAsk {
+		t.Fatalf("missing \"ask\" stage in %v", stages)
+	}
+	if !hasReflectionDecision {
+		t.Fatalf("missing \"reflection_decision\" stage in %v", stages)
+	}
+}
+
+func TestObserverOnGenerateUsageGraderStage(t *testing.T) {
+	rec := &observerRecorder{}
+	// askModel just answers; graderModel emits a parseable score line.
+	askModel := &recordingModel{resp: generate.Response{Text: "the answer"}}
+	graderModel := &recordingModel{resp: generate.Response{Text: "score=0.8"}}
+	sys := New(Options{
+		Model:  askModel,
+		Grader: PromptGrader{Model: graderModel},
+		Observer: Observer{
+			OnGenerateUsage: rec.Hook,
+		},
+	})
+	if _, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Paris is the capital of France."},
+	}, ingest.ImportOptions{Namespace: "geo"}); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if _, err := sys.Ask(context.Background(), "capital of France", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 1},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:               ReflectionModeRule,
+			MaxRounds:          1,
+			EnableChunkGrading: true,
+		},
+	}); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	stages := rec.Stages()
+	hasGrader := false
+	for _, s := range stages {
+		if s == "grader" {
+			hasGrader = true
+			break
+		}
+	}
+	if !hasGrader {
+		t.Fatalf("missing \"grader\" stage in %v", stages)
+	}
+}
+
+func TestObserverOnGenerateUsagePlannerStage(t *testing.T) {
+	rec := &observerRecorder{}
+	// askModel answers; plannerModel emits a follow-up query line. The
+	// active-retrieval driver only consults the planner when seed
+	// relevance is below the floor — set the floor high so it fires.
+	askModel := &recordingModel{resp: generate.Response{Text: "the answer"}}
+	plannerModel := &recordingModel{resp: generate.Response{Text: "follow-up query"}}
+	sys := New(Options{
+		Model:        askModel,
+		QueryPlanner: PromptQueryPlanner{Model: plannerModel},
+		Observer: Observer{
+			OnGenerateUsage: rec.Hook,
+		},
+	})
+	if _, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Paris is the capital of France."},
+	}, ingest.ImportOptions{Namespace: "geo"}); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if _, err := sys.Ask(context.Background(), "capital of France", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 1},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:                          ReflectionModeRule,
+			MaxRounds:                     1,
+			EnableActiveRetrieval:         true,
+			ActiveRetrievalRelevanceFloor: 0.99,
+		},
+	}); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	stages := rec.Stages()
+	hasPlanner := false
+	for _, s := range stages {
+		if s == "planner" {
+			hasPlanner = true
+			break
+		}
+	}
+	if !hasPlanner {
+		t.Fatalf("missing \"planner\" stage in %v: %+v", stages, rec.Snapshot())
+	}
+}
+
+// fixedGrader is a custom (non-PromptGrader) Grader that should NOT be
+// auto-wrapped — the v1.5.0 contract documents that only shipped types
+// are rebuilt during rag.New(opts). This test pins that limitation.
+type fixedGrader struct{}
+
+func (fixedGrader) ScoreRelevance(_ context.Context, _ string, _ store.Hit) (float64, string, error) {
+	return 0.5, "fixed", nil
+}
+
+func (fixedGrader) ScoreSupport(_ context.Context, _ string, _ store.Hit) (float64, string, error) {
+	return 0.5, "fixed", nil
+}
+
+func TestCustomGraderNotAutoWrapped(t *testing.T) {
+	rec := &observerRecorder{}
+	sys := New(Options{
+		Model:  &recordingModel{resp: generate.Response{Text: "the answer"}},
+		Grader: fixedGrader{},
+		Observer: Observer{
+			OnGenerateUsage: rec.Hook,
+		},
+	})
+	if _, err := sys.Import(context.Background(), []ingest.Document{
+		{ID: "doc1", Content: "Paris is the capital of France."},
+	}, ingest.ImportOptions{Namespace: "geo"}); err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if _, err := sys.Ask(context.Background(), "capital of France", AskOptions{
+		Search:   SearchOptions{Namespace: "geo", TopK: 1},
+		Template: promptRoutingTemplate{},
+		Reflection: &ReflectionOptions{
+			Mode:               ReflectionModeRule,
+			MaxRounds:          1,
+			EnableChunkGrading: true,
+		},
+	}); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	for _, s := range rec.Stages() {
+		if s == "grader" {
+			t.Fatalf("custom Grader was auto-wrapped — got \"grader\" stage in %v", rec.Stages())
+		}
+	}
+}
+
