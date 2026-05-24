@@ -1,13 +1,24 @@
 package eval
 
-// This file implements the v1.3.0 C-Eval answer-quality benchmark
-// harness — a generation-side scoreboard for the standard System.Ask
-// path. It is deliberately pure C-Eval: ExactMatch, token F1, and
-// required-phrase recall scored against labeled gold answers, with
-// no LLM-as-judge call and no external datasets bundled. Reflection,
-// grading, and active-retrieval signals are read off the answer's
-// existing Diagnostics so the same harness scores v1.0.x and v1.2.x
-// pipelines identically.
+// This file implements the C-Eval answer-quality benchmark harness — a
+// generation-side scoreboard for the standard System.Ask path. v1.3.0
+// shipped the pure C-Eval core (ExactMatch, token F1, required-phrase
+// recall) plus reflection/grading/active-retrieval signal aggregation
+// from existing Diagnostics. v1.4.0 extends the harness with two
+// closely-coupled, fully additive features:
+//
+//   - C-BenchJudge: an optional Judge field on AnswerBenchmark wires the
+//     same JudgeRequest{Query, Answer, Context} contract used by
+//     TriadEvaluator. When set, per-example Judgement is captured and
+//     dataset-level MeanGroundedness / MeanAnswerRelevance are computed.
+//     When nil, all judge-side metrics carry math.NaN() and the v1.3.0
+//     textual scoring path runs byte-for-byte unchanged.
+//   - C-BenchPar: an optional Parallelism field bounds concurrent
+//     example dispatch via a buffered-channel semaphore + WaitGroup
+//     worker pool. Sequential (Parallelism <= 1) flows through the
+//     v1.3.0 single-goroutine loop; parallel (>= 2) writes per-example
+//     results into a pre-allocated slice by index so PerExample order
+//     is deterministic regardless of completion order.
 //
 // The Asker contract is the existing eval.Asker from triad.go — the
 // benchmark introduces no new seam on rag.System. BenchmarkMetrics
@@ -23,6 +34,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/costa92/llm-agent-rag/rag"
 )
@@ -135,6 +147,9 @@ type BenchmarkMetrics struct {
 	GraderAdoptionRate      float64 // GraderAdoptionRate is the fraction of grading-enabled examples whose AdoptedRound != last round; NaN when grading was off everywhere.
 	FollowupQueriesUsedMean float64 // FollowupQueriesUsedMean is the mean FollowupQueriesUsed over active-retrieval-enabled examples; NaN when active retrieval was off everywhere.
 	ActiveRetrievalFireRate float64 // ActiveRetrievalFireRate is the fraction of active-retrieval-enabled examples that emitted at least one follow-up; NaN when active retrieval was off everywhere.
+
+	MeanGroundedness    float64 // MeanGroundedness is the mean Judgement.Groundedness over judge-applied examples; NaN when Judge=nil or dataset empty. v1.4.0.
+	MeanAnswerRelevance float64 // MeanAnswerRelevance is the mean Judgement.AnswerRelevance over judge-applied examples; NaN when Judge=nil or dataset empty. v1.4.0.
 }
 
 // AnswerExampleResult is the per-example trace behind a BenchmarkResult.
@@ -157,6 +172,8 @@ type AnswerExampleResult struct {
 	ActiveFired         bool          // ActiveFired is true when any round had non-empty FollowupQueries.
 	GraderEnabled       bool          // GraderEnabled is true when any round had non-empty ChunkScores (grading actually ran).
 	ActiveEnabled       bool          // ActiveEnabled mirrors Options.Reflection.EnableActiveRetrieval at run time.
+	Judgement           Judgement     // Judgement is the LLM-as-judge verdict on this example; zero value when JudgeApplied=false. v1.4.0.
+	JudgeApplied        bool          // JudgeApplied is true when AnswerBenchmark.Judge was non-nil AND the judge call returned no error. v1.4.0.
 }
 
 // BenchmarkResult is the full output of an AnswerBenchmark run: the
@@ -180,12 +197,52 @@ type BenchmarkResult struct {
 type AnswerBenchmark struct {
 	Asker   Asker          // Asker runs the answer pipeline under evaluation; reuses eval.Asker.
 	Options rag.AskOptions // Options is the base AskOptions applied to every Ask call (overlaid per example).
+	Judge   Judge          // Judge optionally scores each answer for groundedness/relevance; nil = textual metrics only. v1.4.0.
+
+	// Parallelism bounds concurrent example dispatch:
+	//   - 0 or 1   → sequential (v1.3.0 behavior; preserved byte-for-byte).
+	//   - negative → coerced to sequential.
+	//   - >=2      → bounded worker pool fans out Ask + (optional) Judge.
+	//
+	// When >=2, AnswerBenchmark.Asker and AnswerBenchmark.Judge MUST be
+	// safe for concurrent use by multiple goroutines. *rag.System
+	// satisfies that contract. Asker work is treated as I/O-bound, so
+	// Parallelism is NOT capped at runtime.NumCPU/GOMAXPROCS — pick a
+	// value that matches your downstream concurrency budget.
+	//
+	// Error semantics: a sticky first-error gate aborts the run. The
+	// first failing Ask or Judge wins; in-flight siblings finish their
+	// current call naturally (no context cancellation). Determinism:
+	// PerExample order matches dataset.Examples regardless of
+	// completion order — each goroutine writes to a pre-allocated slot
+	// by index.
+	//
+	// v1.4.0.
+	Parallelism int
 }
 
-// Run executes the benchmark sequentially. The base Options is copied
-// per example; Search.TopK is set from dataset.TopK and Search.Namespace
-// is overlaid from the example's Namespace when non-empty. The runner
-// aborts on the first Ask error, wrapping it with the offending query.
+// normalizeParallelism reduces AnswerBenchmark.Parallelism to a valid
+// worker count. Values <= 1 (including negatives) collapse to 1, which
+// the runner uses to route through the v1.3.0 sequential loop unchanged.
+func normalizeParallelism(p int) int {
+	if p < 2 {
+		return 1
+	}
+	return p
+}
+
+// Run executes the benchmark. The base Options is copied per example;
+// Search.TopK is set from dataset.TopK and Search.Namespace is overlaid
+// from the example's Namespace when non-empty. The runner aborts on the
+// first Ask or Judge error, wrapping it with the offending query.
+//
+// Dispatch is sequential when normalizeParallelism(b.Parallelism) == 1
+// (the v1.3.0 behavior — preserved byte-for-byte). When Parallelism>=2,
+// examples are fanned out via a buffered-channel semaphore + WaitGroup
+// worker pool that mirrors rag.System.runFollowupsParallel
+// (rag/active_retrieval.go:278-313). PerExample order matches
+// dataset.Examples order under both modes (index-keyed write into a
+// pre-allocated slice).
 func (b AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (BenchmarkResult, error) {
 	if b.Asker == nil {
 		return BenchmarkResult{}, errors.New("eval: Asker is required")
@@ -193,24 +250,120 @@ func (b AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (Benchm
 	if dataset.TopK <= 0 {
 		return BenchmarkResult{}, fmt.Errorf("eval: dataset %q has TopK <= 0", dataset.Name)
 	}
+
+	workers := normalizeParallelism(b.Parallelism)
+	if workers == 1 {
+		return b.runSequential(ctx, dataset)
+	}
+	return b.runParallel(ctx, dataset, workers)
+}
+
+// runSequential is the v1.3.0 sequential dispatch path, unchanged in
+// shape: a single goroutine walks the dataset in order and aborts on
+// the first Ask or Judge error.
+func (b AnswerBenchmark) runSequential(ctx context.Context, dataset AnswerDataset) (BenchmarkResult, error) {
 	per := make([]AnswerExampleResult, 0, len(dataset.Examples))
 	for _, ex := range dataset.Examples {
-		opts := b.Options
-		opts.Search.TopK = dataset.TopK
-		if ex.Namespace != "" {
-			opts.Search.Namespace = ex.Namespace
-		}
-		ans, err := b.Asker.Ask(ctx, ex.Query, opts)
+		r, err := b.runOne(ctx, dataset, ex)
 		if err != nil {
-			return BenchmarkResult{}, fmt.Errorf("eval: ask %q: %w", ex.Query, err)
+			return BenchmarkResult{}, err
 		}
-		per = append(per, scoreAnswerExample(ex, ans, opts))
+		per = append(per, r)
 	}
 	return BenchmarkResult{
 		Dataset:    dataset,
 		Metrics:    aggregateBenchmarkMetrics(per),
 		PerExample: per,
 	}, nil
+}
+
+// runParallel dispatches examples over a bounded worker pool. The
+// semaphore is a buffered chan with capacity `workers`. Results are
+// written by index into a pre-allocated slice so the per-example order
+// matches dataset.Examples regardless of completion order. Errors are
+// sticky: the first Ask or Judge error wins via errMu/firstErr; siblings
+// finish naturally (no context cancellation of siblings — see v1.4.0
+// design Q-G).
+func (b AnswerBenchmark) runParallel(ctx context.Context, dataset AnswerDataset, workers int) (BenchmarkResult, error) {
+	results := make([]AnswerExampleResult, len(dataset.Examples))
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
+
+	for i, ex := range dataset.Examples {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i int, ex AnswerExample) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			// Sticky-error gate: if a sibling already failed, skip
+			// further work. In-flight workers still finish naturally.
+			errMu.Lock()
+			already := firstErr != nil
+			errMu.Unlock()
+			if already {
+				return
+			}
+
+			r, err := b.runOne(ctx, dataset, ex)
+			if err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+				return
+			}
+			results[i] = r
+		}(i, ex)
+	}
+	wg.Wait()
+
+	if firstErr != nil {
+		return BenchmarkResult{}, firstErr
+	}
+	return BenchmarkResult{
+		Dataset:    dataset,
+		Metrics:    aggregateBenchmarkMetrics(results),
+		PerExample: results,
+	}, nil
+}
+
+// runOne executes the Ask + (optional) Judge step for a single example,
+// returning the scored AnswerExampleResult or an error wrapped with the
+// offending query. It is the unit of work shared by the sequential and
+// parallel dispatch paths.
+//
+// Concurrency: when called from runParallel, multiple goroutines may
+// execute runOne in parallel; the Asker and Judge implementations MUST
+// be safe for concurrent use under that mode. The local rag.AskOptions
+// is a fresh copy of b.Options per call, so no Options mutation races.
+func (b AnswerBenchmark) runOne(ctx context.Context, dataset AnswerDataset, ex AnswerExample) (AnswerExampleResult, error) {
+	opts := b.Options
+	opts.Search.TopK = dataset.TopK
+	if ex.Namespace != "" {
+		opts.Search.Namespace = ex.Namespace
+	}
+	ans, err := b.Asker.Ask(ctx, ex.Query, opts)
+	if err != nil {
+		return AnswerExampleResult{}, fmt.Errorf("eval: ask %q: %w", ex.Query, err)
+	}
+	r := scoreAnswerExample(ex, ans, opts)
+	if b.Judge != nil {
+		j, jerr := b.Judge.Judge(ctx, JudgeRequest{
+			Query:   ex.Query,
+			Answer:  ans.Text,
+			Context: contextPassages(ans),
+		})
+		if jerr != nil {
+			return AnswerExampleResult{}, fmt.Errorf("eval: judge %q: %w", ex.Query, jerr)
+		}
+		r.Judgement = j
+		r.JudgeApplied = true
+	}
+	return r, nil
 }
 
 // aggregateBenchmarkMetrics reduces the per-example trace into the
@@ -233,6 +386,8 @@ func aggregateBenchmarkMetrics(per []AnswerExampleResult) BenchmarkMetrics {
 		metrics.GraderAdoptionRate = math.NaN()
 		metrics.FollowupQueriesUsedMean = math.NaN()
 		metrics.ActiveRetrievalFireRate = math.NaN()
+		metrics.MeanGroundedness = math.NaN()
+		metrics.MeanAnswerRelevance = math.NaN()
 		return metrics
 	}
 
@@ -247,6 +402,8 @@ func aggregateBenchmarkMetrics(per []AnswerExampleResult) BenchmarkMetrics {
 		activeApplicable                    int
 		activeFollowupsSum                  int
 		activeFired                         int
+		judgeApplicable                     int
+		sumGroundedness, sumRelevance       float64
 	)
 
 	for _, r := range per {
@@ -277,6 +434,11 @@ func aggregateBenchmarkMetrics(per []AnswerExampleResult) BenchmarkMetrics {
 			if r.ActiveFired {
 				activeFired++
 			}
+		}
+		if r.JudgeApplied {
+			judgeApplicable++
+			sumGroundedness += r.Judgement.Groundedness
+			sumRelevance += r.Judgement.AnswerRelevance
 		}
 	}
 
@@ -317,7 +479,31 @@ func aggregateBenchmarkMetrics(per []AnswerExampleResult) BenchmarkMetrics {
 		metrics.ActiveRetrievalFireRate = math.NaN()
 	}
 
+	if judgeApplicable > 0 {
+		metrics.MeanGroundedness = sumGroundedness / float64(judgeApplicable)
+		metrics.MeanAnswerRelevance = sumRelevance / float64(judgeApplicable)
+	} else {
+		metrics.MeanGroundedness = math.NaN()
+		metrics.MeanAnswerRelevance = math.NaN()
+	}
+
 	return metrics
+}
+
+// contextPassages projects the rag.Answer's retrieved hits into the
+// flat []string shape expected by JudgeRequest.Context. The order is
+// preserved (Hits[i] → Context[i]) so the judge sees passages in the
+// same rank order they were retrieved. Mirrors the projection in
+// triad.go's TriadEvaluator.Run (see triad.go:81-87).
+func contextPassages(ans rag.Answer) []string {
+	if len(ans.Hits) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ans.Hits))
+	for _, hit := range ans.Hits {
+		out = append(out, hit.Chunk.Content)
+	}
+	return out
 }
 
 // scoreAnswerExample assembles the per-example trace. Aggregation

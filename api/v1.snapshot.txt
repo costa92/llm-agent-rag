@@ -63,7 +63,9 @@ method (TriadResult) Summary() string
 func WriteJSONL(w io.Writer, r TriadResult) error
 type AnswerBenchmark struct
 	field Asker Asker
+	field Judge Judge
 	field Options rag.AskOptions
+	field Parallelism int
 type AnswerDataset struct
 	field Examples []AnswerExample
 	field Name string
@@ -82,6 +84,8 @@ type AnswerExampleResult struct
 	field F1Token float64
 	field FollowupsUsed int
 	field GraderEnabled bool
+	field JudgeApplied bool
+	field Judgement Judgement
 	field ReflectionRounds int
 	field RequiredPhraseHits int
 	field RequiredPhraseTotal int
@@ -95,6 +99,8 @@ type BenchmarkMetrics struct
 	field F1Token float64
 	field FollowupQueriesUsedMean float64
 	field GraderAdoptionRate float64
+	field MeanAnswerRelevance float64
+	field MeanGroundedness float64
 	field ReflectionRoundsMean float64
 	field RequiredPhraseRecall float64
 type BenchmarkResult struct
