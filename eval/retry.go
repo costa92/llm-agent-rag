@@ -2,11 +2,97 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"math/rand/v2"
+	"net"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/costa92/llm-agent-rag/rag"
 )
+
+// statusErrer is the duck-typed interface ClassifyTransientHTTP /
+// ClassifyRateLimited probe via errors.As. SDKs that expose their HTTP
+// status code on the error type (the openai-go family, for instance,
+// exposes APIError.StatusCode) satisfy it directly. Kept unexported so
+// it does not bleed into the v1 API surface.
+type statusErrer interface {
+	StatusCode() int
+}
+
+// ClassifyTransientHTTP is the prebuilt RetryPolicy.Classify suitable for
+// "retry this on network blips and transient server errors". It returns
+// true for:
+//
+//   - Any error satisfying net.Error (or *url.Error) with Timeout() == true.
+//   - Any error satisfying the SDK status-code interface (a StatusCode() int
+//     method) returning 408, 429, 500, 502, 503, or 504.
+//   - Any error whose Error() string (lowercased) contains one of "rate
+//     limit", "too many requests", "timeout", or "connection reset" —
+//     the substring fallback for SDKs that don't expose a typed status.
+//
+// It is best-effort by design: production users with a single known SDK
+// shape should write their own classifier against that SDK's error type
+// for tighter precision. The builtin's purpose is plug-and-play for the
+// common case of "I don't know exactly what shape my errors take".
+//
+// A nil error returns false — there is nothing to retry.
+func ClassifyTransientHTTP(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Timeout() {
+		return true
+	}
+	var se statusErrer
+	if errors.As(err, &se) {
+		switch se.StatusCode() {
+		case 408, 429, 500, 502, 503, 504:
+			return true
+		}
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "rate limit") ||
+		strings.Contains(s, "too many requests") ||
+		strings.Contains(s, "timeout") ||
+		strings.Contains(s, "connection reset")
+}
+
+// ClassifyRateLimited is the prebuilt RetryPolicy.Classify suitable for
+// the narrower "retry rate-limit responses ONLY" policy — typically paired
+// with a longer backoff than the generic transient case. It returns true
+// for:
+//
+//   - Any error satisfying the SDK status-code interface (a StatusCode() int
+//     method) returning exactly 429.
+//   - Any error whose Error() string (lowercased) contains one of
+//     "rate limit", "too many requests", or "quota exceeded".
+//
+// It is best-effort and intentionally NARROWER than ClassifyTransientHTTP:
+// ordinary 5xx and net timeouts return false here, so a caller composing
+// the two can fan out longer sleeps on rate-limit responses without
+// affecting their ordinary transient-error policy.
+//
+// A nil error returns false — there is nothing to retry.
+func ClassifyRateLimited(err error) bool {
+	if err == nil {
+		return false
+	}
+	var se statusErrer
+	if errors.As(err, &se) && se.StatusCode() == 429 {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "rate limit") ||
+		strings.Contains(s, "too many requests") ||
+		strings.Contains(s, "quota exceeded")
+}
 
 // JitterMode selects the sleep distribution between retry attempts. The
 // default (zero value) is JitterNone — deterministic exponential backoff,
@@ -42,11 +128,27 @@ const (
 //   - A ctx.Done() during the sleep between attempts returns ctx.Err()
 //     without sleeping the rest of the interval.
 type RetryPolicy struct {
-	MaxAttempts int                // MaxAttempts caps how many times fn runs. <=1 means a single call (no retries).
-	BaseDelay   time.Duration      // BaseDelay is the initial sleep before the second attempt. 0 => 100ms default.
-	MaxDelay    time.Duration      // MaxDelay clamps the exponential growth of the sleep. 0 => 30s default.
-	Jitter      JitterMode         // Jitter selects the sleep distribution. Empty == JitterNone.
-	Classify    func(error) bool   // Classify decides whether an error is retryable. nil => retry all.
+	MaxAttempts int              // MaxAttempts caps how many times fn runs. <=1 means a single call (no retries).
+	BaseDelay   time.Duration    // BaseDelay is the initial sleep before the second attempt. 0 => 100ms default.
+	MaxDelay    time.Duration    // MaxDelay clamps the exponential growth of the sleep. 0 => 30s default.
+	Jitter      JitterMode       // Jitter selects the sleep distribution. Empty == JitterNone.
+	Classify    func(error) bool // Classify decides whether an error is retryable. nil => retry all.
+	// OnRetry (v1.5.1) fires between a failed attempt and the next sleep,
+	// only when there WILL be another attempt. attempt is the 0-indexed
+	// number of the just-failed attempt — OnRetry receives attempt=0 after
+	// the first failure, attempt=1 after the second, etc.
+	//
+	// OnRetry does NOT fire when:
+	//   - The just-failed attempt was the terminal attempt (MaxAttempts-1)
+	//     — there is no next attempt, so alerting would be wrong.
+	//   - Classify is non-nil and returns false on the error — the loop
+	//     short-circuits before any retry happens.
+	//
+	// Nil-safe (a nil OnRetry simply emits nothing). The hook may fire
+	// concurrently when the wrapped Asker/Judge is invoked from multiple
+	// goroutines (e.g. AnswerBenchmark.Parallelism>=2); implementations
+	// must be thread-safe.
+	OnRetry func(ctx context.Context, attempt int, err error)
 }
 
 // retryLoop runs fn up to attempts times, sleeping between attempts with
@@ -83,13 +185,22 @@ func retryLoop(ctx context.Context, policy RetryPolicy, fn func() error) error {
 		}
 		lastErr = err
 		// On the terminal attempt there is no sleep — return the last
-		// error directly.
+		// error directly. OnRetry does NOT fire here: there will be no
+		// next attempt, so alerting about a retry would be misleading.
 		if i == attempts-1 {
 			break
 		}
-		// Non-retryable error short-circuits before the sleep.
+		// Non-retryable error short-circuits before the sleep. OnRetry
+		// does NOT fire here either: the loop is breaking out without a
+		// retry, same reasoning as the terminal-attempt branch above.
 		if policy.Classify != nil && !policy.Classify(err) {
 			break
+		}
+		// v1.5.1: between the failed attempt and the sleep before the
+		// next attempt, fire OnRetry with the just-failed 0-indexed
+		// attempt number. nil-safe.
+		if policy.OnRetry != nil {
+			policy.OnRetry(ctx, i, err)
 		}
 		sleep := jitterSleep(delay, policy.Jitter)
 		select {

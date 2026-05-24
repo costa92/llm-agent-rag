@@ -115,7 +115,10 @@ func (s *System) AskGlobal(ctx context.Context, question string, opts GlobalOpti
 	communityIDs := make([]string, 0, len(reports))
 	for _, r := range reports {
 		communityIDs = append(communityIDs, r.CommunityID)
-		resp, err := s.model.Generate(ctx, generate.Request{
+		// v1.5.1: route the map-step Generate calls through the
+		// sub-stage-tagged wrapper so OnGenerateUsage emits with
+		// stage=StageAskGlobalMap.
+		resp, err := s.globalMapModel.Generate(ctx, generate.Request{
 			SystemPrompt: globalMapSystemPrompt,
 			Messages:     []generate.Message{{Role: "user", Content: globalMapPrompt(r, question)}},
 		})
@@ -150,7 +153,10 @@ func (s *System) AskGlobal(ctx context.Context, question string, opts GlobalOpti
 	if len(survivors) == 0 {
 		finalText = "No relevant community information was found to answer this question."
 	} else {
-		resp, err := s.model.Generate(ctx, generate.Request{
+		// v1.5.1: route the reduce-step Generate call through the
+		// sub-stage-tagged wrapper so OnGenerateUsage emits with
+		// stage=StageAskGlobalReduce.
+		resp, err := s.globalReduceModel.Generate(ctx, generate.Request{
 			SystemPrompt: globalReduceSystemPrompt,
 			Messages:     []generate.Message{{Role: "user", Content: globalReducePrompt(survivors, question)}},
 		})

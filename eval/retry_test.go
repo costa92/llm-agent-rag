@@ -3,6 +3,7 @@ package eval_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -343,6 +344,114 @@ func TestRetryJudgeEventualSuccess(t *testing.T) {
 	}
 	if got := j.calls.Load(); got != 2 {
 		t.Fatalf("Judge call count = %d, want 2", got)
+	}
+}
+
+// TestRetryPolicyOnRetryFiresOnFailedAttempt pins the v1.5.1 OnRetry hook
+// fires once per failed attempt that WILL be followed by another attempt,
+// receives the just-failed 0-indexed attempt number and the error, and
+// observes the values in canonical order. With MaxAttempts=3 and 2 leading
+// failures + a 3rd-attempt success, OnRetry fires with attempts {0, 1}.
+func TestRetryPolicyOnRetryFiresOnFailedAttempt(t *testing.T) {
+	a := &flakyAsker{}
+	a.failuresRemaining.Store(2) // 2 failures, then success
+	var (
+		mu       sync.Mutex
+		attempts []int
+		errs     []error
+	)
+	r := eval.NewRetryAsker(a, eval.RetryPolicy{
+		MaxAttempts: 3,
+		BaseDelay:   time.Microsecond,
+		Classify:    retryAll,
+		OnRetry: func(_ context.Context, attempt int, err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			attempts = append(attempts, attempt)
+			errs = append(errs, err)
+		},
+	})
+	if _, err := r.Ask(context.Background(), "q", rag.AskOptions{}); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(attempts) != 2 {
+		t.Fatalf("OnRetry fired %d times, want 2; attempts=%v", len(attempts), attempts)
+	}
+	if attempts[0] != 0 || attempts[1] != 1 {
+		t.Fatalf("OnRetry attempts = %v, want [0 1]", attempts)
+	}
+	for i, e := range errs {
+		if !errors.Is(e, errFlaky) {
+			t.Fatalf("OnRetry err[%d] = %v, want errFlaky", i, e)
+		}
+	}
+}
+
+// TestRetryPolicyOnRetryDoesNotFireOnTerminalFailure pins that OnRetry does
+// not fire after the FINAL failed attempt — there is no next attempt, so
+// alerting about a retry that will never happen is wrong. With MaxAttempts=2
+// and both attempts failing, OnRetry fires exactly once (after attempt 0).
+func TestRetryPolicyOnRetryDoesNotFireOnTerminalFailure(t *testing.T) {
+	a := &flakyAsker{}
+	a.failuresRemaining.Store(10) // never succeeds in this window
+	fired := atomic.Int32{}
+	r := eval.NewRetryAsker(a, eval.RetryPolicy{
+		MaxAttempts: 2,
+		BaseDelay:   time.Microsecond,
+		Classify:    retryAll,
+		OnRetry: func(_ context.Context, _ int, _ error) {
+			fired.Add(1)
+		},
+	})
+	if _, err := r.Ask(context.Background(), "q", rag.AskOptions{}); !errors.Is(err, errFlaky) {
+		t.Fatalf("Ask err = %v, want errFlaky", err)
+	}
+	if got := fired.Load(); got != 1 {
+		t.Fatalf("OnRetry fired %d times, want exactly 1 (no fire on terminal failure)", got)
+	}
+}
+
+// TestRetryPolicyOnRetryDoesNotFireOnNonRetryable pins that OnRetry does not
+// fire when Classify returns false on the failing error — that path
+// short-circuits before the next sleep, so no retry will happen.
+func TestRetryPolicyOnRetryDoesNotFireOnNonRetryable(t *testing.T) {
+	a := &flakyAsker{}
+	a.failuresRemaining.Store(10)
+	fired := atomic.Int32{}
+	r := eval.NewRetryAsker(a, eval.RetryPolicy{
+		MaxAttempts: 5,
+		BaseDelay:   time.Microsecond,
+		Classify:    func(error) bool { return false }, // non-retryable
+		OnRetry: func(_ context.Context, _ int, _ error) {
+			fired.Add(1)
+		},
+	})
+	if _, err := r.Ask(context.Background(), "q", rag.AskOptions{}); !errors.Is(err, errFlaky) {
+		t.Fatalf("Ask err = %v, want errFlaky", err)
+	}
+	if got := fired.Load(); got != 0 {
+		t.Fatalf("OnRetry fired %d times, want 0 (Classify=false short-circuits before any retry)", got)
+	}
+}
+
+// TestRetryPolicyOnRetryNilSafe pins that a nil OnRetry is safe — the
+// retry loop must not crash, panic, or hang when the hook is unset.
+func TestRetryPolicyOnRetryNilSafe(t *testing.T) {
+	a := &flakyAsker{}
+	a.failuresRemaining.Store(2)
+	r := eval.NewRetryAsker(a, eval.RetryPolicy{
+		MaxAttempts: 3,
+		BaseDelay:   time.Microsecond,
+		Classify:    retryAll,
+		// OnRetry: nil
+	})
+	if _, err := r.Ask(context.Background(), "q", rag.AskOptions{}); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if got := a.calls.Load(); got != 3 {
+		t.Fatalf("Ask call count = %d, want 3", got)
 	}
 }
 

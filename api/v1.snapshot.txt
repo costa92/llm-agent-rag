@@ -51,6 +51,8 @@ package github.com/costa92/llm-agent-rag/eval
 const JitterEqual JitterMode = "equal"
 const JitterNone JitterMode = ""
 method (AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (BenchmarkResult, error)
+func ClassifyRateLimited(err error) bool
+func ClassifyTransientHTTP(err error) bool
 method (DriftEvalResult) Summary() string
 method (DriftEvaluator) Run(ctx context.Context, dataset Dataset) (DriftEvalResult, error)
 method (GlobalEvalResult) Summary() string
@@ -207,6 +209,7 @@ type RetryPolicy struct
 	field Jitter JitterMode
 	field MaxAttempts int
 	field MaxDelay time.Duration
+	field OnRetry func(ctx context.Context, attempt int, err error)
 type TriadEvaluator struct
 	field Asker Asker
 	field Judge Judge
@@ -534,6 +537,16 @@ const ReflectionModeOff ReflectionMode = "off"
 const ReflectionModeRule ReflectionMode = "rule"
 const SelectionModeBestByScore
 const SelectionModeLastRound SelectionMode = iota
+const StageAsk = "ask"
+const StageAskDriftLocal = "drift_local"
+const StageAskDriftPrimer = "drift_primer"
+const StageAskDriftSynth = "drift_synth"
+const StageAskGlobalMap = "global_map"
+const StageAskGlobalReduce = "global_reduce"
+const StageGrader = "grader"
+const StageJudgeEval = "judge_eval"
+const StagePlanner = "planner"
+const StageReflectionDecision = "reflection_decision"
 func ExportGraderDataset(ans Answer) []GraderExample
 func New(opts Options) *System
 method (NoopGrader) ScoreRelevance(_ context.Context, _ string, _ store.Hit) (float64, string, error)

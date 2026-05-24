@@ -197,7 +197,10 @@ func (s *System) driftPrimer(ctx context.Context, cs store.CommunityStore, hasCo
 	seeds := map[string]struct{}{}
 	for _, r := range reports {
 		res.communityIDs = append(res.communityIDs, r.CommunityID)
-		resp, err := s.model.Generate(ctx, generate.Request{
+		// v1.5.1: route the primer map-step Generate calls through the
+		// sub-stage-tagged wrapper so OnGenerateUsage emits with
+		// stage=StageAskDriftPrimer.
+		resp, err := s.driftPrimerModel.Generate(ctx, generate.Request{
 			SystemPrompt: globalMapSystemPrompt,
 			Messages:     []generate.Message{{Role: "user", Content: globalMapPrompt(r, question)}},
 		})
@@ -273,7 +276,10 @@ func (s *System) driftLocalLoop(ctx context.Context, gs store.GraphStore, hasGra
 			return res
 		}
 
-		resp, err := s.model.Generate(ctx, generate.Request{
+		// v1.5.1: route each local-round body Generate call through the
+		// sub-stage-tagged wrapper so OnGenerateUsage emits with
+		// stage=StageAskDriftLocal.
+		resp, err := s.driftLocalModel.Generate(ctx, generate.Request{
 			SystemPrompt: driftLocalSystemPrompt,
 			Messages:     []generate.Message{{Role: "user", Content: driftLocalPrompt(question, packed)}},
 		})
@@ -361,7 +367,9 @@ func (s *System) driftSynthesize(ctx context.Context, question string, primerPar
 	if prompt == "" {
 		return "No information was found to answer this question.", nil
 	}
-	resp, err := s.model.Generate(ctx, generate.Request{
+	// v1.5.1: route the synthesis Generate call through the sub-stage-
+	// tagged wrapper so OnGenerateUsage emits with stage=StageAskDriftSynth.
+	resp, err := s.driftSynthModel.Generate(ctx, generate.Request{
 		SystemPrompt: driftSynthesisSystemPrompt,
 		Messages:     []generate.Message{{Role: "user", Content: prompt}},
 	})
