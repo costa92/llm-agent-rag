@@ -509,6 +509,83 @@ func TestCustomGraderNotAutoWrapped(t *testing.T) {
 	}
 }
 
+// TestObserverOnGenerateUsageDriftPrimerStage pins that AskDrift's three
+// inner Generate legs — primer, local-loop, and synthesis — emit
+// Observer.OnGenerateUsage with the v1.5.1 sub-stage tags
+// StageAskDriftPrimer, StageAskDriftLocal, and StageAskDriftSynth in
+// the canonical "primer first, then locals, then synth" order. The
+// top-level "ask" tag must never appear for an AskDrift run.
+func TestObserverOnGenerateUsageDriftPrimerStage(t *testing.T) {
+	rec := &observerRecorder{}
+	st, _ := newDriftTestStore(t, "kb")
+	model := &driftScriptedModel{
+		mapText: "Score: 80\nThis community contributes to the answer.",
+		// Community L1-b1 scores 0 so its members aren't primer seeds —
+		// matches TestAskDriftPrimerLoopSynthesis.
+		zeroScoreMarkers: []string{"L1-b1"},
+		localResponses: []string{
+			"Round 0 partial answer.\nFollow-up: bravo",
+			"Round 1 partial answer.\nFollow-up: none",
+		},
+		synthesisText: "The synthesized DRIFT final answer.",
+	}
+	sys := New(Options{
+		Model:               model,
+		Store:               st,
+		CommunitySummarizer: staticSummarizer{},
+		Observer: Observer{
+			OnGenerateUsage: rec.Hook,
+		},
+	})
+	if _, err := sys.AskDrift(context.Background(), "what are the themes",
+		DriftOptions{Namespace: "kb"}); err != nil {
+		t.Fatalf("AskDrift: %v", err)
+	}
+	stages := rec.Stages()
+	if len(stages) == 0 {
+		t.Fatalf("OnGenerateUsage never fired for AskDrift")
+	}
+	var hasPrimer, hasLocal, hasSynth bool
+	var firstLocalIdx, lastPrimerIdx, synthIdx = -1, -1, -1
+	for i, s := range stages {
+		switch s {
+		case StageAskDriftPrimer:
+			hasPrimer = true
+			lastPrimerIdx = i
+		case StageAskDriftLocal:
+			hasLocal = true
+			if firstLocalIdx == -1 {
+				firstLocalIdx = i
+			}
+		case StageAskDriftSynth:
+			hasSynth = true
+			synthIdx = i
+		case StageAsk:
+			t.Fatalf("AskDrift emitted %q stage — v1.5.1 routes inner calls through drift sub-stages (got %v)",
+				StageAsk, stages)
+		}
+	}
+	if !hasPrimer {
+		t.Fatalf("missing %q stage in %v", StageAskDriftPrimer, stages)
+	}
+	if !hasLocal {
+		t.Fatalf("missing %q stage in %v", StageAskDriftLocal, stages)
+	}
+	if !hasSynth {
+		t.Fatalf("missing %q stage in %v", StageAskDriftSynth, stages)
+	}
+	// Canonical order: every primer entry precedes every local entry, and
+	// the synth entry trails everything.
+	if firstLocalIdx < lastPrimerIdx {
+		t.Fatalf("primer and local stages interleaved (first local at %d, last primer at %d) in %v",
+			firstLocalIdx, lastPrimerIdx, stages)
+	}
+	if synthIdx != len(stages)-1 {
+		t.Fatalf("%q is not the last entry (synthIdx=%d, len=%d) in %v",
+			StageAskDriftSynth, synthIdx, len(stages), stages)
+	}
+}
+
 // TestObserverOnGenerateUsageGlobalMapStage pins that AskGlobal's inner map
 // and reduce Generate calls fire Observer.OnGenerateUsage with the v1.5.1
 // sub-stage tags StageAskGlobalMap and StageAskGlobalReduce — and never with
