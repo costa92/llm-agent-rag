@@ -55,6 +55,7 @@ const DirectionUndefined Direction = "undefined"
 const JitterEqual JitterMode = "equal"
 const JitterNone JitterMode = ""
 method (AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (BenchmarkResult, error)
+method (BenchmarkResult) Markdown() string
 func ClassifyRateLimited(err error) bool
 func ClassifyTransientHTTP(err error) bool
 func CompareBenchmarks(prev, curr BenchmarkResult) DriftReport
@@ -64,11 +65,17 @@ method (DriftReport) Markdown() string
 method (DriftReport) Summary() string
 method (GlobalEvalResult) Summary() string
 method (GlobalEvaluator) Run(ctx context.Context, dataset Dataset) (GlobalEvalResult, error)
+func JudgeCacheKey(query, answer string, context []string) string
 method (LLMJudge) Judge(ctx context.Context, req JudgeRequest) (Judgement, error)
 func LoadAnswerJSONL(path string) (AnswerDataset, error)
 func LoadJSONL(path string) (Dataset, error)
 func MarshalBenchmark(r BenchmarkResult) ([]byte, error)
+method (*MemoryJudgeCache) Get(key string) (Judgement, bool)
+method (*MemoryJudgeCache) Put(key string, j Judgement)
+method (*MemoryJudgeCache) Stats() rag.CacheStats
+func NewCachingJudge(inner Judge, cap int) Judge
 func NewCostObservingJudge(inner LLMJudge, hook GenerateUsageHook) Judge
+func NewMemoryJudgeCache(cap int) *MemoryJudgeCache
 func NewRetryAsker(inner Asker, policy RetryPolicy) Asker
 func NewRetryJudge(inner Judge, policy RetryPolicy) Judge
 func ReadBenchmarkJSONL(r io.Reader) (BenchmarkResult, error)
@@ -77,6 +84,7 @@ func RunGraphAB(ctx context.Context, retriever Retriever, base rag.SearchOptions
 method (TriadEvaluator) Run(ctx context.Context, dataset Dataset) (TriadResult, error)
 method (TriadResult) Summary() string
 func UnmarshalBenchmark(b []byte) (BenchmarkResult, error)
+func WrapJudge(inner Judge, cache JudgeCache) Judge
 func WriteBenchmarkJSONL(w io.Writer, r BenchmarkResult) error
 func WriteJSONL(w io.Writer, r TriadResult) error
 type AnswerBenchmark struct
@@ -202,6 +210,10 @@ type HistogramDelta struct
 type JitterMode string
 type Judge interface
 	method Judge(ctx context.Context, req JudgeRequest) (Judgement, error)
+type JudgeCache interface
+	method Get(key string) (Judgement, bool)
+	method Put(key string, j Judgement)
+	method Stats() rag.CacheStats
 type JudgeRequest struct
 	field Answer string
 	field Context []string
@@ -212,6 +224,7 @@ type Judgement struct
 	field Rationale string
 type LLMJudge struct
 	field Model generate.Model
+type MemoryJudgeCache struct
 type MetricDelta struct
 	field Curr float64
 	field Delta float64
@@ -563,6 +576,8 @@ type RenderContext struct
 type Template interface
 	method Render(ctx context.Context, rc RenderContext) (generate.Request, error)
 package github.com/costa92/llm-agent-rag/rag
+const GraderCacheModeRelevance = "relevance"
+const GraderCacheModeSupport = "support"
 const ReflectionDecisionContinue ReflectionDecision = "continue"
 const ReflectionDecisionRewriteAndContinue ReflectionDecision = "rewrite_and_continue"
 const ReflectionDecisionStop ReflectionDecision = "stop"
@@ -585,8 +600,14 @@ const StageReflectionDecision = "reflection_decision"
 method (*BudgetExceededError) Error() string
 method (*BudgetExceededError) Unwrap() error
 func ExportGraderDataset(ans Answer) []GraderExample
+func GraderCacheKey(query, hitID, answer, mode string) string
 func MarshalDiagnostics(d Diagnostics) ([]byte, error)
+method (*MemoryGraderCache) Get(key string) (ChunkScore, bool)
+method (*MemoryGraderCache) Put(key string, score ChunkScore)
+method (*MemoryGraderCache) Stats() CacheStats
 func New(opts Options) *System
+func NewCachingGrader(inner Grader, cap int) Grader
+func NewMemoryGraderCache(cap int) *MemoryGraderCache
 method (NoopGrader) ScoreRelevance(_ context.Context, _ string, _ store.Hit) (float64, string, error)
 method (NoopGrader) ScoreSupport(_ context.Context, _ string, _ store.Hit) (float64, string, error)
 method (NoopQueryPlanner) PlanFollowups(_ context.Context, _ string, _ string, _ []ChunkScore) ([]string, error)
@@ -604,6 +625,7 @@ method (*System) Remove(ctx context.Context, id string) error
 method (*System) Retrieve(ctx context.Context, query string, opts SearchOptions) ([]store.Hit, error)
 method (*System) Stats(ctx context.Context, namespace string) (store.Stats, error)
 func UnmarshalDiagnostics(b []byte) (Diagnostics, error)
+func WrapGrader(inner Grader, cache GraderCache) Grader
 type Answer struct
 	field Citations []Citation
 	field Diagnostics Diagnostics
@@ -624,6 +646,11 @@ type BudgetExceededError struct
 	field PartialDiagnostics Diagnostics
 	field Stage string
 	field Used int
+type CacheStats struct
+	field Evictions int64
+	field Hits int64
+	field Misses int64
+	field Size int
 type ChunkScore struct
 	field HitID string
 	field Reason string
@@ -675,6 +702,10 @@ type GlobalOptions struct
 type Grader interface
 	method ScoreRelevance(ctx context.Context, query string, hit store.Hit) (score float64, reason string, err error)
 	method ScoreSupport(ctx context.Context, answer string, hit store.Hit) (score float64, reason string, err error)
+type GraderCache interface
+	method Get(key string) (ChunkScore, bool)
+	method Put(key string, score ChunkScore)
+	method Stats() CacheStats
 type GraderExample struct
 	field Adopted bool
 	field Answer string
@@ -699,6 +730,7 @@ type InjectionFinding struct
 	field Action string
 	field ChunkID string
 	field Patterns []string
+type MemoryGraderCache struct
 type NoopGrader struct
 type NoopQueryPlanner struct
 type Observer struct

@@ -6,6 +6,37 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [1.8.0] - 2026-05-24
+
+Minor release bundling two closely-coupled additive features: a Grader/Judge LRU cache layer (C-Cache) and Markdown rendering for benchmark scoreboards (C-MarkdownExport). Fully additive — v1.7.0 callers see byte-for-byte behavior preservation.
+
+### Added
+
+- `rag.GraderCacheModeRelevance` = `"relevance"` and `rag.GraderCacheModeSupport` = `"support"` — exported mode constants for `GraderCacheKey`.
+- `rag.GraderCache` interface, `rag.CacheStats{Hits, Misses, Evictions, Size}`, `rag.MemoryGraderCache` (thread-safe LRU; cap defaults to 1024 when <= 0), `rag.NewMemoryGraderCache(cap int) *MemoryGraderCache`.
+- `rag.WrapGrader(inner Grader, cache GraderCache) Grader` — composes any Grader with any cache; nil cache returns inner unchanged. Failures from inner are NOT cached.
+- `rag.NewCachingGrader(inner Grader, cap int) Grader` — convenience constructor combining MemoryGraderCache + WrapGrader.
+- `rag.GraderCacheKey(query, hitID, answer, mode string) string` — canonical SHA-256 hex cache key with `normalize()` (lowercase + whitespace collapse) applied to query/hitID/answer; mode is `GraderCacheModeRelevance` or `GraderCacheModeSupport`. Format pinned by the v1.x cache key contract.
+- `eval.JudgeCache` interface, `eval.MemoryJudgeCache`, `eval.NewMemoryJudgeCache(cap int) *MemoryJudgeCache`, `eval.WrapJudge(inner Judge, cache JudgeCache) Judge`, `eval.NewCachingJudge(inner Judge, cap int) Judge`, `eval.JudgeCacheKey(query, answer string, context []string) string`. `Stats()` reuses `rag.CacheStats`.
+- `eval.BenchmarkResult.Markdown() string` — pipe-table per-metric scoreboard plus optional AdoptedRound distribution section. NaN renders as `n/a`; Examples always emitted. Structure (sections, column order, metric order) is stable; whitespace and decimal precision may evolve in minor releases.
+
+### Changed
+
+- (none — fully additive)
+
+### Compatibility
+
+- `WrapGrader` / `WrapJudge` are caller-side wrappers; `rag.System` and `eval.AnswerBenchmark` are unchanged. Existing v1.7.0 callers unaffected byte-for-byte.
+- **NO TTL in v1.8.0**. Pure LRU cap-based eviction. Cache invalidation on chunk-version change is the caller's responsibility — invalidate by constructing a fresh cache instance.
+- **Cache hits bypass `OnGenerateUsage` hook and `AskOptions.MaxTotalTokens` consumption** — no Generate fires on a cache hit, so neither observer hooks nor budget counters update. Documented on `WrapGrader` and `WrapJudge` godoc. This is the cache's intended behavior.
+- **Cache key uses `normalize()` (lowercase + whitespace collapse)** — same canonicalization as ExactMatch and F1Token. Documented as the v1.x cache key contract; the format is irreversible and cache files are NOT portable across major versions.
+- `CacheStats` snapshot is not transactionally consistent across counters vs Size under concurrent load.
+- `MemoryGraderCache` / `MemoryJudgeCache` safe for concurrent use. `WrapGrader(inner, cache)` is safe for concurrent calls iff `inner` is safe.
+- `BenchmarkResult.Markdown()` is a structure-only contract. Per-example rendering is a future v1.9+ extension.
+- stdlib-only invariant maintained.
+- API snapshot diff: 32 lines added, 0 removed, 0 renamed.
+- Race-detector clean on all new tests.
+
 ## [1.7.0] - 2026-05-24
 
 Minor release bundling four closely-coupled additive features: a per-example benchmark progress callback (C-BenchProgress), an Ask-level cumulative token budget with typed abort error (C-CostBudget), Markdown rendering for drift reports (C-DriftDiff), and histogram diffing for AdoptedRoundCounts (C-HistogramDrift). Fully additive — v1.6.0 callers see byte-for-byte behavior preservation.
