@@ -415,19 +415,29 @@ method (*Counter) AddGenerate(n int)
 method (*Counter) Counts() CallCounts
 func CounterFrom(ctx context.Context) *Counter
 func NewCounter() *Counter
+func NewStageUsageAccumulator() *StageUsageAccumulator
+method (*StageUsageAccumulator) Append(stage string, usage TokenUsage)
+method (*StageUsageAccumulator) Snapshot() []StageTokenUsage
+func StageUsageFrom(ctx context.Context) *StageUsageAccumulator
 func WithCounter(ctx context.Context, c *Counter) context.Context
+func WithStageUsage(ctx context.Context, a *StageUsageAccumulator) context.Context
 type CallCounts struct
 	field Embed int
 	field Generate int
 type Counter struct
 type Metrics struct
 	field Calls CallCounts
+	field StageTokenUsage []StageTokenUsage
 	field Stages []StageTiming
 	field Tokens TokenUsage
 	field TotalDuration time.Duration
 type StageTiming struct
 	field Duration time.Duration
 	field Stage string
+type StageTokenUsage struct
+	field Stage string
+	field Usage TokenUsage
+type StageUsageAccumulator struct
 type TokenUsage struct
 	field CompletionTokens int
 	field Estimated bool
