@@ -42,11 +42,27 @@ const (
 //   - A ctx.Done() during the sleep between attempts returns ctx.Err()
 //     without sleeping the rest of the interval.
 type RetryPolicy struct {
-	MaxAttempts int                // MaxAttempts caps how many times fn runs. <=1 means a single call (no retries).
-	BaseDelay   time.Duration      // BaseDelay is the initial sleep before the second attempt. 0 => 100ms default.
-	MaxDelay    time.Duration      // MaxDelay clamps the exponential growth of the sleep. 0 => 30s default.
-	Jitter      JitterMode         // Jitter selects the sleep distribution. Empty == JitterNone.
-	Classify    func(error) bool   // Classify decides whether an error is retryable. nil => retry all.
+	MaxAttempts int              // MaxAttempts caps how many times fn runs. <=1 means a single call (no retries).
+	BaseDelay   time.Duration    // BaseDelay is the initial sleep before the second attempt. 0 => 100ms default.
+	MaxDelay    time.Duration    // MaxDelay clamps the exponential growth of the sleep. 0 => 30s default.
+	Jitter      JitterMode       // Jitter selects the sleep distribution. Empty == JitterNone.
+	Classify    func(error) bool // Classify decides whether an error is retryable. nil => retry all.
+	// OnRetry (v1.5.1) fires between a failed attempt and the next sleep,
+	// only when there WILL be another attempt. attempt is the 0-indexed
+	// number of the just-failed attempt — OnRetry receives attempt=0 after
+	// the first failure, attempt=1 after the second, etc.
+	//
+	// OnRetry does NOT fire when:
+	//   - The just-failed attempt was the terminal attempt (MaxAttempts-1)
+	//     — there is no next attempt, so alerting would be wrong.
+	//   - Classify is non-nil and returns false on the error — the loop
+	//     short-circuits before any retry happens.
+	//
+	// Nil-safe (a nil OnRetry simply emits nothing). The hook may fire
+	// concurrently when the wrapped Asker/Judge is invoked from multiple
+	// goroutines (e.g. AnswerBenchmark.Parallelism>=2); implementations
+	// must be thread-safe.
+	OnRetry func(ctx context.Context, attempt int, err error)
 }
 
 // retryLoop runs fn up to attempts times, sleeping between attempts with
@@ -83,13 +99,22 @@ func retryLoop(ctx context.Context, policy RetryPolicy, fn func() error) error {
 		}
 		lastErr = err
 		// On the terminal attempt there is no sleep — return the last
-		// error directly.
+		// error directly. OnRetry does NOT fire here: there will be no
+		// next attempt, so alerting about a retry would be misleading.
 		if i == attempts-1 {
 			break
 		}
-		// Non-retryable error short-circuits before the sleep.
+		// Non-retryable error short-circuits before the sleep. OnRetry
+		// does NOT fire here either: the loop is breaking out without a
+		// retry, same reasoning as the terminal-attempt branch above.
 		if policy.Classify != nil && !policy.Classify(err) {
 			break
+		}
+		// v1.5.1: between the failed attempt and the sleep before the
+		// next attempt, fire OnRetry with the just-failed 0-indexed
+		// attempt number. nil-safe.
+		if policy.OnRetry != nil {
+			policy.OnRetry(ctx, i, err)
 		}
 		sleep := jitterSleep(delay, policy.Jitter)
 		select {
