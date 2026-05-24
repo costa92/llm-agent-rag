@@ -6,6 +6,35 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [1.6.0] - 2026-05-24
+
+Minor release bundling two closely-coupled additive features: NaN-safe canonical JSON/JSONL codecs for benchmark results and rag diagnostics (C-DiagnosticsExport), and a metric drift comparator with per-metric polarity table (C-Drift).
+
+### Added
+
+- `eval.MarshalBenchmark(r BenchmarkResult) ([]byte, error)` and `eval.UnmarshalBenchmark(b []byte) (BenchmarkResult, error)` — round-trip canonical JSON for a full benchmark run, including NaN-sentinel preservation via JSON null.
+- `eval.WriteBenchmarkJSONL(w io.Writer, r BenchmarkResult) error` and `eval.ReadBenchmarkJSONL(r io.Reader) (BenchmarkResult, error)` — streaming JSONL artifact format (one header line + one line per AnswerExampleResult). Strict — no `//` / `#` comment skipping (unlike `LoadAnswerJSONL`).
+- `eval.ErrEmptyBenchmark` — returned by `ReadBenchmarkJSONL` when the reader yields no lines.
+- `rag.MarshalDiagnostics(d Diagnostics) ([]byte, error)` and `rag.UnmarshalDiagnostics(b []byte) (Diagnostics, error)` — codec for a per-Answer Diagnostics, with structural Subgraph projection (entity IDs, edge IDs, max hop).
+- `eval.Direction` enum (`DirectionImproved`/`DirectionRegressed`/`DirectionUnchanged`/`DirectionUndefined`), `eval.MetricDelta{Name, Prev, Curr, Delta, Direction}`, `eval.DriftReport{Dataset, Deltas, NewExamples, DroppedExamples}`, `eval.CompareBenchmarks(prev, curr BenchmarkResult) DriftReport` — drift comparator with pinned per-metric polarity.
+- `DriftReport.Summary() string` — human-readable scoreboard.
+
+### Changed
+
+- (none — fully additive; locked design forbids `json:` tags on existing structs)
+
+### Compatibility
+
+- Wire types are kept UNEXPORTED; only the codec functions are stable API. Future wire reshuffles will not break callers.
+- NaN/Inf in `BenchmarkMetrics` marshals to JSON `null`; null unmarshals back to `math.NaN()`. Documented per-field.
+- `Direction` semantics: any NaN-touching transition (finite→NaN, NaN→finite, NaN→NaN) yields `DirectionUndefined`. Ambiguous-polarity metrics (`ReflectionRoundsMean`, `GraderAdoptionRate`, `ActiveRetrievalFireRate`) always yield `DirectionUndefined` regardless of delta. `Unchanged` tolerance is hardcoded absolute `1e-9`.
+- Drift example matching is by exact `Example.Query` string equality. Callers wanting stable matching across renamed queries must ensure queries are unique within a dataset.
+- `AdoptedRoundCounts` histogram diffing is out of scope (v1.7.0 candidate).
+- `GraphTrace.EvidenceSubgraph` serializes as a structural projection (entity IDs, edge IDs, max hop), not the full Subgraph. Documented as a v1.6.0 contract subject to extension.
+- Strict-unknown-key on Diagnostics and Benchmark JSON decode: unknown top-level keys error. Forward-compat: future minor versions may add fields; readers updated.
+- stdlib-only invariant maintained.
+- API snapshot diff: ~25 lines added, 0 removed, 0 renamed.
+
 ## [1.5.1] - 2026-05-24
 
 Patch release closing v1.5.0's explicit out-of-scope items: sub-stage tags for AskGlobal/AskDrift, RetryPolicy observability hook, and pre-built error classifiers.
