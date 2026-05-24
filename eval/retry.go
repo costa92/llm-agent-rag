@@ -2,11 +2,67 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"math/rand/v2"
+	"net"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/costa92/llm-agent-rag/rag"
 )
+
+// statusErrer is the duck-typed interface ClassifyTransientHTTP /
+// ClassifyRateLimited probe via errors.As. SDKs that expose their HTTP
+// status code on the error type (the openai-go family, for instance,
+// exposes APIError.StatusCode) satisfy it directly. Kept unexported so
+// it does not bleed into the v1 API surface.
+type statusErrer interface {
+	StatusCode() int
+}
+
+// ClassifyTransientHTTP is the prebuilt RetryPolicy.Classify suitable for
+// "retry this on network blips and transient server errors". It returns
+// true for:
+//
+//   - Any error satisfying net.Error (or *url.Error) with Timeout() == true.
+//   - Any error satisfying the SDK status-code interface (a StatusCode() int
+//     method) returning 408, 429, 500, 502, 503, or 504.
+//   - Any error whose Error() string (lowercased) contains one of "rate
+//     limit", "too many requests", "timeout", or "connection reset" —
+//     the substring fallback for SDKs that don't expose a typed status.
+//
+// It is best-effort by design: production users with a single known SDK
+// shape should write their own classifier against that SDK's error type
+// for tighter precision. The builtin's purpose is plug-and-play for the
+// common case of "I don't know exactly what shape my errors take".
+//
+// A nil error returns false — there is nothing to retry.
+func ClassifyTransientHTTP(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Timeout() {
+		return true
+	}
+	var se statusErrer
+	if errors.As(err, &se) {
+		switch se.StatusCode() {
+		case 408, 429, 500, 502, 503, 504:
+			return true
+		}
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "rate limit") ||
+		strings.Contains(s, "too many requests") ||
+		strings.Contains(s, "timeout") ||
+		strings.Contains(s, "connection reset")
+}
 
 // JitterMode selects the sleep distribution between retry attempts. The
 // default (zero value) is JitterNone — deterministic exponential backoff,
