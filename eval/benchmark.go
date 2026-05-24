@@ -2,10 +2,14 @@ package eval
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/costa92/llm-agent-rag/rag"
 )
 
 // AnswerExample is one labeled query for the C-Eval answer-quality
@@ -92,4 +96,137 @@ func LoadAnswerJSONL(path string) (AnswerDataset, error) {
 		return AnswerDataset{}, fmt.Errorf("eval: scan %s: %w", path, err)
 	}
 	return dataset, nil
+}
+
+// BenchmarkMetrics is the aggregated C-Eval answer-quality scoreboard
+// over a dataset run. It carries math.NaN() sentinels for metrics whose
+// underlying feature was off across every example (reflection off,
+// grading disabled, active retrieval disabled, or no required phrases
+// labeled). Callers that serialize this struct should wrap it in their
+// own wire type — NaN does not marshal cleanly to JSON, so no json:
+// tags ship on this struct in v1.3.0.
+//
+// Compatibility note: this exported struct may grow additively over
+// time, so keyed composite literals are recommended.
+type BenchmarkMetrics struct {
+	Examples int // Examples is the number of examples scored.
+
+	ExactMatch           float64 // ExactMatch is the mean per-example exact-match rate (post-normalize).
+	F1Token              float64 // F1Token is the mean per-example token-F1 score (multiset, HotpotQA-style).
+	RequiredPhraseRecall float64 // RequiredPhraseRecall is the micro recall over required phrases; NaN when no example labeled any phrase.
+
+	ReflectionRoundsMean    float64 // ReflectionRoundsMean is the mean RoundDetails length over reflection-enabled examples; NaN when reflection was off everywhere.
+	AdoptedRoundCounts      []int   // AdoptedRoundCounts is the histogram of AdoptedRound values (0-indexed by AdoptedRound-1); nil when reflection was off everywhere.
+	GraderAdoptionRate      float64 // GraderAdoptionRate is the fraction of grading-enabled examples whose AdoptedRound != last round; NaN when grading was off everywhere.
+	FollowupQueriesUsedMean float64 // FollowupQueriesUsedMean is the mean FollowupQueriesUsed over active-retrieval-enabled examples; NaN when active retrieval was off everywhere.
+	ActiveRetrievalFireRate float64 // ActiveRetrievalFireRate is the fraction of active-retrieval-enabled examples that emitted at least one follow-up; NaN when active retrieval was off everywhere.
+}
+
+// AnswerExampleResult is the per-example trace behind a BenchmarkResult.
+// It carries enough detail (raw answer, per-example component scores,
+// reflection signals) for callers to recompute or audit any of the
+// aggregated BenchmarkMetrics offline.
+//
+// Compatibility note: this exported struct may grow additively over
+// time, so keyed composite literals are recommended.
+type AnswerExampleResult struct {
+	Example             AnswerExample // Example is the labeled query this result is for.
+	Answer              string        // Answer is the generated answer text (Answer.Text).
+	ExactMatch          bool          // ExactMatch is true when any gold answer normalized equal to Answer.
+	F1Token             float64       // F1Token is the max token-F1 of Answer against any gold.
+	RequiredPhraseHits  int           // RequiredPhraseHits is the count of RequiredPhrases substrings present verbatim in Answer.
+	RequiredPhraseTotal int           // RequiredPhraseTotal is len(Example.RequiredPhrases).
+	ReflectionRounds    int           // ReflectionRounds is len(Answer.Diagnostics.Reflection.RoundDetails); 0 when reflection was off.
+	AdoptedRound        int           // AdoptedRound mirrors Diagnostics.Reflection.AdoptedRound (1-based; 0 when reflection was off).
+	FollowupsUsed       int           // FollowupsUsed mirrors Diagnostics.Reflection.FollowupQueriesUsed.
+	ActiveFired         bool          // ActiveFired is true when any round had non-empty FollowupQueries.
+	GraderEnabled       bool          // GraderEnabled is true when any round had non-empty ChunkScores (grading actually ran).
+	ActiveEnabled       bool          // ActiveEnabled mirrors Options.Reflection.EnableActiveRetrieval at run time.
+}
+
+// BenchmarkResult is the full output of an AnswerBenchmark run: the
+// dataset that was scored, the aggregated metrics, and the per-example
+// trace.
+type BenchmarkResult struct {
+	Dataset    AnswerDataset         // Dataset is the dataset that was evaluated.
+	Metrics    BenchmarkMetrics      // Metrics is the aggregated scoreboard.
+	PerExample []AnswerExampleResult // PerExample is the per-example detail.
+}
+
+// AnswerBenchmark runs an AnswerDataset through an Asker and scores
+// each generated answer on ExactMatch, token F1, and required-phrase
+// recall, plus reflection / active-retrieval / grading signal
+// aggregation from the answer's diagnostics. It deliberately reuses
+// the existing eval.Asker interface — v1.3.0 introduces no new seam
+// onto rag.System.
+//
+// Compatibility note: this exported struct may grow additively over
+// time, so keyed composite literals are recommended.
+type AnswerBenchmark struct {
+	Asker   Asker          // Asker runs the answer pipeline under evaluation; reuses eval.Asker.
+	Options rag.AskOptions // Options is the base AskOptions applied to every Ask call (overlaid per example).
+}
+
+// Run executes the benchmark sequentially. The base Options is copied
+// per example; Search.TopK is set from dataset.TopK and Search.Namespace
+// is overlaid from the example's Namespace when non-empty. The runner
+// aborts on the first Ask error, wrapping it with the offending query.
+func (b AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (BenchmarkResult, error) {
+	if b.Asker == nil {
+		return BenchmarkResult{}, errors.New("eval: Asker is required")
+	}
+	if dataset.TopK <= 0 {
+		return BenchmarkResult{}, fmt.Errorf("eval: dataset %q has TopK <= 0", dataset.Name)
+	}
+	per := make([]AnswerExampleResult, 0, len(dataset.Examples))
+	for _, ex := range dataset.Examples {
+		opts := b.Options
+		opts.Search.TopK = dataset.TopK
+		if ex.Namespace != "" {
+			opts.Search.Namespace = ex.Namespace
+		}
+		ans, err := b.Asker.Ask(ctx, ex.Query, opts)
+		if err != nil {
+			return BenchmarkResult{}, fmt.Errorf("eval: ask %q: %w", ex.Query, err)
+		}
+		per = append(per, scoreAnswerExample(ex, ans, opts))
+	}
+	return BenchmarkResult{
+		Dataset:    dataset,
+		Metrics:    BenchmarkMetrics{Examples: len(dataset.Examples)},
+		PerExample: per,
+	}, nil
+}
+
+// scoreAnswerExample assembles the per-example trace. Aggregation
+// across examples is layered on top in BenchmarkMetrics (commit 4).
+func scoreAnswerExample(ex AnswerExample, ans rag.Answer, opts rag.AskOptions) AnswerExampleResult {
+	res := AnswerExampleResult{
+		Example:             ex,
+		Answer:              ans.Text,
+		ExactMatch:          exactMatch(ans.Text, ex.GoldAnswers),
+		F1Token:             f1(ans.Text, ex.GoldAnswers),
+		RequiredPhraseTotal: len(ex.RequiredPhrases),
+	}
+	for _, phrase := range ex.RequiredPhrases {
+		if strings.Contains(ans.Text, phrase) {
+			res.RequiredPhraseHits++
+		}
+	}
+	reflection := ans.Diagnostics.Reflection
+	res.ReflectionRounds = len(reflection.RoundDetails)
+	res.AdoptedRound = reflection.AdoptedRound
+	res.FollowupsUsed = reflection.FollowupQueriesUsed
+	for _, rd := range reflection.RoundDetails {
+		if len(rd.FollowupQueries) > 0 {
+			res.ActiveFired = true
+		}
+		if len(rd.ChunkScores) > 0 {
+			res.GraderEnabled = true
+		}
+	}
+	if opts.Reflection != nil {
+		res.ActiveEnabled = opts.Reflection.EnableActiveRetrieval
+	}
+	return res
 }
