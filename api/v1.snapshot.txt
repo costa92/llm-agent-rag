@@ -582,6 +582,8 @@ const StageGrader = "grader"
 const StageJudgeEval = "judge_eval"
 const StagePlanner = "planner"
 const StageReflectionDecision = "reflection_decision"
+method (*BudgetExceededError) Error() string
+method (*BudgetExceededError) Unwrap() error
 func ExportGraderDataset(ans Answer) []GraderExample
 func MarshalDiagnostics(d Diagnostics) ([]byte, error)
 func New(opts Options) *System
@@ -616,6 +618,11 @@ type AskOptions struct
 	field Reflection *ReflectionOptions
 	field Search SearchOptions
 	field Template prompt.Template
+type BudgetExceededError struct
+	field Budget int
+	field PartialDiagnostics Diagnostics
+	field Stage string
+	field Used int
 type ChunkScore struct
 	field HitID string
 	field Reason string
@@ -849,6 +856,7 @@ var ErrImporterRequired = errors.New("rag: importer required for this operation"
 var ErrModelRequired = errors.New("rag: generator required for this operation")
 var ErrRetrieverRequired = errors.New("rag: retriever required for this operation")
 var ErrSourceRequired = errors.New("rag: import source is required")
+var ErrTokenBudgetExceeded = errors.New("rag: token budget exceeded")
 package github.com/costa92/llm-agent-rag/rerank
 method (HTTPScoringModel) Score(ctx context.Context, query string, documents []string) ([]float64, error)
 method (HeuristicReranker) Rerank(_ context.Context, req Request) ([]store.Hit, Trace, error)
