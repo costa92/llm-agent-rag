@@ -1,8 +1,13 @@
 package rag
 
 import (
+	"context"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
+
+	"github.com/costa92/llm-agent-rag/store"
 )
 
 // TestGraderCacheModeConstants pins the exported mode constant values. The
@@ -201,6 +206,159 @@ func TestMemoryGraderCache_ConcurrentSafe(t *testing.T) {
 	if stats.Evictions != 0 {
 		t.Fatalf("Stats.Evictions = %d, want 0 (cap was generous)", stats.Evictions)
 	}
+}
+
+// fakeGrader is a counting/error-injecting Grader for WrapGrader tests.
+// It is safe for concurrent use.
+type fakeGrader struct {
+	calls     atomic.Int64
+	failNext  atomic.Bool // when true, the next call returns err and resets the flag
+	relevance float64
+	support   float64
+	reason    string
+}
+
+func (f *fakeGrader) ScoreRelevance(_ context.Context, _ string, hit store.Hit) (float64, string, error) {
+	f.calls.Add(1)
+	if f.failNext.Swap(false) {
+		return 0, "", errors.New("fakeGrader: injected relevance failure")
+	}
+	return f.relevance, f.reason, nil
+}
+
+func (f *fakeGrader) ScoreSupport(_ context.Context, _ string, hit store.Hit) (float64, string, error) {
+	f.calls.Add(1)
+	if f.failNext.Swap(false) {
+		return 0, "", errors.New("fakeGrader: injected support failure")
+	}
+	return f.support, f.reason, nil
+}
+
+// TestWrapGrader_MissCallsInnerAndCaches pins that two identical calls
+// trigger the inner Grader exactly once (cache hit on the second call).
+func TestWrapGrader_MissCallsInnerAndCaches(t *testing.T) {
+	inner := &fakeGrader{relevance: 0.8, reason: "first"}
+	g := WrapGrader(inner, NewMemoryGraderCache(8))
+	hit := store.Hit{Chunk: store.StoredChunk{ID: "c1", Content: "x"}}
+
+	s1, r1, err := g.ScoreRelevance(context.Background(), "Q", hit)
+	if err != nil || s1 != 0.8 || r1 != "first" {
+		t.Fatalf("first call: score=%v reason=%q err=%v", s1, r1, err)
+	}
+	s2, r2, err := g.ScoreRelevance(context.Background(), "Q", hit)
+	if err != nil || s2 != 0.8 || r2 != "first" {
+		t.Fatalf("second call: score=%v reason=%q err=%v", s2, r2, err)
+	}
+	if got := inner.calls.Load(); got != 1 {
+		t.Fatalf("inner.calls = %d, want 1 (second should be a cache hit)", got)
+	}
+}
+
+// TestWrapGrader_RelevanceAndSupportCacheIndependently pins that
+// (query=Q, hit) and (answer=Q, hit) score independently — relevance and
+// support occupy distinct cache slots even when the query and answer
+// strings happen to match.
+func TestWrapGrader_RelevanceAndSupportCacheIndependently(t *testing.T) {
+	inner := &fakeGrader{relevance: 0.6, support: 0.9, reason: "ok"}
+	g := WrapGrader(inner, NewMemoryGraderCache(8))
+	hit := store.Hit{Chunk: store.StoredChunk{ID: "c1", Content: "x"}}
+
+	if _, _, err := g.ScoreRelevance(context.Background(), "shared", hit); err != nil {
+		t.Fatalf("ScoreRelevance err = %v", err)
+	}
+	if _, _, err := g.ScoreSupport(context.Background(), "shared", hit); err != nil {
+		t.Fatalf("ScoreSupport err = %v", err)
+	}
+	if got := inner.calls.Load(); got != 2 {
+		t.Fatalf("inner.calls = %d, want 2 (rel and sup must not collide)", got)
+	}
+	// Repeat: both should hit cache.
+	if s, _, err := g.ScoreRelevance(context.Background(), "shared", hit); err != nil || s != 0.6 {
+		t.Fatalf("rel re-call: score=%v err=%v", s, err)
+	}
+	if s, _, err := g.ScoreSupport(context.Background(), "shared", hit); err != nil || s != 0.9 {
+		t.Fatalf("sup re-call: score=%v err=%v", s, err)
+	}
+	if got := inner.calls.Load(); got != 2 {
+		t.Fatalf("inner.calls after re-call = %d, want 2 (both cached)", got)
+	}
+}
+
+// TestWrapGrader_InnerErrorNotCached pins that an inner-Grader error is
+// propagated and NOT cached: the next call must MISS again.
+func TestWrapGrader_InnerErrorNotCached(t *testing.T) {
+	inner := &fakeGrader{relevance: 0.7, reason: "second"}
+	cache := NewMemoryGraderCache(8)
+	g := WrapGrader(inner, cache)
+	hit := store.Hit{Chunk: store.StoredChunk{ID: "c1"}}
+
+	inner.failNext.Store(true)
+	if _, _, err := g.ScoreRelevance(context.Background(), "Q", hit); err == nil {
+		t.Fatalf("expected injected error, got nil")
+	}
+	stats := cache.Stats()
+	if stats.Size != 0 {
+		t.Fatalf("cache stored an entry after inner error: Size=%d", stats.Size)
+	}
+
+	// Retry must MISS (no cached failure) and then succeed.
+	s, _, err := g.ScoreRelevance(context.Background(), "Q", hit)
+	if err != nil {
+		t.Fatalf("retry err = %v", err)
+	}
+	if s != 0.7 {
+		t.Fatalf("retry score = %v, want 0.7", s)
+	}
+	stats = cache.Stats()
+	if stats.Misses < 2 {
+		t.Fatalf("expected at least 2 misses (initial + retry), got %d", stats.Misses)
+	}
+	if stats.Hits != 0 {
+		t.Fatalf("unexpected hits: %d", stats.Hits)
+	}
+}
+
+// TestWrapGrader_NilCacheIsAllowed pins that WrapGrader(inner, nil)
+// returns inner unchanged: no wrapping, no panic, no cache statistics.
+func TestWrapGrader_NilCacheIsAllowed(t *testing.T) {
+	inner := &fakeGrader{relevance: 0.5, reason: "noop"}
+	got := WrapGrader(inner, nil)
+	if got != Grader(inner) {
+		t.Fatalf("WrapGrader(inner, nil) != inner")
+	}
+	// Sanity-check that the returned Grader still works.
+	if _, _, err := got.ScoreRelevance(context.Background(), "q", store.Hit{}); err != nil {
+		t.Fatalf("returned Grader err = %v", err)
+	}
+}
+
+// TestNewCachingGrader_EquivalentToWrapGraderWithMemoryCache pins that
+// NewCachingGrader composes the same behavior as the explicit
+// WrapGrader+MemoryGraderCache pair.
+func TestNewCachingGrader_EquivalentToWrapGraderWithMemoryCache(t *testing.T) {
+	inner := &fakeGrader{relevance: 0.42, reason: "via-ctor"}
+	g := NewCachingGrader(inner, 8)
+	hit := store.Hit{Chunk: store.StoredChunk{ID: "c1"}}
+
+	for i := 0; i < 3; i++ {
+		s, _, err := g.ScoreRelevance(context.Background(), "Q", hit)
+		if err != nil {
+			t.Fatalf("iter %d err = %v", i, err)
+		}
+		if s != 0.42 {
+			t.Fatalf("iter %d score = %v, want 0.42", i, s)
+		}
+	}
+	if got := inner.calls.Load(); got != 1 {
+		t.Fatalf("inner.calls = %d, want 1 (only the first call should miss)", got)
+	}
+}
+
+// TestWrapGrader_InterfaceConformance pins compile-time that
+// WrapGrader(...) returns a Grader.
+func TestWrapGrader_InterfaceConformance(t *testing.T) {
+	var _ Grader = WrapGrader(NoopGrader{}, NewMemoryGraderCache(1))
+	var _ Grader = NewCachingGrader(NoopGrader{}, 1)
 }
 
 // itoa is a tiny stdlib-free int → decimal-string for test keys.
