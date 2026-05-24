@@ -71,6 +71,14 @@ func (s *System) AskGlobal(ctx context.Context, question string, opts GlobalOpti
 	ctx = obs.WithCounter(ctx, counter)
 	stageUsage := obs.NewStageUsageAccumulator()
 	ctx = obs.WithStageUsage(ctx, stageUsage)
+	// v1.9.0 C-BudgetExpand: install the cumulative-token budget on ctx
+	// when GlobalOptions.MaxTotalTokens > 0. Zero (the default) leaves
+	// ctx unchanged — preserving v1.8.0 behavior byte-for-byte. The
+	// countingModel installs a post-Append budget check; sub-stage
+	// models (globalMapModel, globalReduceModel) already wrap it.
+	if opts.MaxTotalTokens > 0 {
+		ctx = obs.WithTokenBudget(ctx, opts.MaxTotalTokens)
+	}
 	metrics := obs.Metrics{}
 	start := time.Now()
 
@@ -85,7 +93,7 @@ func (s *System) AskGlobal(ctx context.Context, question string, opts GlobalOpti
 
 	communities, err := cs.Communities(ctx, opts.Namespace)
 	if err != nil {
-		return Answer{}, err
+		return Answer{}, wrapBudgetError(err, start, counter, stageUsage, nil)
 	}
 	if len(communities) == 0 {
 		metrics.Calls = counter.Counts()
@@ -99,12 +107,22 @@ func (s *System) AskGlobal(ctx context.Context, question string, opts GlobalOpti
 	selected := selectCommunities(ctx, cs, opts.Namespace, communities, question, opts.MaxCommunities)
 	metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "select", Duration: time.Since(stageStart)})
 
+	// Capture the selected community IDs in selection order so a budget
+	// trip during the lazy-report stage can still report which
+	// communities AskGlobal had committed to. v1.9.0.
+	selectedIDs := make([]string, 0, len(selected))
+	for _, c := range selected {
+		selectedIDs = append(selectedIDs, c.ID)
+	}
+
 	// Lazy reports: one report per selected community, generated on a cache
 	// miss or a stale ContentHash and persisted back.
 	stageStart = time.Now()
 	reports, err := s.communityReports(ctx, cs, opts.Namespace, selected)
 	if err != nil {
-		return Answer{}, err
+		return Answer{}, wrapBudgetError(err, start, counter, stageUsage, func() Diagnostics {
+			return Diagnostics{Global: GlobalDiagnostics{CommunityIDs: selectedIDs}}
+		})
 	}
 	metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "report", Duration: time.Since(stageStart)})
 
@@ -123,7 +141,18 @@ func (s *System) AskGlobal(ctx context.Context, question string, opts GlobalOpti
 			Messages:     []generate.Message{{Role: "user", Content: globalMapPrompt(r, question)}},
 		})
 		if err != nil {
-			return Answer{}, err
+			// v1.9.0: snapshot communityIDs/mapScores/partials at the
+			// trip — the failing call is NOT counted as a completed map
+			// (the partial whose Generate erred was not appended).
+			return Answer{}, wrapBudgetError(err, start, counter, stageUsage, func() Diagnostics {
+				return Diagnostics{Global: GlobalDiagnostics{
+					CommunityIDs:     append([]string(nil), communityIDs[:len(partials)]...),
+					MapScores:        cloneMapScores(mapScores),
+					MapCalls:         len(partials),
+					ReduceCalls:      0,
+					ConsultedReports: reports,
+				}}
+			})
 		}
 		score, text := parseGlobalMap(resp.Text)
 		mapScores[r.CommunityID] = score
@@ -161,7 +190,18 @@ func (s *System) AskGlobal(ctx context.Context, question string, opts GlobalOpti
 			Messages:     []generate.Message{{Role: "user", Content: globalReducePrompt(survivors, question)}},
 		})
 		if err != nil {
-			return Answer{}, err
+			// v1.9.0: every map call completed but the reduce Generate
+			// tripped the budget. ReduceCalls stays 0 — the reduce that
+			// tripped is not counted as completed.
+			return Answer{}, wrapBudgetError(err, start, counter, stageUsage, func() Diagnostics {
+				return Diagnostics{Global: GlobalDiagnostics{
+					CommunityIDs:     communityIDs,
+					MapScores:        cloneMapScores(mapScores),
+					MapCalls:         mapCalls,
+					ReduceCalls:      0,
+					ConsultedReports: reports,
+				}}
+			})
 		}
 		reduceCalls = 1
 		finalText = strings.TrimSpace(resp.Text)
@@ -501,4 +541,19 @@ func clampScore(n int) int {
 		return 100
 	}
 	return n
+}
+
+// cloneMapScores returns a shallow copy of the per-community map-score
+// table for a budget-abort PartialDiagnostics.Global snapshot. A nil/empty
+// input returns nil so the PartialDiagnostics shape matches the
+// happy-path zero-value when no map call had completed. v1.9.0.
+func cloneMapScores(src map[string]int) map[string]int {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }

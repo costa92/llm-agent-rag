@@ -199,6 +199,17 @@ type GlobalOptions struct {
 	// them by query-token overlap with member entity names and keeps the top
 	// MaxCommunities (ties broken by community ID).
 	MaxCommunities int
+	// MaxTotalTokens caps the cumulative TotalTokens across every Generate
+	// call within one AskGlobal — the per-community map calls plus the
+	// reduce call. A value <= 0 (default zero) is unlimited and preserves
+	// v1.8.0 behavior byte-for-byte. When non-zero and the cumulative
+	// StageTokenUsage exceeds this cap after any successful sub-stage
+	// Generate, AskGlobal aborts and returns (Answer{}, *BudgetExceededError)
+	// with PartialDiagnostics.Global carrying the trace collected up to
+	// the abort (CommunityIDs/MapScores/MapCalls/ConsultedReports). The
+	// BudgetExceededError.Stage carries the sub-stage tag that tripped
+	// (StageAskGlobalMap or StageAskGlobalReduce). v1.9.0.
+	MaxTotalTokens int
 }
 
 // DriftOptions configures System.AskDrift — the DRIFT hybrid-search answer
