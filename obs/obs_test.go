@@ -88,6 +88,86 @@ func TestWithStageUsageRoundTrip(t *testing.T) {
 	}
 }
 
+// --- v1.7.0 C2 TotalSoFar tests ----------------------------------------
+
+// TestStageUsageAccumulator_TotalSoFar_SumsTotalTokens asserts the
+// returned int is the sum of entries[i].Usage.TotalTokens.
+func TestStageUsageAccumulator_TotalSoFar_SumsTotalTokens(t *testing.T) {
+	acc := NewStageUsageAccumulator()
+	if got := acc.TotalSoFar(); got != 0 {
+		t.Fatalf("empty TotalSoFar = %d, want 0", got)
+	}
+	acc.Append("ask", TokenUsage{TotalTokens: 10})
+	acc.Append("reflection_decision", TokenUsage{TotalTokens: 5})
+	acc.Append("grader", TokenUsage{TotalTokens: 7})
+	if got := acc.TotalSoFar(); got != 22 {
+		t.Fatalf("TotalSoFar = %d, want 22", got)
+	}
+}
+
+// TestStageUsageAccumulator_TotalSoFar_NilSafe asserts a nil accumulator
+// returns 0 without panicking.
+func TestStageUsageAccumulator_TotalSoFar_NilSafe(t *testing.T) {
+	var a *StageUsageAccumulator
+	if got := a.TotalSoFar(); got != 0 {
+		t.Fatalf("nil TotalSoFar = %d, want 0", got)
+	}
+}
+
+// TestStageUsageAccumulator_TotalSoFar_ConcurrentSafe pummels TotalSoFar
+// concurrently with Append. The race detector must remain clean.
+func TestStageUsageAccumulator_TotalSoFar_ConcurrentSafe(t *testing.T) {
+	acc := NewStageUsageAccumulator()
+	const goroutines = 200
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 2)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			acc.Append("ask", TokenUsage{TotalTokens: 1})
+		}()
+		go func() {
+			defer wg.Done()
+			_ = acc.TotalSoFar()
+		}()
+	}
+	wg.Wait()
+	if got := acc.TotalSoFar(); got != goroutines {
+		t.Fatalf("final TotalSoFar = %d, want %d", got, goroutines)
+	}
+}
+
+// --- v1.7.0 C2 WithTokenBudget / TokenBudgetFrom tests ----------------
+
+// TestTokenBudget_ZeroFromBareCtx asserts a bare context returns 0.
+func TestTokenBudget_ZeroFromBareCtx(t *testing.T) {
+	if got := TokenBudgetFrom(context.Background()); got != 0 {
+		t.Fatalf("TokenBudgetFrom(bare ctx) = %d, want 0", got)
+	}
+}
+
+// TestTokenBudget_RoundtripsThroughContext asserts a positive budget
+// installed with WithTokenBudget reads back via TokenBudgetFrom.
+func TestTokenBudget_RoundtripsThroughContext(t *testing.T) {
+	ctx := WithTokenBudget(context.Background(), 1000)
+	if got := TokenBudgetFrom(ctx); got != 1000 {
+		t.Fatalf("TokenBudgetFrom = %d, want 1000", got)
+	}
+}
+
+// TestTokenBudget_NonPositiveIgnored asserts WithTokenBudget(ctx, 0) and
+// WithTokenBudget(ctx, -5) both return ctx unchanged (TokenBudgetFrom
+// continues to read 0).
+func TestTokenBudget_NonPositiveIgnored(t *testing.T) {
+	base := context.Background()
+	for _, max := range []int{0, -5} {
+		ctx := WithTokenBudget(base, max)
+		if got := TokenBudgetFrom(ctx); got != 0 {
+			t.Errorf("WithTokenBudget(ctx, %d) -> TokenBudgetFrom = %d, want 0", max, got)
+		}
+	}
+}
+
 func TestMetricsStageTokenUsageZeroValue(t *testing.T) {
 	var m Metrics
 	if m.StageTokenUsage != nil {

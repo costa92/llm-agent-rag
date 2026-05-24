@@ -74,6 +74,32 @@ type DriftReport struct {
 	Deltas          []MetricDelta
 	NewExamples     []string // queries in Curr but not Prev (sorted, deduplicated)
 	DroppedExamples []string // queries in Prev but not Curr (sorted, deduplicated)
+	// Histograms is the per-histogram diff for any int-bucket histogram
+	// metric. v1.7.0 populates exactly one entry — Name=AdoptedRoundCounts
+	// — from BenchmarkMetrics.AdoptedRoundCounts on both sides. Future
+	// minor versions may append additional histograms; the order matches
+	// the populate order in CompareBenchmarks. Empty when both sides have
+	// no histogram data.
+	Histograms []HistogramDelta
+}
+
+// HistogramDelta is one histogram-typed entry in a DriftReport. It pairs
+// two int-bucket histograms (Prev / Curr) and pre-computes their per-bucket
+// difference and L1 distance.
+//
+//   - Delta is Curr[i] - Prev[i], zero-padded on the shorter side to
+//     len(Delta) == max(len(Prev), len(Curr)).
+//   - L1Distance is sum |Delta[i]| as a float64. The type is float64 to
+//     leave room for weighted variants in future minor releases.
+//
+// Compatibility note: this exported struct may grow additively over time,
+// so keyed composite literals are recommended. v1.7.0.
+type HistogramDelta struct {
+	Name       string
+	Prev       []int
+	Curr       []int
+	Delta      []int
+	L1Distance float64
 }
 
 // polarity is the internal direction-of-betterness for one metric.
@@ -188,6 +214,14 @@ func CompareBenchmarks(prev, curr BenchmarkResult) DriftReport {
 	newExamples := setDiff(currQueries, prevQueries)
 	droppedExamples := setDiff(prevQueries, currQueries)
 
+	// Histograms (v1.7.0 C4). For now: AdoptedRoundCounts only. Skip
+	// emission when both sides are empty so the report stays additive
+	// for v1.6.0 callers that never engaged reflection.
+	var histograms []HistogramDelta
+	if len(pm.AdoptedRoundCounts) > 0 || len(cm.AdoptedRoundCounts) > 0 {
+		histograms = append(histograms, compareHistogram("AdoptedRoundCounts", pm.AdoptedRoundCounts, cm.AdoptedRoundCounts))
+	}
+
 	// Dataset name: prefer curr's; fall back to prev's when curr empty.
 	name := curr.Dataset.Name
 	if name == "" {
@@ -198,6 +232,46 @@ func CompareBenchmarks(prev, curr BenchmarkResult) DriftReport {
 		Deltas:          deltas,
 		NewExamples:     newExamples,
 		DroppedExamples: droppedExamples,
+		Histograms:      histograms,
+	}
+}
+
+// compareHistogram diffs two int-bucket histograms. The Delta slice is
+// zero-padded on the shorter side so len(Delta) == max(len(prev), len(curr)).
+// L1Distance is sum |Delta[i]| as a float64.
+func compareHistogram(name string, prev, curr []int) HistogramDelta {
+	n := len(prev)
+	if len(curr) > n {
+		n = len(curr)
+	}
+	delta := make([]int, n)
+	var l1 float64
+	for i := 0; i < n; i++ {
+		p := 0
+		if i < len(prev) {
+			p = prev[i]
+		}
+		c := 0
+		if i < len(curr) {
+			c = curr[i]
+		}
+		d := c - p
+		delta[i] = d
+		if d < 0 {
+			l1 += float64(-d)
+		} else {
+			l1 += float64(d)
+		}
+	}
+	// Defensive copies so the returned struct does not alias caller slices.
+	prevCopy := append([]int(nil), prev...)
+	currCopy := append([]int(nil), curr...)
+	return HistogramDelta{
+		Name:       name,
+		Prev:       prevCopy,
+		Curr:       currCopy,
+		Delta:      delta,
+		L1Distance: l1,
 	}
 }
 
@@ -260,6 +334,86 @@ func formatScalar(f float64) string {
 func formatDelta(f float64) string {
 	if math.IsNaN(f) {
 		return "  NaN"
+	}
+	return fmt.Sprintf("%+.3f", f)
+}
+
+// Markdown renders the DriftReport as a Markdown scoreboard. The output
+// is composed of three sections (each omitted when empty):
+//
+//  1. A pipe-table per-metric scoreboard with columns
+//     | Metric | Prev | Curr | Δ | Direction |
+//     in Deltas-slice order. NaN scalars render as "n/a".
+//  2. Optional **New examples:** and **Dropped examples:** bullet lists
+//     when NewExamples / DroppedExamples are non-empty.
+//  3. Optional ### Histograms section (v1.7.0 C4) per non-empty
+//     Histograms entry — one pipe-table plus an "L1=<value>" line.
+//
+// Format structure (columns, metric order, direction labels, section
+// ordering) is a stable contract. Whitespace, decimal precision, and
+// bullet-list formatting may evolve in minor releases. v1.7.0.
+func (r DriftReport) Markdown() string {
+	var b strings.Builder
+	b.WriteString("| Metric | Prev | Curr | Δ | Direction |\n")
+	b.WriteString("| --- | --- | --- | --- | --- |\n")
+	for _, d := range r.Deltas {
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n",
+			d.Name,
+			formatMarkdownScalar(d.Prev),
+			formatMarkdownScalar(d.Curr),
+			formatMarkdownDelta(d.Delta),
+			string(d.Direction),
+		)
+	}
+	if len(r.NewExamples) > 0 {
+		b.WriteString("\n**New examples:**\n")
+		for _, q := range r.NewExamples {
+			fmt.Fprintf(&b, "* %s\n", q)
+		}
+	}
+	if len(r.DroppedExamples) > 0 {
+		b.WriteString("\n**Dropped examples:**\n")
+		for _, q := range r.DroppedExamples {
+			fmt.Fprintf(&b, "* %s\n", q)
+		}
+	}
+	if len(r.Histograms) > 0 {
+		b.WriteString("\n### Histograms\n")
+		for _, h := range r.Histograms {
+			fmt.Fprintf(&b, "\n#### %s\n", h.Name)
+			b.WriteString("| Bucket | Prev | Curr | Δ |\n")
+			b.WriteString("| --- | --- | --- | --- |\n")
+			for i := range h.Delta {
+				prev := 0
+				if i < len(h.Prev) {
+					prev = h.Prev[i]
+				}
+				curr := 0
+				if i < len(h.Curr) {
+					curr = h.Curr[i]
+				}
+				fmt.Fprintf(&b, "| %d | %d | %d | %+d |\n", i, prev, curr, h.Delta[i])
+			}
+			fmt.Fprintf(&b, "L1=%.3f\n", h.L1Distance)
+		}
+	}
+	return b.String()
+}
+
+// formatMarkdownScalar renders a float scalar for the Markdown table.
+// NaN renders as "n/a"; finite values use three decimal places.
+func formatMarkdownScalar(f float64) string {
+	if math.IsNaN(f) {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.3f", f)
+}
+
+// formatMarkdownDelta renders a delta for the Markdown table. NaN
+// renders as "n/a"; finite values use three decimals with a sign.
+func formatMarkdownDelta(f float64) string {
+	if math.IsNaN(f) {
+		return "n/a"
 	}
 	return fmt.Sprintf("%+.3f", f)
 }

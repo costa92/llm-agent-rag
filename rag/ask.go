@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -13,6 +14,37 @@ import (
 	retrievepolicy "github.com/costa92/llm-agent-rag/retrieve"
 	"github.com/costa92/llm-agent-rag/store"
 )
+
+// wrapBudgetError detects a *BudgetExceededError on err and, when found,
+// fills its PartialDiagnostics with the full assembly: Metrics (from
+// counter.Counts + elapsed since askStart), StageTokenUsage (from
+// stageUsage.Snapshot), and Reflection from any rounds collected so far.
+// Non-budget errors are returned unchanged.
+//
+// reflectionMode is the configured reflection mode and may be empty when
+// reflection was disabled; rounds may be nil/empty (non-reflection or
+// pre-first-round abort). v1.7.0.
+func wrapBudgetError(err error, askStart time.Time, counter *obs.Counter, stageUsage *obs.StageUsageAccumulator, reflectionMode ReflectionMode, rounds []reflectionRound, decisionModelCalls int) error {
+	var budgetErr *BudgetExceededError
+	if !errors.As(err, &budgetErr) {
+		return err
+	}
+	partial := Diagnostics{}
+	// Aggregate any reflection rounds collected so far into Metrics so
+	// the PartialDiagnostics reflects the trace at the abort.
+	if len(rounds) > 0 {
+		partial.Metrics = aggregateReflectionMetrics(rounds)
+	}
+	partial.Metrics = mergeMetrics(partial.Metrics, counter.Counts(), time.Since(askStart))
+	if stageUsage != nil {
+		partial.Metrics.StageTokenUsage = stageUsage.Snapshot()
+	}
+	if len(rounds) > 0 {
+		partial.Reflection = reflectionDiagnosticsFromRounds(reflectionMode, rounds, decisionModelCalls)
+	}
+	budgetErr.PartialDiagnostics = partial
+	return budgetErr
+}
 
 type askRoundResult struct {
 	answer         Answer
@@ -47,6 +79,14 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	ctx = obs.WithCounter(ctx, counter)
 	stageUsage := obs.NewStageUsageAccumulator()
 	ctx = obs.WithStageUsage(ctx, stageUsage)
+	// v1.7.0 C2: install the cumulative-token budget on ctx when
+	// AskOptions.MaxTotalTokens > 0. Zero (the default) leaves ctx
+	// unchanged — preserving v1.6.0 behavior byte-for-byte. The
+	// countingModel installs a post-Append budget check; enforcement
+	// is wired in v1.7.0 commit 10.
+	if opts.MaxTotalTokens > 0 {
+		ctx = obs.WithTokenBudget(ctx, opts.MaxTotalTokens)
+	}
 	askStart := time.Now()
 
 	var (
@@ -120,7 +160,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			for roundIndex := 1; roundIndex <= reflection.MaxRounds; roundIndex++ {
 				round, err = s.askRound(ctx, question, query, opts, makeBudget())
 				if err != nil {
-					return Answer{}, err
+					return Answer{}, wrapBudgetError(err, askStart, counter, stageUsage, reflection.Mode, rounds, 0)
 				}
 				decision := decideRule(roundIndex, reflection, round)
 				built := buildReflectionRound(reflection.Mode, roundIndex, query, round, decision, round.followupQueries)
@@ -190,7 +230,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 			for roundIndex := 1; roundIndex <= reflection.MaxRounds; roundIndex++ {
 				round, err = s.askRound(ctx, question, query, opts, makeBudget())
 				if err != nil {
-					return Answer{}, err
+					return Answer{}, wrapBudgetError(err, askStart, counter, stageUsage, reflection.Mode, rounds, decisionModelCalls)
 				}
 				var decision reflectionDecisionResult
 				if reflection.Mode == ReflectionModeHybrid {
@@ -215,7 +255,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 								appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision, round.followupQueries), round)
 								break
 							}
-							return Answer{}, err
+							return Answer{}, wrapBudgetError(err, askStart, counter, stageUsage, reflection.Mode, rounds, decisionModelCalls)
 						}
 						outcome := orchestrateModelReflection(query, decision)
 						decision = outcome.decision
@@ -240,7 +280,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 								appendRound(buildReflectionRound(reflection.Mode, roundIndex, query, round, decision, round.followupQueries), round)
 								break
 							}
-							return Answer{}, err
+							return Answer{}, wrapBudgetError(err, askStart, counter, stageUsage, reflection.Mode, rounds, decisionModelCalls)
 						}
 						outcome := orchestrateModelReflection(query, decision)
 						decision = outcome.decision
@@ -300,7 +340,7 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 		default:
 			round, err = s.askRound(ctx, question, question, opts, makeBudget())
 			if err != nil {
-				return Answer{}, err
+				return Answer{}, wrapBudgetError(err, askStart, counter, stageUsage, reflection.Mode, nil, 0)
 			}
 			singleRound := buildReflectionRound(reflection.Mode, 1, question, round, reflectionDecisionResult{
 				decision:   ReflectionDecisionStop,
@@ -314,7 +354,10 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 		}
 	}
 	if err != nil {
-		return Answer{}, err
+		// This is the catch-all for the non-reflection path (the
+		// askRound at line ~99). reflectionMode is empty and rounds
+		// are nil — wrapBudgetError still fills Metrics+StageTokenUsage.
+		return Answer{}, wrapBudgetError(err, askStart, counter, stageUsage, "", nil, 0)
 	}
 	answer := round.answer
 	answer.Diagnostics.Metrics = mergeMetrics(answer.Diagnostics.Metrics, counter.Counts(), time.Since(askStart))

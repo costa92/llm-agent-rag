@@ -356,6 +356,105 @@ func TestAnswerExampleResultJudgementZeroValueWhenNoJudge(t *testing.T) {
 	}
 }
 
+// --- v1.7.0 C1 Progress callback (sequential) ----------------------------
+
+// progressEvent captures one Progress callback for assertion.
+type progressEvent struct {
+	idx    int
+	total  int
+	result eval.AnswerExampleResult
+	err    error
+}
+
+// TestAnswerBenchmarkProgress_FiresPerExampleInOrder asserts the Progress
+// callback fires once per example in dataset order with idx 0..N-1,
+// total=N, err=nil for clean runs.
+func TestAnswerBenchmarkProgress_FiresPerExampleInOrder(t *testing.T) {
+	asker := &scriptedAsker{byQuery: map[string]rag.Answer{
+		"q1": {Text: "a1"},
+		"q2": {Text: "a2"},
+		"q3": {Text: "a3"},
+	}}
+	ds := eval.AnswerDataset{Name: "prog", TopK: 3, Examples: []eval.AnswerExample{
+		{Example: eval.Example{Query: "q1"}},
+		{Example: eval.Example{Query: "q2"}},
+		{Example: eval.Example{Query: "q3"}},
+	}}
+	var events []progressEvent
+	bench := eval.AnswerBenchmark{
+		Asker: asker,
+		Progress: func(_ context.Context, idx, total int, r eval.AnswerExampleResult, err error) {
+			events = append(events, progressEvent{idx: idx, total: total, result: r, err: err})
+		},
+	}
+	if _, err := bench.Run(context.Background(), ds); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events len = %d, want 3", len(events))
+	}
+	for i, ev := range events {
+		if ev.idx != i {
+			t.Errorf("event[%d].idx = %d, want %d", i, ev.idx, i)
+		}
+		if ev.total != 3 {
+			t.Errorf("event[%d].total = %d, want 3", i, ev.total)
+		}
+		if ev.err != nil {
+			t.Errorf("event[%d].err = %v, want nil", i, ev.err)
+		}
+		wantQ := ds.Examples[i].Query
+		if ev.result.Example.Query != wantQ {
+			t.Errorf("event[%d].result.Query = %q, want %q", i, ev.result.Example.Query, wantQ)
+		}
+	}
+}
+
+// TestAnswerBenchmarkProgress_NilCallbackIsSafe asserts a nil Progress
+// callback is a no-op and does not panic.
+func TestAnswerBenchmarkProgress_NilCallbackIsSafe(t *testing.T) {
+	asker := &scriptedAsker{byQuery: map[string]rag.Answer{"q1": {Text: "a"}}}
+	ds := eval.AnswerDataset{Name: "nil", TopK: 3, Examples: []eval.AnswerExample{
+		{Example: eval.Example{Query: "q1"}},
+	}}
+	if _, err := (eval.AnswerBenchmark{Asker: asker, Progress: nil}).Run(context.Background(), ds); err != nil {
+		t.Fatalf("Run with nil Progress: %v", err)
+	}
+}
+
+// TestAnswerBenchmarkProgress_FiresOnAskError_ThenAborts asserts the
+// callback fires for the failing example with err != nil, then the runner
+// aborts (no further callbacks).
+func TestAnswerBenchmarkProgress_FiresOnAskError_ThenAborts(t *testing.T) {
+	asker := &scriptedAsker{err: errors.New("boom")}
+	ds := eval.AnswerDataset{Name: "err", TopK: 3, Examples: []eval.AnswerExample{
+		{Example: eval.Example{Query: "first"}},
+		{Example: eval.Example{Query: "second"}},
+	}}
+	var events []progressEvent
+	bench := eval.AnswerBenchmark{
+		Asker: asker,
+		Progress: func(_ context.Context, idx, total int, r eval.AnswerExampleResult, err error) {
+			events = append(events, progressEvent{idx: idx, total: total, result: r, err: err})
+		},
+	}
+	if _, err := bench.Run(context.Background(), ds); err == nil {
+		t.Fatalf("Run: want error")
+	}
+	if len(events) != 1 {
+		t.Fatalf("events len = %d, want 1 (abort after first error)", len(events))
+	}
+	if events[0].err == nil {
+		t.Errorf("event[0].err = nil, want non-nil")
+	}
+	if events[0].idx != 0 {
+		t.Errorf("event[0].idx = %d, want 0", events[0].idx)
+	}
+	if events[0].total != 2 {
+		t.Errorf("event[0].total = %d, want 2", events[0].total)
+	}
+}
+
 // TestAnswerBenchmarkOverlaysNamespaceFromExample asserts the runner
 // applies the example's Namespace into the Ask opts, and that
 // dataset.TopK propagates to opts.Search.TopK.

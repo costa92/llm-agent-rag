@@ -123,6 +123,26 @@ func (a *StageUsageAccumulator) Append(stage string, usage TokenUsage) {
 	a.mu.Unlock()
 }
 
+// TotalSoFar returns the running sum of entries[i].Usage.TotalTokens
+// across every Append call so far. A nil accumulator returns 0. The sum
+// is computed under the same sync.Mutex that guards Append/Snapshot, so
+// it is safe to call concurrently with Append.
+//
+// v1.7.0: used by the rag-side cumulative token budget check in
+// countingModel.Generate after each successful Append.
+func (a *StageUsageAccumulator) TotalSoFar() int {
+	if a == nil {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	total := 0
+	for _, e := range a.entries {
+		total += e.Usage.TotalTokens
+	}
+	return total
+}
+
 // Snapshot returns a defensive copy of the entries recorded so far, in the
 // order Append was called. A nil accumulator returns nil.
 func (a *StageUsageAccumulator) Snapshot() []StageTokenUsage {
@@ -141,6 +161,34 @@ func (a *StageUsageAccumulator) Snapshot() []StageTokenUsage {
 
 type counterKey struct{}
 type stageUsageKey struct{}
+type tokenBudgetKey struct{}
+
+// WithTokenBudget returns a context carrying a cumulative-token budget of
+// max. Instrumented counting models (rag.countingModel) consult this
+// budget after each successful Generate to short-circuit further work
+// when StageUsageAccumulator.TotalSoFar() exceeds max.
+//
+// A non-positive max (<= 0) is ignored and ctx is returned unchanged —
+// 0 means "unlimited" (preserves v1.6.0 behavior when MaxTotalTokens is
+// the zero value).
+//
+// v1.7.0.
+func WithTokenBudget(ctx context.Context, max int) context.Context {
+	if max <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, tokenBudgetKey{}, max)
+}
+
+// TokenBudgetFrom returns the cumulative-token budget on ctx, or 0 when
+// none is attached. 0 means "unlimited" — callers should compare with
+// `if budget > 0 && total > budget { ... }`.
+//
+// v1.7.0.
+func TokenBudgetFrom(ctx context.Context) int {
+	b, _ := ctx.Value(tokenBudgetKey{}).(int)
+	return b
+}
 
 // WithCounter returns a context carrying c. Instrumented embedders and
 // models increment it on each call.

@@ -160,11 +160,22 @@ type ReflectionOptions struct {
 // Compatibility note: this exported struct may grow additively over time, so
 // keyed composite literals are recommended.
 type AskOptions struct {
-	Search     SearchOptions      // Search configures the retrieval stage.
-	Template   prompt.Template    // Template overrides the prompt template; nil uses the System default.
-	Metadata   map[string]any     // Metadata is caller-supplied passthrough sent to the model.
-	MaxTokens  int                // MaxTokens caps the packed context token budget.
-	Reflection *ReflectionOptions // Reflection configures the optional bounded self-reflection loop.
+	Search    SearchOptions   // Search configures the retrieval stage.
+	Template  prompt.Template // Template overrides the prompt template; nil uses the System default.
+	Metadata  map[string]any  // Metadata is caller-supplied passthrough sent to the model.
+	MaxTokens int             // MaxTokens caps the packed context token budget.
+	// MaxTotalTokens caps the cumulative TotalTokens across every Generate
+	// call within one Ask (ask + reflection_decision + grader + planner +
+	// any sub-stages). A value <= 0 (default zero) is unlimited and
+	// preserves v1.6.0 behavior byte-for-byte. When non-zero and the
+	// cumulative StageTokenUsage exceeds this cap after any successful
+	// Generate, Ask aborts and returns a *BudgetExceededError with
+	// PartialDiagnostics carrying the trace collected up to the abort.
+	//
+	// Scope: v1.7.0 enforcement is Ask-only. AskGlobal and AskDrift ignore
+	// the budget — tracked for a future minor version.
+	MaxTotalTokens int
+	Reflection     *ReflectionOptions // Reflection configures the optional bounded self-reflection loop.
 	// QueryPlanner is a per-Ask override for the active-retrieval
 	// QueryPlanner. When non-nil it takes precedence over
 	// Options.QueryPlanner for this Ask call only (the system-level

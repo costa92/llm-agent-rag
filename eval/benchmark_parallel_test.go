@@ -417,3 +417,109 @@ func contains(s, sub string) bool {
 var (
 	_ = sort.Slice
 )
+
+// --- v1.7.0 C1 Progress callback (parallel) ------------------------------
+
+// TestAnswerBenchmarkProgress_Parallel_FiresExactlyN_AnyOrder asserts the
+// callback fires exactly N times under Parallelism=4 — completion order
+// may differ from idx order but every idx 0..N-1 must appear exactly once.
+func TestAnswerBenchmarkProgress_Parallel_FiresExactlyN_AnyOrder(t *testing.T) {
+	n := 8
+	asker := newSleepingAsker(n, 10*time.Millisecond)
+	ds := sleepingDataset(n, 10*time.Millisecond)
+	var mu sync.Mutex
+	seen := make([]bool, n)
+	count := 0
+	bench := eval.AnswerBenchmark{
+		Asker:       asker,
+		Parallelism: 4,
+		Progress: func(_ context.Context, idx, total int, _ eval.AnswerExampleResult, _ error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if idx < 0 || idx >= n {
+				t.Errorf("idx %d out of range [0, %d)", idx, n)
+				return
+			}
+			if seen[idx] {
+				t.Errorf("idx %d fired twice", idx)
+			}
+			seen[idx] = true
+			count++
+			if total != n {
+				t.Errorf("total = %d, want %d", total, n)
+			}
+		},
+	}
+	if _, err := bench.Run(context.Background(), ds); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if count != n {
+		t.Fatalf("Progress fired %d times, want %d", count, n)
+	}
+	for i, ok := range seen {
+		if !ok {
+			t.Errorf("idx %d never fired", i)
+		}
+	}
+}
+
+// TestAnswerBenchmarkProgress_Parallel_ErrIsPassed asserts the failing
+// example's err is forwarded to the Progress callback.
+func TestAnswerBenchmarkProgress_Parallel_ErrIsPassed(t *testing.T) {
+	n := 4
+	asker := newSleepingAsker(n, 5*time.Millisecond)
+	asker.errBy = map[string]error{"q2": errors.New("boom-2")}
+	ds := sleepingDataset(n, 5*time.Millisecond)
+	var mu sync.Mutex
+	var sawErr bool
+	bench := eval.AnswerBenchmark{
+		Asker:       asker,
+		Parallelism: 4,
+		Progress: func(_ context.Context, _, _ int, _ eval.AnswerExampleResult, err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				sawErr = true
+			}
+		},
+	}
+	if _, err := bench.Run(context.Background(), ds); err == nil {
+		t.Fatalf("Run: want error")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !sawErr {
+		t.Errorf("Progress never fired with non-nil err")
+	}
+}
+
+// TestAnswerBenchmarkProgress_Parallel_TotalIsConstant asserts every
+// callback observes the same total == len(dataset.Examples).
+func TestAnswerBenchmarkProgress_Parallel_TotalIsConstant(t *testing.T) {
+	n := 6
+	asker := newSleepingAsker(n, 5*time.Millisecond)
+	ds := sleepingDataset(n, 5*time.Millisecond)
+	var mu sync.Mutex
+	totals := make([]int, 0, n)
+	bench := eval.AnswerBenchmark{
+		Asker:       asker,
+		Parallelism: 3,
+		Progress: func(_ context.Context, _, total int, _ eval.AnswerExampleResult, _ error) {
+			mu.Lock()
+			defer mu.Unlock()
+			totals = append(totals, total)
+		},
+	}
+	if _, err := bench.Run(context.Background(), ds); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for i, tot := range totals {
+		if tot != n {
+			t.Errorf("totals[%d] = %d, want %d", i, tot, n)
+		}
+	}
+}

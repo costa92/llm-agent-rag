@@ -263,3 +263,279 @@ func strSliceEq(a, b []string) bool {
 	}
 	return true
 }
+
+// --- v1.7.0 C3 DriftReport.Markdown tests ---------------------------------
+
+// TestDriftReportMarkdown_TableHeaderAndOrder pins the pipe-table header
+// and the metric order (matches Deltas slice order).
+func TestDriftReportMarkdown_TableHeaderAndOrder(t *testing.T) {
+	prev := emptyMetrics()
+	prev.ExactMatch = 0.7
+	prev.F1Token = 0.5
+	curr := emptyMetrics()
+	curr.ExactMatch = 0.8
+	curr.F1Token = 0.6
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	md := r.Markdown()
+	// Header row + alignment row.
+	if !strings.Contains(md, "| Metric | Prev | Curr | Δ | Direction |") {
+		t.Fatalf("Markdown missing header row:\n%s", md)
+	}
+	if !strings.Contains(md, "| --- | --- | --- | --- | --- |") {
+		t.Fatalf("Markdown missing alignment row:\n%s", md)
+	}
+	// Order: same as Deltas (Examples comes first).
+	emIdx := strings.Index(md, "ExactMatch")
+	f1Idx := strings.Index(md, "F1Token")
+	if emIdx < 0 || f1Idx < 0 {
+		t.Fatalf("Markdown missing ExactMatch or F1Token line:\n%s", md)
+	}
+	if emIdx >= f1Idx {
+		t.Fatalf("Markdown ExactMatch (%d) should appear before F1Token (%d):\n%s", emIdx, f1Idx, md)
+	}
+}
+
+// TestDriftReportMarkdown_NaNRendersNa asserts NaN scalars render as "n/a".
+func TestDriftReportMarkdown_NaNRendersNa(t *testing.T) {
+	prev := emptyMetrics() // ExactMatch already NaN
+	curr := emptyMetrics() // ExactMatch already NaN
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	md := r.Markdown()
+	if !strings.Contains(md, "n/a") {
+		t.Fatalf("Markdown should render NaN as n/a, got:\n%s", md)
+	}
+}
+
+// TestDriftReportMarkdown_DirectionLabels asserts all four direction
+// labels appear when the dataset surfaces each one.
+func TestDriftReportMarkdown_DirectionLabels(t *testing.T) {
+	prev := emptyMetrics()
+	prev.ExactMatch = 0.5
+	prev.F1Token = 0.8
+	prev.FollowupQueriesUsedMean = 2.0
+	prev.ReflectionRoundsMean = 1.0
+	curr := emptyMetrics()
+	curr.ExactMatch = 0.7              // improved
+	curr.F1Token = 0.6                 // regressed
+	curr.FollowupQueriesUsedMean = 2.0 // unchanged
+	curr.ReflectionRoundsMean = 5.0    // undefined (polarity undefined)
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	md := r.Markdown()
+	wantLabels := []string{"improved", "regressed", "unchanged", "undefined"}
+	for _, want := range wantLabels {
+		if !strings.Contains(md, want) {
+			t.Errorf("Markdown missing direction label %q:\n%s", want, md)
+		}
+	}
+}
+
+// TestDriftReportMarkdown_FooterListsNewAndDropped asserts the New /
+// Dropped examples footer renders as bullets when populated.
+func TestDriftReportMarkdown_FooterListsNewAndDropped(t *testing.T) {
+	prev := benchmarkOf("d", emptyMetrics())
+	prev.Dataset.Examples = []eval.AnswerExample{
+		{Example: eval.Example{Query: "alpha"}},
+		{Example: eval.Example{Query: "beta"}},
+	}
+	curr := benchmarkOf("d", emptyMetrics())
+	curr.Dataset.Examples = []eval.AnswerExample{
+		{Example: eval.Example{Query: "beta"}},
+		{Example: eval.Example{Query: "gamma"}},
+	}
+	r := eval.CompareBenchmarks(prev, curr)
+	md := r.Markdown()
+	if !strings.Contains(md, "**New examples:**") {
+		t.Errorf("Markdown missing **New examples:** header:\n%s", md)
+	}
+	if !strings.Contains(md, "* gamma") {
+		t.Errorf("Markdown missing bullet for new example 'gamma':\n%s", md)
+	}
+	if !strings.Contains(md, "**Dropped examples:**") {
+		t.Errorf("Markdown missing **Dropped examples:** header:\n%s", md)
+	}
+	if !strings.Contains(md, "* alpha") {
+		t.Errorf("Markdown missing bullet for dropped example 'alpha':\n%s", md)
+	}
+}
+
+// --- v1.7.0 C4 HistogramDelta + DriftReport.Histograms -------------------
+
+// TestHistogramDelta_ZeroPadsShorter asserts the Delta is zero-padded to
+// max(len(Prev), len(Curr)).
+func TestHistogramDelta_ZeroPadsShorter(t *testing.T) {
+	prev := emptyMetrics()
+	prev.ReflectionRoundsMean = 1.0
+	prev.AdoptedRoundCounts = []int{1, 2}
+	curr := emptyMetrics()
+	curr.ReflectionRoundsMean = 1.0
+	curr.AdoptedRoundCounts = []int{1, 2, 3}
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	if len(r.Histograms) == 0 {
+		t.Fatalf("Histograms empty; expected AdoptedRoundCounts entry")
+	}
+	h := r.Histograms[0]
+	wantDelta := []int{0, 0, 3}
+	if len(h.Delta) != len(wantDelta) {
+		t.Fatalf("Delta len = %d, want %d (%v)", len(h.Delta), len(wantDelta), h.Delta)
+	}
+	for i, want := range wantDelta {
+		if h.Delta[i] != want {
+			t.Errorf("Delta[%d] = %d, want %d", i, h.Delta[i], want)
+		}
+	}
+}
+
+// TestHistogramDelta_L1Distance_Symmetric asserts |Delta| sums match
+// regardless of which side is prev vs curr.
+func TestHistogramDelta_L1Distance_Symmetric(t *testing.T) {
+	cases := []struct {
+		prev, curr []int
+		wantL1     float64
+	}{
+		{[]int{1, 2, 3}, []int{4, 1, 5}, 3 + 1 + 2}, // |3|+|-1|+|2|=6
+		{[]int{4, 1, 5}, []int{1, 2, 3}, 3 + 1 + 2}, // |-3|+|1|+|-2|=6
+	}
+	for i, c := range cases {
+		prev := emptyMetrics()
+		prev.ReflectionRoundsMean = 1.0
+		prev.AdoptedRoundCounts = c.prev
+		curr := emptyMetrics()
+		curr.ReflectionRoundsMean = 1.0
+		curr.AdoptedRoundCounts = c.curr
+		r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+		if len(r.Histograms) == 0 {
+			t.Fatalf("case %d: Histograms empty", i)
+		}
+		if math.Abs(r.Histograms[0].L1Distance-c.wantL1) > 1e-9 {
+			t.Errorf("case %d: L1=%v, want %v", i, r.Histograms[0].L1Distance, c.wantL1)
+		}
+	}
+}
+
+// TestHistogramDelta_AllEqual_ZeroL1 asserts identical histograms produce L1=0.
+func TestHistogramDelta_AllEqual_ZeroL1(t *testing.T) {
+	prev := emptyMetrics()
+	prev.ReflectionRoundsMean = 1.0
+	prev.AdoptedRoundCounts = []int{1, 2, 3}
+	curr := emptyMetrics()
+	curr.ReflectionRoundsMean = 1.0
+	curr.AdoptedRoundCounts = []int{1, 2, 3}
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	if len(r.Histograms) == 0 {
+		t.Fatalf("Histograms empty")
+	}
+	if r.Histograms[0].L1Distance != 0 {
+		t.Errorf("L1=%v, want 0", r.Histograms[0].L1Distance)
+	}
+}
+
+// TestCompareBenchmarks_PopulatesAdoptedRoundCountsHistogram asserts the
+// AdoptedRoundCounts histogram is automatically populated by
+// CompareBenchmarks with Name == "AdoptedRoundCounts".
+func TestCompareBenchmarks_PopulatesAdoptedRoundCountsHistogram(t *testing.T) {
+	prev := emptyMetrics()
+	prev.ReflectionRoundsMean = 1.0
+	prev.AdoptedRoundCounts = []int{5, 10}
+	curr := emptyMetrics()
+	curr.ReflectionRoundsMean = 1.0
+	curr.AdoptedRoundCounts = []int{8, 12}
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	if len(r.Histograms) != 1 {
+		t.Fatalf("Histograms len = %d, want 1", len(r.Histograms))
+	}
+	h := r.Histograms[0]
+	if h.Name != "AdoptedRoundCounts" {
+		t.Errorf("Histograms[0].Name = %q, want %q", h.Name, "AdoptedRoundCounts")
+	}
+	if !intSliceEq(h.Prev, []int{5, 10}) {
+		t.Errorf("Prev=%v, want [5 10]", h.Prev)
+	}
+	if !intSliceEq(h.Curr, []int{8, 12}) {
+		t.Errorf("Curr=%v, want [8 12]", h.Curr)
+	}
+	if !intSliceEq(h.Delta, []int{3, 2}) {
+		t.Errorf("Delta=%v, want [3 2]", h.Delta)
+	}
+	if h.L1Distance != 5 {
+		t.Errorf("L1Distance=%v, want 5", h.L1Distance)
+	}
+}
+
+func intSliceEq(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// --- v1.7.0 C4 Markdown Histograms section -------------------------------
+
+// TestDriftReportMarkdown_HistogramSection_RendersTable asserts the
+// ### Histograms / #### <Name> / pipe-table rendering for one histogram.
+func TestDriftReportMarkdown_HistogramSection_RendersTable(t *testing.T) {
+	prev := emptyMetrics()
+	prev.ReflectionRoundsMean = 1.0
+	prev.AdoptedRoundCounts = []int{5, 10}
+	curr := emptyMetrics()
+	curr.ReflectionRoundsMean = 1.0
+	curr.AdoptedRoundCounts = []int{8, 12}
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	md := r.Markdown()
+	if !strings.Contains(md, "### Histograms") {
+		t.Errorf("Markdown missing ### Histograms section header:\n%s", md)
+	}
+	if !strings.Contains(md, "#### AdoptedRoundCounts") {
+		t.Errorf("Markdown missing #### AdoptedRoundCounts heading:\n%s", md)
+	}
+	if !strings.Contains(md, "| Bucket | Prev | Curr | Δ |") {
+		t.Errorf("Markdown missing histogram pipe-table header:\n%s", md)
+	}
+}
+
+// TestDriftReportMarkdown_HistogramSection_OmittedWhenEmpty asserts the
+// histograms section is fully omitted when Histograms is empty.
+func TestDriftReportMarkdown_HistogramSection_OmittedWhenEmpty(t *testing.T) {
+	prev := emptyMetrics()
+	curr := emptyMetrics()
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	md := r.Markdown()
+	if strings.Contains(md, "### Histograms") {
+		t.Errorf("Markdown should omit ### Histograms section when empty:\n%s", md)
+	}
+}
+
+// TestDriftReportMarkdown_HistogramSection_L1Line asserts the L1=<value>
+// summary line is present after the per-histogram table.
+func TestDriftReportMarkdown_HistogramSection_L1Line(t *testing.T) {
+	prev := emptyMetrics()
+	prev.ReflectionRoundsMean = 1.0
+	prev.AdoptedRoundCounts = []int{1, 2}
+	curr := emptyMetrics()
+	curr.ReflectionRoundsMean = 1.0
+	curr.AdoptedRoundCounts = []int{4, 8}
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	md := r.Markdown()
+	if !strings.Contains(md, "L1=") {
+		t.Errorf("Markdown missing L1=<value> line:\n%s", md)
+	}
+}
+
+// TestDriftReportMarkdown_EmptyExamplesNoFooter asserts the footer
+// sections are omitted entirely when New/Dropped are empty.
+func TestDriftReportMarkdown_EmptyExamplesNoFooter(t *testing.T) {
+	prev := emptyMetrics()
+	curr := emptyMetrics()
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	md := r.Markdown()
+	if strings.Contains(md, "New examples") {
+		t.Errorf("Markdown should omit New examples section when empty:\n%s", md)
+	}
+	if strings.Contains(md, "Dropped examples") {
+		t.Errorf("Markdown should omit Dropped examples section when empty:\n%s", md)
+	}
+}

@@ -60,6 +60,7 @@ func ClassifyTransientHTTP(err error) bool
 func CompareBenchmarks(prev, curr BenchmarkResult) DriftReport
 method (DriftEvalResult) Summary() string
 method (DriftEvaluator) Run(ctx context.Context, dataset Dataset) (DriftEvalResult, error)
+method (DriftReport) Markdown() string
 method (DriftReport) Summary() string
 method (GlobalEvalResult) Summary() string
 method (GlobalEvaluator) Run(ctx context.Context, dataset Dataset) (GlobalEvalResult, error)
@@ -83,6 +84,7 @@ type AnswerBenchmark struct
 	field Judge Judge
 	field Options rag.AskOptions
 	field Parallelism int
+	field Progress func(ctx context.Context, idx, total int, result AnswerExampleResult, err error)
 type AnswerDataset struct
 	field Examples []AnswerExample
 	field Name string
@@ -151,6 +153,7 @@ type DriftReport struct
 	field Dataset string
 	field Deltas []MetricDelta
 	field DroppedExamples []string
+	field Histograms []HistogramDelta
 	field NewExamples []string
 type Example struct
 	field GoldChunkIDs []string
@@ -190,6 +193,12 @@ type GraphABResult struct
 	field GraphOn Metrics
 	field MRRDelta float64
 	field RecallDelta float64
+type HistogramDelta struct
+	field Curr []int
+	field Delta []int
+	field L1Distance float64
+	field Name string
+	field Prev []int
 type JitterMode string
 type Judge interface
 	method Judge(ctx context.Context, req JudgeRequest) (Judgement, error)
@@ -457,9 +466,12 @@ func NewCounter() *Counter
 func NewStageUsageAccumulator() *StageUsageAccumulator
 method (*StageUsageAccumulator) Append(stage string, usage TokenUsage)
 method (*StageUsageAccumulator) Snapshot() []StageTokenUsage
+method (*StageUsageAccumulator) TotalSoFar() int
 func StageUsageFrom(ctx context.Context) *StageUsageAccumulator
+func TokenBudgetFrom(ctx context.Context) int
 func WithCounter(ctx context.Context, c *Counter) context.Context
 func WithStageUsage(ctx context.Context, a *StageUsageAccumulator) context.Context
+func WithTokenBudget(ctx context.Context, max int) context.Context
 type CallCounts struct
 	field Embed int
 	field Generate int
@@ -570,6 +582,8 @@ const StageGrader = "grader"
 const StageJudgeEval = "judge_eval"
 const StagePlanner = "planner"
 const StageReflectionDecision = "reflection_decision"
+method (*BudgetExceededError) Error() string
+method (*BudgetExceededError) Unwrap() error
 func ExportGraderDataset(ans Answer) []GraderExample
 func MarshalDiagnostics(d Diagnostics) ([]byte, error)
 func New(opts Options) *System
@@ -599,11 +613,17 @@ type Answer struct
 	field Trace Trace
 type AskOptions struct
 	field MaxTokens int
+	field MaxTotalTokens int
 	field Metadata map[string]any
 	field QueryPlanner QueryPlanner
 	field Reflection *ReflectionOptions
 	field Search SearchOptions
 	field Template prompt.Template
+type BudgetExceededError struct
+	field Budget int
+	field PartialDiagnostics Diagnostics
+	field Stage string
+	field Used int
 type ChunkScore struct
 	field HitID string
 	field Reason string
@@ -837,6 +857,7 @@ var ErrImporterRequired = errors.New("rag: importer required for this operation"
 var ErrModelRequired = errors.New("rag: generator required for this operation")
 var ErrRetrieverRequired = errors.New("rag: retriever required for this operation")
 var ErrSourceRequired = errors.New("rag: import source is required")
+var ErrTokenBudgetExceeded = errors.New("rag: token budget exceeded")
 package github.com/costa92/llm-agent-rag/rerank
 method (HTTPScoringModel) Score(ctx context.Context, query string, documents []string) ([]float64, error)
 method (HeuristicReranker) Rerank(_ context.Context, req Request) ([]store.Hit, Trace, error)

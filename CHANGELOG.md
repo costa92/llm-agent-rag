@@ -6,6 +6,37 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [1.7.0] - 2026-05-24
+
+Minor release bundling four closely-coupled additive features: a per-example benchmark progress callback (C-BenchProgress), an Ask-level cumulative token budget with typed abort error (C-CostBudget), Markdown rendering for drift reports (C-DriftDiff), and histogram diffing for AdoptedRoundCounts (C-HistogramDrift). Fully additive — v1.6.0 callers see byte-for-byte behavior preservation.
+
+### Added
+
+- `eval.AnswerBenchmark.Progress func(ctx, idx, total int, result AnswerExampleResult, err error)` — fires after each example in sequential and parallel modes. Nil-safe. May fire concurrently from worker goroutines when Parallelism>=2; callers must be thread-safe.
+- `eval.DriftReport.Markdown() string` — pipe-table per-metric scoreboard plus optional New/Dropped/Histograms sections. Structure (columns, metric order, direction labels) is stable; whitespace and decimal precision may evolve in minor releases.
+- `eval.HistogramDelta{Name, Prev, Curr, Delta, L1Distance}` and `eval.DriftReport.Histograms []HistogramDelta` — diff for the `AdoptedRoundCounts` histogram (zero-padded to the longer side). `L1Distance` is float64 to leave room for weighted variants.
+- `rag.AskOptions.MaxTotalTokens int` — caps total Generate tokens across all stages (ask + reflection + grader + planner + sub-stages) of one Ask call. Zero means unlimited (preserves v1.6.0 behavior).
+- `rag.ErrTokenBudgetExceeded` sentinel and `rag.BudgetExceededError{Stage, Used, Budget, PartialDiagnostics}` — returned when the cumulative StageTokenUsage exceeds MaxTotalTokens after any successful Generate call. Returns zero Answer; PartialDiagnostics on the error struct carries Metrics, StageTokenUsage and partial Reflection rounds collected up to the abort. Unwraps to `ErrTokenBudgetExceeded`; use `errors.As` to access PartialDiagnostics.
+- `obs.StageUsageAccumulator.TotalSoFar() int` — running sum of TotalTokens; mutex-guarded.
+- `obs.WithTokenBudget(ctx, max int) context.Context` / `obs.TokenBudgetFrom(ctx) int` — context-attached cumulative budget consulted by countingModel after each Generate.
+
+### Changed
+
+- (none — fully additive)
+
+### Compatibility
+
+- `MaxTotalTokens=0` (zero value) is unlimited — v1.6.0 callers are unaffected byte-for-byte.
+- Budget enforcement runs AFTER each successful Generate (post-Append to StageUsageAccumulator). No mid-Generate context cancellation; in-flight HTTP completes naturally and the StageTokenUsage entry for the overage call IS recorded. The next return up the call stack carries `BudgetExceededError`.
+- `BudgetExceededError` carries `PartialDiagnostics` on the error struct (not on Answer). Callers should use `errors.As(err, &budgetErr)` and then access `budgetErr.PartialDiagnostics`. Answer is the zero value on budget abort.
+- **MaxTotalTokens enforcement is Ask-only in v1.7.0**. `AskGlobal` and `AskDrift` ignore the budget and complete normally — tracked for v1.8.0.
+- `DriftReport.Markdown()` is a structure-only contract. The column set (Metric, Prev, Curr, Δ, Direction), metric ordering (matches Deltas slice), direction labels (improved/regressed/unchanged/undefined), and section ordering (table → New/Dropped → Histograms) are stable. Whitespace, decimal precision, and bullet-list formatting may change in minor releases.
+- `HistogramDelta` zero-pads the shorter side; `L1Distance == sum |Delta[i]|`.
+- `Progress` under `Parallelism>=2` may fire concurrently — same thread-safety contract as the existing `OnGenerateUsage` hook.
+- stdlib-only invariant maintained.
+- API snapshot diff: ~22 lines added, 0 removed, 0 renamed.
+- Race-detector clean on all new tests.
+
 ## [1.6.0] - 2026-05-24
 
 Minor release bundling two closely-coupled additive features: NaN-safe canonical JSON/JSONL codecs for benchmark results and rag diagnostics (C-DiagnosticsExport), and a metric drift comparator with per-metric polarity table (C-Drift).
