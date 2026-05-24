@@ -313,6 +313,7 @@ func (b AnswerBenchmark) runParallel(ctx context.Context, dataset AnswerDataset,
 	var errMu sync.Mutex
 	var firstErr error
 
+	total := len(dataset.Examples)
 	for i, ex := range dataset.Examples {
 		sem <- struct{}{}
 		wg.Add(1)
@@ -322,6 +323,9 @@ func (b AnswerBenchmark) runParallel(ctx context.Context, dataset AnswerDataset,
 
 			// Sticky-error gate: if a sibling already failed, skip
 			// further work. In-flight workers still finish naturally.
+			// Progress is NOT fired for skipped slots — the contract
+			// is "fires once per runOne call", and skipped slots
+			// never run.
 			errMu.Lock()
 			already := firstErr != nil
 			errMu.Unlock()
@@ -330,6 +334,13 @@ func (b AnswerBenchmark) runParallel(ctx context.Context, dataset AnswerDataset,
 			}
 
 			r, err := b.runOne(ctx, dataset, ex)
+			// Fire Progress for every example whose runOne was
+			// attempted — same contract as the sequential path
+			// (commit 4). Under Parallelism>=2 this fires from a
+			// worker goroutine, so callers must be thread-safe.
+			if b.Progress != nil {
+				b.Progress(ctx, i, total, r, err)
+			}
 			if err != nil {
 				errMu.Lock()
 				if firstErr == nil {
