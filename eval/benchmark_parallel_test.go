@@ -362,6 +362,48 @@ func TestAnswerBenchmarkParallelOtherWorkersFinish(t *testing.T) {
 	}
 }
 
+// TestAnswerBenchmarkParallelJudgeAndAskerConcurrent asserts that under
+// Parallelism>=2 with a non-nil Judge, both the Asker and Judge are
+// driven concurrently and the result is still deterministic. This is the
+// race-detector gate for the v1.4.0 concurrent-use contract documented
+// on AnswerBenchmark.Parallelism's godoc.
+func TestAnswerBenchmarkParallelJudgeAndAskerConcurrent(t *testing.T) {
+	const n = 8
+	asker := newSleepingAsker(n, 20*time.Millisecond)
+	verdictBy := make(map[string]eval.Judgement, n)
+	for i := 1; i <= n; i++ {
+		q := fmt.Sprintf("q%d", i)
+		verdictBy[q] = eval.Judgement{
+			Groundedness:    float64(i) / float64(n),
+			AnswerRelevance: 1.0 - float64(i)/float64(n),
+		}
+	}
+	judge := &atomicScriptedJudge{verdictBy: verdictBy}
+	ds := sleepingDataset(n, 0)
+	bench := eval.AnswerBenchmark{Asker: asker, Judge: judge, Parallelism: 4}
+	res, err := bench.Run(context.Background(), ds)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := atomic.LoadInt32(&judge.calls); got != n {
+		t.Fatalf("judge.calls = %d, want %d", got, n)
+	}
+	if len(res.PerExample) != n {
+		t.Fatalf("PerExample len = %d, want %d", len(res.PerExample), n)
+	}
+	// Deterministic per-example order — Judgement at index i must match
+	// the verdict scripted for dataset.Examples[i].Query.
+	for i, r := range res.PerExample {
+		want := verdictBy[fmt.Sprintf("q%d", i+1)]
+		if r.Judgement != want {
+			t.Fatalf("PerExample[%d].Judgement = %+v, want %+v", i, r.Judgement, want)
+		}
+		if !r.JudgeApplied {
+			t.Fatalf("PerExample[%d].JudgeApplied = false, want true", i)
+		}
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {

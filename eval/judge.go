@@ -32,6 +32,12 @@ type Judgement struct {
 // Judge scores a generated answer for groundedness and answer relevance —
 // legs 2 and 3 of the RAG Triad. Implementations may be heuristic or
 // model-backed; callers supply their own so eval stays vendor-neutral.
+//
+// Concurrent use: when supplied to AnswerBenchmark with Parallelism>=2,
+// implementations of Judge MUST be safe for concurrent Judge calls from
+// multiple goroutines. Stateless implementations and judges that
+// serialize calls under a mutex both qualify. LLMJudge is concurrency-
+// safe to the extent its embedded generate.Model is.
 type Judge interface {
 	// Judge scores the answer in req for groundedness and relevance.
 	Judge(ctx context.Context, req JudgeRequest) (Judgement, error)

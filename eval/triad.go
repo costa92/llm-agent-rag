@@ -12,6 +12,12 @@ import (
 )
 
 // Asker runs the full retrieve+generate pipeline. *rag.System satisfies it.
+//
+// Concurrent use: when supplied to AnswerBenchmark with Parallelism>=2,
+// implementations of Asker MUST be safe for concurrent Ask calls from
+// multiple goroutines. *rag.System is. Stateless or mutex-guarded
+// implementations are recommended; per-call mutable state must be
+// confined to the goroutine that owns the call.
 type Asker interface {
 	// Ask runs the full retrieve-and-generate pipeline for question.
 	Ask(ctx context.Context, question string, opts rag.AskOptions) (rag.Answer, error)

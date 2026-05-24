@@ -184,10 +184,30 @@ type BenchmarkResult struct {
 // Compatibility note: this exported struct may grow additively over
 // time, so keyed composite literals are recommended.
 type AnswerBenchmark struct {
-	Asker       Asker          // Asker runs the answer pipeline under evaluation; reuses eval.Asker.
-	Options     rag.AskOptions // Options is the base AskOptions applied to every Ask call (overlaid per example).
-	Judge       Judge          // Judge optionally scores each answer for groundedness/relevance; nil = textual metrics only. v1.4.0.
-	Parallelism int            // Parallelism bounds concurrent example dispatch: 0 or 1 = sequential (v1.3.0 behavior); >=2 fans out to a worker pool. Negative values coerce to sequential. v1.4.0.
+	Asker   Asker          // Asker runs the answer pipeline under evaluation; reuses eval.Asker.
+	Options rag.AskOptions // Options is the base AskOptions applied to every Ask call (overlaid per example).
+	Judge   Judge          // Judge optionally scores each answer for groundedness/relevance; nil = textual metrics only. v1.4.0.
+
+	// Parallelism bounds concurrent example dispatch:
+	//   - 0 or 1   → sequential (v1.3.0 behavior; preserved byte-for-byte).
+	//   - negative → coerced to sequential.
+	//   - >=2      → bounded worker pool fans out Ask + (optional) Judge.
+	//
+	// When >=2, AnswerBenchmark.Asker and AnswerBenchmark.Judge MUST be
+	// safe for concurrent use by multiple goroutines. *rag.System
+	// satisfies that contract. Asker work is treated as I/O-bound, so
+	// Parallelism is NOT capped at runtime.NumCPU/GOMAXPROCS — pick a
+	// value that matches your downstream concurrency budget.
+	//
+	// Error semantics: a sticky first-error gate aborts the run. The
+	// first failing Ask or Judge wins; in-flight siblings finish their
+	// current call naturally (no context cancellation). Determinism:
+	// PerExample order matches dataset.Examples regardless of
+	// completion order — each goroutine writes to a pre-allocated slot
+	// by index.
+	//
+	// v1.4.0.
+	Parallelism int
 }
 
 // normalizeParallelism reduces AnswerBenchmark.Parallelism to a valid
