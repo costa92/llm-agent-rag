@@ -687,6 +687,7 @@ type DriftDiagnostics struct
 	field Rounds int
 type DriftOptions struct
 	field MaxCommunities int
+	field MaxTotalTokens int
 	field Namespace string
 	field Rounds int
 	field TopK int
@@ -698,6 +699,7 @@ type GlobalDiagnostics struct
 	field ReduceCalls int
 type GlobalOptions struct
 	field MaxCommunities int
+	field MaxTotalTokens int
 	field Namespace string
 type Grader interface
 	method ScoreRelevance(ctx context.Context, query string, hit store.Hit) (score float64, reason string, err error)

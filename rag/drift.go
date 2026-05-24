@@ -84,6 +84,15 @@ func (s *System) AskDrift(ctx context.Context, question string, opts DriftOption
 	ctx = obs.WithCounter(ctx, counter)
 	stageUsage := obs.NewStageUsageAccumulator()
 	ctx = obs.WithStageUsage(ctx, stageUsage)
+	// v1.9.0 C-BudgetExpand: install the cumulative-token budget on ctx
+	// when DriftOptions.MaxTotalTokens > 0. Zero (the default) leaves
+	// ctx unchanged — preserving v1.8.0 behavior byte-for-byte. The
+	// countingModel installs a post-Append budget check; sub-stage
+	// models (driftPrimerModel, driftLocalModel, driftSynthModel)
+	// already wrap it.
+	if opts.MaxTotalTokens > 0 {
+		ctx = obs.WithTokenBudget(ctx, opts.MaxTotalTokens)
+	}
 	metrics := obs.Metrics{}
 	start := time.Now()
 
@@ -111,7 +120,13 @@ func (s *System) AskDrift(ctx context.Context, question string, opts DriftOption
 	stageStart := time.Now()
 	primer, err := s.driftPrimer(ctx, cs, hasCommunities, question, opts)
 	if err != nil {
-		return Answer{}, err
+		// v1.9.0: primer carries partial state via named returns.
+		return Answer{}, wrapBudgetError(err, start, counter, stageUsage, func() Diagnostics {
+			return Diagnostics{Drift: DriftDiagnostics{
+				PrimerCommunityIDs: primer.communityIDs,
+				ConsultedReports:   primer.reports,
+			}}
+		})
 	}
 	metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "primer", Duration: time.Since(stageStart)})
 
@@ -119,7 +134,15 @@ func (s *System) AskDrift(ctx context.Context, question string, opts DriftOption
 	stageStart = time.Now()
 	loop := s.driftLocalLoop(ctx, gs, hasGraph, question, opts.Namespace, primer.seedEntityIDs, rounds, topK)
 	if loop.err != nil {
-		return Answer{}, loop.err
+		// v1.9.0: local-loop partial state surfaces via res.roundEntityIDs.
+		return Answer{}, wrapBudgetError(loop.err, start, counter, stageUsage, func() Diagnostics {
+			return Diagnostics{Drift: DriftDiagnostics{
+				PrimerCommunityIDs: primer.communityIDs,
+				Rounds:             len(loop.roundEntityIDs),
+				RoundEntityIDs:     loop.roundEntityIDs,
+				ConsultedReports:   primer.reports,
+			}}
+		})
 	}
 	metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "local", Duration: time.Since(stageStart)})
 
@@ -127,7 +150,15 @@ func (s *System) AskDrift(ctx context.Context, question string, opts DriftOption
 	stageStart = time.Now()
 	finalText, err := s.driftSynthesize(ctx, question, primer.partials, loop.partials)
 	if err != nil {
-		return Answer{}, err
+		// v1.9.0: primer + loop fully complete; synth Generate tripped.
+		return Answer{}, wrapBudgetError(err, start, counter, stageUsage, func() Diagnostics {
+			return Diagnostics{Drift: DriftDiagnostics{
+				PrimerCommunityIDs: primer.communityIDs,
+				Rounds:             len(loop.roundEntityIDs),
+				RoundEntityIDs:     loop.roundEntityIDs,
+				ConsultedReports:   primer.reports,
+			}}
+		})
 	}
 	metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "synthesis", Duration: time.Since(stageStart)})
 
@@ -168,8 +199,12 @@ type driftPrimerResult struct {
 // communities that scored above zero — i.e. the communities the map step
 // judged relevant. When the store has no community capability or the
 // namespace has no communities the primer is empty (no error).
-func (s *System) driftPrimer(ctx context.Context, cs store.CommunityStore, hasCommunities bool, question string, opts DriftOptions) (driftPrimerResult, error) {
-	var res driftPrimerResult
+//
+// v1.9.0: uses named returns so partial state (reports, communityIDs)
+// propagates on error. A mid-loop budget trip then makes that partial
+// available to AskDrift's wrapBudgetError closure for
+// PartialDiagnostics.Drift.
+func (s *System) driftPrimer(ctx context.Context, cs store.CommunityStore, hasCommunities bool, question string, opts DriftOptions) (res driftPrimerResult, err error) {
 	if !hasCommunities {
 		return res, nil
 	}
@@ -200,12 +235,15 @@ func (s *System) driftPrimer(ctx context.Context, cs store.CommunityStore, hasCo
 		// v1.5.1: route the primer map-step Generate calls through the
 		// sub-stage-tagged wrapper so OnGenerateUsage emits with
 		// stage=StageAskDriftPrimer.
-		resp, err := s.driftPrimerModel.Generate(ctx, generate.Request{
+		resp, mapErr := s.driftPrimerModel.Generate(ctx, generate.Request{
 			SystemPrompt: globalMapSystemPrompt,
 			Messages:     []generate.Message{{Role: "user", Content: globalMapPrompt(r, question)}},
 		})
-		if err != nil {
-			return driftPrimerResult{}, err
+		if mapErr != nil {
+			// v1.9.0: roll back the optimistic CommunityID append for
+			// the call that errored — only completed map calls count.
+			res.communityIDs = res.communityIDs[:len(res.partials)]
+			return res, mapErr
 		}
 		score, text := parseGlobalMap(resp.Text)
 		res.partials = append(res.partials, globalPartial{CommunityID: r.CommunityID, Score: score, Text: text})

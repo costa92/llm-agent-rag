@@ -6,6 +6,31 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [1.9.0] - 2026-05-24
+
+**Final additive v1.x minor**. `AskOptions.MaxTotalTokens` enforcement extended to `AskGlobal` and `AskDrift` (C-BudgetExpand). v1.x is now feature-frozen — see `docs/v2-rfc.md` for the reshape track.
+
+### Added
+
+- `rag.GlobalOptions.MaxTotalTokens int` — caps total Generate tokens across the map and reduce sub-stages of one AskGlobal call. Zero means unlimited (preserves v1.8.0 behavior byte-for-byte).
+- `rag.DriftOptions.MaxTotalTokens int` — caps total Generate tokens across the primer, local-loop, and synthesis sub-stages of one AskDrift call. Zero means unlimited.
+- `BudgetExceededError.PartialDiagnostics.Global` is now populated on AskGlobal abort (CommunityIDs/MapScores/MapCalls/ConsultedReports collected up to the trip).
+- `BudgetExceededError.PartialDiagnostics.Drift` is now populated on AskDrift abort (PrimerCommunityIDs/Rounds/RoundEntityIDs/ConsultedReports collected up to the trip).
+
+### Changed
+
+- `wrapBudgetError` internal helper refactored to take a `partialFn func() Diagnostics` closure. Behavior-preserving for Ask call sites; enables AskGlobal/AskDrift to provide their own sub-diagnostics builders.
+- `driftPrimer` internal function uses named returns to propagate partial `driftPrimerResult` on error (previously discarded). Enables `PartialDiagnostics.Drift.PrimerCommunityIDs` population at mid-primer abort.
+
+### Compatibility
+
+- `MaxTotalTokens=0` is unlimited on both AskGlobal and AskDrift — existing v1.8.0 callers unaffected byte-for-byte.
+- Budget enforcement runs AFTER each successful sub-stage Generate (`global_map`, `global_reduce`, `drift_primer`, `drift_local`, `drift_synth`), reusing the v1.7.0 countingModel post-Append check. `BudgetExceededError.Stage` carries the sub-stage tag that tripped.
+- **v1.9.0 is the final additive v1.x minor.** The next release is v2.0, which will reshape `wrapBudgetError`, `BudgetExceededError`, and the per-stage instrument seams. See `docs/v2-rfc.md` for the migration manifest.
+- stdlib-only invariant maintained.
+- API snapshot diff: 2 lines added (two `MaxTotalTokens int` fields), 0 removed, 0 renamed.
+- Race-detector clean on all new tests.
+
 ## [1.8.0] - 2026-05-24
 
 Minor release bundling two closely-coupled additive features: a Grader/Judge LRU cache layer (C-Cache) and Markdown rendering for benchmark scoreboards (C-MarkdownExport). Fully additive — v1.7.0 callers see byte-for-byte behavior preservation.
