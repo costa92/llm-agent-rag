@@ -219,6 +219,24 @@ type AnswerBenchmark struct {
 	//
 	// v1.4.0.
 	Parallelism int
+
+	// Progress, when non-nil, is invoked once per example after the
+	// per-example runOne call returns — both on success and on error.
+	// Parameters:
+	//   - idx: 0-based example index in dataset.Examples
+	//   - total: len(dataset.Examples)
+	//   - result: the per-example AnswerExampleResult (zero value when err != nil)
+	//   - err: the per-example error, or nil on success
+	//
+	// Nil-safe: a nil Progress callback is a no-op. The sequential
+	// runner fires Progress synchronously from the main goroutine; the
+	// parallel runner (Parallelism>=2) fires Progress from inside each
+	// worker goroutine — callers must be thread-safe when Parallelism>=2.
+	// The contract mirrors the existing Observer.OnGenerateUsage hook
+	// in the parallel-fan-out paths.
+	//
+	// v1.7.0.
+	Progress func(ctx context.Context, idx, total int, result AnswerExampleResult, err error)
 }
 
 // normalizeParallelism reduces AnswerBenchmark.Parallelism to a valid
@@ -263,8 +281,12 @@ func (b AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (Benchm
 // the first Ask or Judge error.
 func (b AnswerBenchmark) runSequential(ctx context.Context, dataset AnswerDataset) (BenchmarkResult, error) {
 	per := make([]AnswerExampleResult, 0, len(dataset.Examples))
-	for _, ex := range dataset.Examples {
+	total := len(dataset.Examples)
+	for i, ex := range dataset.Examples {
 		r, err := b.runOne(ctx, dataset, ex)
+		if b.Progress != nil {
+			b.Progress(ctx, i, total, r, err)
+		}
 		if err != nil {
 			return BenchmarkResult{}, err
 		}

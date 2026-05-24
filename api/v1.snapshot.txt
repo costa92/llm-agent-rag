@@ -84,6 +84,7 @@ type AnswerBenchmark struct
 	field Judge Judge
 	field Options rag.AskOptions
 	field Parallelism int
+	field Progress func(ctx context.Context, idx, total int, result AnswerExampleResult, err error)
 type AnswerDataset struct
 	field Examples []AnswerExample
 	field Name string
