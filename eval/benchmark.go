@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 
@@ -193,9 +194,116 @@ func (b AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (Benchm
 	}
 	return BenchmarkResult{
 		Dataset:    dataset,
-		Metrics:    BenchmarkMetrics{Examples: len(dataset.Examples)},
+		Metrics:    aggregateBenchmarkMetrics(per),
 		PerExample: per,
 	}, nil
+}
+
+// aggregateBenchmarkMetrics reduces the per-example trace into the
+// dataset-level scoreboard. Feature-gated metrics (reflection-rounds
+// mean, adopted-round histogram, grader adoption rate, follow-up usage,
+// active-retrieval fire rate, required-phrase recall) carry a separate
+// "applicable" counter — when it hits zero across the dataset the
+// metric is emitted as math.NaN() and the histogram slice as nil. This
+// preserves the "no information vs zero" distinction required for the
+// scoreboard to be honest about which features were exercised.
+func aggregateBenchmarkMetrics(per []AnswerExampleResult) BenchmarkMetrics {
+	metrics := BenchmarkMetrics{Examples: len(per)}
+	n := len(per)
+	if n == 0 {
+		// Empty dataset: every feature-gated metric is vacuously NaN.
+		metrics.ExactMatch = math.NaN()
+		metrics.F1Token = math.NaN()
+		metrics.RequiredPhraseRecall = math.NaN()
+		metrics.ReflectionRoundsMean = math.NaN()
+		metrics.GraderAdoptionRate = math.NaN()
+		metrics.FollowupQueriesUsedMean = math.NaN()
+		metrics.ActiveRetrievalFireRate = math.NaN()
+		return metrics
+	}
+
+	var (
+		emSum, f1Sum                        float64
+		phraseHits, phraseTotal             int
+		reflectionApplicable                int
+		reflectionRoundsSum                 int
+		maxAdoptedRound                     int
+		adoptedRoundCounts                  []int
+		graderApplicable, graderEarlyAdopts int
+		activeApplicable                    int
+		activeFollowupsSum                  int
+		activeFired                         int
+	)
+
+	for _, r := range per {
+		if r.ExactMatch {
+			emSum++
+		}
+		f1Sum += r.F1Token
+		phraseHits += r.RequiredPhraseHits
+		phraseTotal += r.RequiredPhraseTotal
+
+		if r.ReflectionRounds > 0 {
+			reflectionApplicable++
+			reflectionRoundsSum += r.ReflectionRounds
+			if r.AdoptedRound > maxAdoptedRound {
+				maxAdoptedRound = r.AdoptedRound
+			}
+		}
+		if r.GraderEnabled {
+			graderApplicable++
+			// AdoptedRound != last round = earlier adoption attributable to grading.
+			if r.AdoptedRound > 0 && r.AdoptedRound != r.ReflectionRounds {
+				graderEarlyAdopts++
+			}
+		}
+		if r.ActiveEnabled {
+			activeApplicable++
+			activeFollowupsSum += r.FollowupsUsed
+			if r.ActiveFired {
+				activeFired++
+			}
+		}
+	}
+
+	metrics.ExactMatch = emSum / float64(n)
+	metrics.F1Token = f1Sum / float64(n)
+
+	if phraseTotal > 0 {
+		metrics.RequiredPhraseRecall = float64(phraseHits) / float64(phraseTotal)
+	} else {
+		metrics.RequiredPhraseRecall = math.NaN()
+	}
+
+	if reflectionApplicable > 0 {
+		metrics.ReflectionRoundsMean = float64(reflectionRoundsSum) / float64(reflectionApplicable)
+		adoptedRoundCounts = make([]int, maxAdoptedRound)
+		for _, r := range per {
+			if r.AdoptedRound > 0 {
+				adoptedRoundCounts[r.AdoptedRound-1]++
+			}
+		}
+		metrics.AdoptedRoundCounts = adoptedRoundCounts
+	} else {
+		metrics.ReflectionRoundsMean = math.NaN()
+		metrics.AdoptedRoundCounts = nil
+	}
+
+	if graderApplicable > 0 {
+		metrics.GraderAdoptionRate = float64(graderEarlyAdopts) / float64(graderApplicable)
+	} else {
+		metrics.GraderAdoptionRate = math.NaN()
+	}
+
+	if activeApplicable > 0 {
+		metrics.FollowupQueriesUsedMean = float64(activeFollowupsSum) / float64(activeApplicable)
+		metrics.ActiveRetrievalFireRate = float64(activeFired) / float64(activeApplicable)
+	} else {
+		metrics.FollowupQueriesUsedMean = math.NaN()
+		metrics.ActiveRetrievalFireRate = math.NaN()
+	}
+
+	return metrics
 }
 
 // scoreAnswerExample assembles the per-example trace. Aggregation
