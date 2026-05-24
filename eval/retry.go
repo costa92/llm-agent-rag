@@ -64,6 +64,36 @@ func ClassifyTransientHTTP(err error) bool {
 		strings.Contains(s, "connection reset")
 }
 
+// ClassifyRateLimited is the prebuilt RetryPolicy.Classify suitable for
+// the narrower "retry rate-limit responses ONLY" policy — typically paired
+// with a longer backoff than the generic transient case. It returns true
+// for:
+//
+//   - Any error satisfying the SDK status-code interface (a StatusCode() int
+//     method) returning exactly 429.
+//   - Any error whose Error() string (lowercased) contains one of
+//     "rate limit", "too many requests", or "quota exceeded".
+//
+// It is best-effort and intentionally NARROWER than ClassifyTransientHTTP:
+// ordinary 5xx and net timeouts return false here, so a caller composing
+// the two can fan out longer sleeps on rate-limit responses without
+// affecting their ordinary transient-error policy.
+//
+// A nil error returns false — there is nothing to retry.
+func ClassifyRateLimited(err error) bool {
+	if err == nil {
+		return false
+	}
+	var se statusErrer
+	if errors.As(err, &se) && se.StatusCode() == 429 {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "rate limit") ||
+		strings.Contains(s, "too many requests") ||
+		strings.Contains(s, "quota exceeded")
+}
+
 // JitterMode selects the sleep distribution between retry attempts. The
 // default (zero value) is JitterNone — deterministic exponential backoff,
 // the same on every replay. JitterEqual adds the AWS "equal jitter"

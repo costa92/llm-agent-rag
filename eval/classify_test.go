@@ -104,6 +104,56 @@ func TestClassifyTransientHTTPSubstringFallback(t *testing.T) {
 	}
 }
 
+func TestClassifyRateLimitedReturnsFalseForNil(t *testing.T) {
+	if eval.ClassifyRateLimited(nil) {
+		t.Fatalf("ClassifyRateLimited(nil) = true, want false")
+	}
+}
+
+func TestClassifyRateLimitedMatches429(t *testing.T) {
+	err := &fakeStatusErr{code: 429}
+	if !eval.ClassifyRateLimited(err) {
+		t.Fatalf("ClassifyRateLimited(status=429) = false, want true")
+	}
+}
+
+func TestClassifyRateLimitedRejectsOther5xx(t *testing.T) {
+	// Other 5xx codes are transient (via ClassifyTransientHTTP) but NOT
+	// rate-limited specifically. ClassifyRateLimited must say false here
+	// so callers can compose the two classifiers for different fan-out
+	// strategies (e.g. longer backoff on rate-limit vs. ordinary 5xx).
+	for _, code := range []int{408, 500, 502, 503, 504, 400, 401, 403, 404} {
+		err := &fakeStatusErr{code: code}
+		if eval.ClassifyRateLimited(err) {
+			t.Fatalf("ClassifyRateLimited(status=%d) = true, want false (only 429 is rate-limited)", code)
+		}
+	}
+}
+
+func TestClassifyRateLimitedSubstrings(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want bool
+	}{
+		{"rate limit exceeded", true},
+		{"You have hit the Rate Limit", true},
+		{"too many requests on /v1/chat/completions", true},
+		{"quota exceeded for project X", true},
+		// Negatives — these are transient but not rate-limited.
+		{"context deadline exceeded: timeout", false},
+		{"connection reset by peer", false},
+		{"invalid token", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		err := errors.New(c.msg)
+		got := eval.ClassifyRateLimited(err)
+		if got != c.want {
+			t.Fatalf("ClassifyRateLimited(%q) = %v, want %v", c.msg, got, c.want)
+		}
+	}
+}
+
 // TestClassifyTransientHTTPRealNetTimeout exercises a true net package
 // timeout via a deadline-exceeded listener. It's a smoke check that the
 // classifier handles the real net.Error implementations, not just the
