@@ -137,6 +137,37 @@ func TestStageUsageAccumulator_TotalSoFar_ConcurrentSafe(t *testing.T) {
 	}
 }
 
+// --- v1.7.0 C2 WithTokenBudget / TokenBudgetFrom tests ----------------
+
+// TestTokenBudget_ZeroFromBareCtx asserts a bare context returns 0.
+func TestTokenBudget_ZeroFromBareCtx(t *testing.T) {
+	if got := TokenBudgetFrom(context.Background()); got != 0 {
+		t.Fatalf("TokenBudgetFrom(bare ctx) = %d, want 0", got)
+	}
+}
+
+// TestTokenBudget_RoundtripsThroughContext asserts a positive budget
+// installed with WithTokenBudget reads back via TokenBudgetFrom.
+func TestTokenBudget_RoundtripsThroughContext(t *testing.T) {
+	ctx := WithTokenBudget(context.Background(), 1000)
+	if got := TokenBudgetFrom(ctx); got != 1000 {
+		t.Fatalf("TokenBudgetFrom = %d, want 1000", got)
+	}
+}
+
+// TestTokenBudget_NonPositiveIgnored asserts WithTokenBudget(ctx, 0) and
+// WithTokenBudget(ctx, -5) both return ctx unchanged (TokenBudgetFrom
+// continues to read 0).
+func TestTokenBudget_NonPositiveIgnored(t *testing.T) {
+	base := context.Background()
+	for _, max := range []int{0, -5} {
+		ctx := WithTokenBudget(base, max)
+		if got := TokenBudgetFrom(ctx); got != 0 {
+			t.Errorf("WithTokenBudget(ctx, %d) -> TokenBudgetFrom = %d, want 0", max, got)
+		}
+	}
+}
+
 func TestMetricsStageTokenUsageZeroValue(t *testing.T) {
 	var m Metrics
 	if m.StageTokenUsage != nil {

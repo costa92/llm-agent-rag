@@ -468,8 +468,10 @@ method (*StageUsageAccumulator) Append(stage string, usage TokenUsage)
 method (*StageUsageAccumulator) Snapshot() []StageTokenUsage
 method (*StageUsageAccumulator) TotalSoFar() int
 func StageUsageFrom(ctx context.Context) *StageUsageAccumulator
+func TokenBudgetFrom(ctx context.Context) int
 func WithCounter(ctx context.Context, c *Counter) context.Context
 func WithStageUsage(ctx context.Context, a *StageUsageAccumulator) context.Context
+func WithTokenBudget(ctx context.Context, max int) context.Context
 type CallCounts struct
 	field Embed int
 	field Generate int

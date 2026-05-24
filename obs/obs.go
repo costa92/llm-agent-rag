@@ -161,6 +161,34 @@ func (a *StageUsageAccumulator) Snapshot() []StageTokenUsage {
 
 type counterKey struct{}
 type stageUsageKey struct{}
+type tokenBudgetKey struct{}
+
+// WithTokenBudget returns a context carrying a cumulative-token budget of
+// max. Instrumented counting models (rag.countingModel) consult this
+// budget after each successful Generate to short-circuit further work
+// when StageUsageAccumulator.TotalSoFar() exceeds max.
+//
+// A non-positive max (<= 0) is ignored and ctx is returned unchanged —
+// 0 means "unlimited" (preserves v1.6.0 behavior when MaxTotalTokens is
+// the zero value).
+//
+// v1.7.0.
+func WithTokenBudget(ctx context.Context, max int) context.Context {
+	if max <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, tokenBudgetKey{}, max)
+}
+
+// TokenBudgetFrom returns the cumulative-token budget on ctx, or 0 when
+// none is attached. 0 means "unlimited" — callers should compare with
+// `if budget > 0 && total > budget { ... }`.
+//
+// v1.7.0.
+func TokenBudgetFrom(ctx context.Context) int {
+	b, _ := ctx.Value(tokenBudgetKey{}).(int)
+	return b
+}
 
 // WithCounter returns a context carrying c. Instrumented embedders and
 // models increment it on each call.
