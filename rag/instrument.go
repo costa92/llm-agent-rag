@@ -97,5 +97,25 @@ func (m countingModel) Generate(ctx context.Context, req generate.Request) (gene
 	if m.observer != nil && m.observer.OnGenerateUsage != nil {
 		m.observer.OnGenerateUsage(ctx, m.stage, usage)
 	}
+	// v1.7.0 C2: cumulative-token budget check. Runs AFTER Append so
+	// the StageUsageAccumulator records the entry that tipped us over,
+	// and AFTER OnGenerateUsage so observers see the same trace as
+	// unbudgeted callers. A zero/unset budget (TokenBudgetFrom == 0)
+	// is "unlimited" — preserves v1.6.0 behavior byte-for-byte.
+	//
+	// PartialDiagnostics is left zero here; Ask.wrapBudgetError fills
+	// it with the full assembly (Metrics, StageTokenUsage snapshot,
+	// partial Reflection rounds) at every return site.
+	budget := obs.TokenBudgetFrom(ctx)
+	if budget > 0 {
+		used := obs.StageUsageFrom(ctx).TotalSoFar()
+		if used > budget {
+			return resp, &BudgetExceededError{
+				Stage:  m.stage,
+				Used:   used,
+				Budget: budget,
+			}
+		}
+	}
 	return resp, nil
 }

@@ -2,6 +2,7 @@ package rag
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/costa92/llm-agent-rag/generate"
@@ -221,5 +222,128 @@ func TestAskReflectionAggregatesMetricsWhenMaxRoundsClampStopsDecision(t *testin
 	}
 	if reflectStages != 2 {
 		t.Fatalf("reflect stage count = %d, want 2", reflectStages)
+	}
+}
+
+// --- v1.7.0 C2 countingModel budget tests --------------------------------
+
+// fixedUsageModel returns the same generate.Response on every call,
+// regardless of request. Used to drive countingModel directly in tests.
+type fixedUsageModel struct {
+	resp generate.Response
+}
+
+func (m fixedUsageModel) Generate(_ context.Context, _ generate.Request) (generate.Response, error) {
+	return m.resp, nil
+}
+
+// TestCountingModel_BudgetExceeded_ReturnsTypedError asserts that a
+// single Generate whose Usage.TotalTokens exceeds the ctx-installed
+// budget returns a *BudgetExceededError carrying Stage/Used/Budget.
+func TestCountingModel_BudgetExceeded_ReturnsTypedError(t *testing.T) {
+	inner := fixedUsageModel{resp: generate.Response{
+		Text:  "answer",
+		Usage: generate.Usage{PromptTokens: 60, CompletionTokens: 40, TotalTokens: 100},
+	}}
+	cm := wrapCounting(inner, StageAsk, nil)
+	ctx := obs.WithStageUsage(context.Background(), obs.NewStageUsageAccumulator())
+	ctx = obs.WithCounter(ctx, obs.NewCounter())
+	ctx = obs.WithTokenBudget(ctx, 50)
+	_, err := cm.Generate(ctx, generate.Request{})
+	if err == nil {
+		t.Fatalf("Generate: want budget error")
+	}
+	var budgetErr *BudgetExceededError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("err type = %T, want *BudgetExceededError", err)
+	}
+	if budgetErr.Stage != StageAsk {
+		t.Errorf("Stage = %q, want %q", budgetErr.Stage, StageAsk)
+	}
+	if budgetErr.Used != 100 {
+		t.Errorf("Used = %d, want 100", budgetErr.Used)
+	}
+	if budgetErr.Budget != 50 {
+		t.Errorf("Budget = %d, want 50", budgetErr.Budget)
+	}
+}
+
+// TestCountingModel_BudgetExceeded_FirstOverageStageWins asserts the
+// Stage on the error is the stage of the overage call, not the first
+// call. Used is the cumulative TotalTokens through both calls.
+func TestCountingModel_BudgetExceeded_FirstOverageStageWins(t *testing.T) {
+	inner1 := fixedUsageModel{resp: generate.Response{
+		Text:  "r1",
+		Usage: generate.Usage{TotalTokens: 30},
+	}}
+	inner2 := fixedUsageModel{resp: generate.Response{
+		Text:  "r2",
+		Usage: generate.Usage{TotalTokens: 40},
+	}}
+	acc := obs.NewStageUsageAccumulator()
+	ctx := obs.WithStageUsage(context.Background(), acc)
+	ctx = obs.WithCounter(ctx, obs.NewCounter())
+	ctx = obs.WithTokenBudget(ctx, 50)
+	cm1 := wrapCounting(inner1, StageAsk, nil)
+	cm2 := wrapCounting(inner2, StageReflectionDecision, nil)
+	if _, err := cm1.Generate(ctx, generate.Request{}); err != nil {
+		t.Fatalf("call 1 should not trip (30 <= 50): %v", err)
+	}
+	_, err := cm2.Generate(ctx, generate.Request{})
+	if err == nil {
+		t.Fatalf("call 2: want budget error")
+	}
+	var budgetErr *BudgetExceededError
+	if !errors.As(err, &budgetErr) {
+		t.Fatalf("err type = %T, want *BudgetExceededError", err)
+	}
+	if budgetErr.Stage != StageReflectionDecision {
+		t.Errorf("Stage = %q, want %q (second call's stage wins)", budgetErr.Stage, StageReflectionDecision)
+	}
+	if budgetErr.Used != 70 {
+		t.Errorf("Used = %d, want 70 (30+40)", budgetErr.Used)
+	}
+}
+
+// TestCountingModel_NoBudget_ZeroIsUnlimited asserts that without a ctx
+// budget the countingModel never returns a budget error, even when
+// Usage.TotalTokens is huge.
+func TestCountingModel_NoBudget_ZeroIsUnlimited(t *testing.T) {
+	inner := fixedUsageModel{resp: generate.Response{
+		Text:  "answer",
+		Usage: generate.Usage{TotalTokens: 1_000_000},
+	}}
+	cm := wrapCounting(inner, StageAsk, nil)
+	ctx := obs.WithStageUsage(context.Background(), obs.NewStageUsageAccumulator())
+	ctx = obs.WithCounter(ctx, obs.NewCounter())
+	// No WithTokenBudget — TokenBudgetFrom returns 0 (unlimited).
+	if _, err := cm.Generate(ctx, generate.Request{}); err != nil {
+		t.Fatalf("Generate with no budget: %v", err)
+	}
+}
+
+// TestCountingModel_BudgetExceeded_AppendStillFiredForOverageCall asserts
+// that the StageUsageAccumulator records the overage call BEFORE the
+// budget check trips — i.e. the snapshot includes the entry whose
+// addition tipped TotalSoFar past Budget.
+func TestCountingModel_BudgetExceeded_AppendStillFiredForOverageCall(t *testing.T) {
+	inner := fixedUsageModel{resp: generate.Response{
+		Text:  "answer",
+		Usage: generate.Usage{TotalTokens: 100},
+	}}
+	cm := wrapCounting(inner, StageAsk, nil)
+	acc := obs.NewStageUsageAccumulator()
+	ctx := obs.WithStageUsage(context.Background(), acc)
+	ctx = obs.WithCounter(ctx, obs.NewCounter())
+	ctx = obs.WithTokenBudget(ctx, 50)
+	if _, err := cm.Generate(ctx, generate.Request{}); err == nil {
+		t.Fatalf("Generate: want budget error")
+	}
+	snap := acc.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("snapshot len = %d, want 1 (overage call should be appended)", len(snap))
+	}
+	if snap[0].Stage != StageAsk || snap[0].Usage.TotalTokens != 100 {
+		t.Errorf("snapshot[0] = %+v, want StageAsk total=100", snap[0])
 	}
 }
