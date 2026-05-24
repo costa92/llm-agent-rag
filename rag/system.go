@@ -413,8 +413,8 @@ func New(opts Options) *System {
 	// Ask still returns ErrModelRequired; both s.model and s.reflectionModel
 	// remain nil in that case.
 	if opts.Model != nil {
-		s.model = wrapCounting(opts.Model, "ask", &s.observer)
-		s.reflectionModel = wrapCounting(opts.Model, "reflection_decision", &s.observer)
+		s.model = wrapCounting(opts.Model, StageAsk, &s.observer)
+		s.reflectionModel = wrapCounting(opts.Model, StageReflectionDecision, &s.observer)
 	}
 	// Type-assert the shipped PromptGrader / PromptQueryPlanner and rebuild
 	// them with stage-tagged counting models. Custom user-supplied
@@ -423,11 +423,11 @@ func New(opts Options) *System {
 	// on Observer.OnGenerateUsage and in CHANGELOG v1.5.0 compat.
 	if opts.Model != nil {
 		if pg, ok := s.grader.(PromptGrader); ok {
-			s.grader = PromptGrader{Model: wrapCounting(pg.Model, "grader", &s.observer)}
+			s.grader = PromptGrader{Model: wrapCounting(pg.Model, StageGrader, &s.observer)}
 		}
 		if pp, ok := s.queryPlanner.(PromptQueryPlanner); ok {
 			s.queryPlanner = PromptQueryPlanner{
-				Model:      wrapCounting(pp.Model, "planner", &s.observer),
+				Model:      wrapCounting(pp.Model, StagePlanner, &s.observer),
 				MaxQueries: pp.MaxQueries,
 			}
 		}
