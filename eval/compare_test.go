@@ -473,6 +473,58 @@ func intSliceEq(a, b []int) bool {
 	return true
 }
 
+// --- v1.7.0 C4 Markdown Histograms section -------------------------------
+
+// TestDriftReportMarkdown_HistogramSection_RendersTable asserts the
+// ### Histograms / #### <Name> / pipe-table rendering for one histogram.
+func TestDriftReportMarkdown_HistogramSection_RendersTable(t *testing.T) {
+	prev := emptyMetrics()
+	prev.ReflectionRoundsMean = 1.0
+	prev.AdoptedRoundCounts = []int{5, 10}
+	curr := emptyMetrics()
+	curr.ReflectionRoundsMean = 1.0
+	curr.AdoptedRoundCounts = []int{8, 12}
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	md := r.Markdown()
+	if !strings.Contains(md, "### Histograms") {
+		t.Errorf("Markdown missing ### Histograms section header:\n%s", md)
+	}
+	if !strings.Contains(md, "#### AdoptedRoundCounts") {
+		t.Errorf("Markdown missing #### AdoptedRoundCounts heading:\n%s", md)
+	}
+	if !strings.Contains(md, "| Bucket | Prev | Curr | Δ |") {
+		t.Errorf("Markdown missing histogram pipe-table header:\n%s", md)
+	}
+}
+
+// TestDriftReportMarkdown_HistogramSection_OmittedWhenEmpty asserts the
+// histograms section is fully omitted when Histograms is empty.
+func TestDriftReportMarkdown_HistogramSection_OmittedWhenEmpty(t *testing.T) {
+	prev := emptyMetrics()
+	curr := emptyMetrics()
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	md := r.Markdown()
+	if strings.Contains(md, "### Histograms") {
+		t.Errorf("Markdown should omit ### Histograms section when empty:\n%s", md)
+	}
+}
+
+// TestDriftReportMarkdown_HistogramSection_L1Line asserts the L1=<value>
+// summary line is present after the per-histogram table.
+func TestDriftReportMarkdown_HistogramSection_L1Line(t *testing.T) {
+	prev := emptyMetrics()
+	prev.ReflectionRoundsMean = 1.0
+	prev.AdoptedRoundCounts = []int{1, 2}
+	curr := emptyMetrics()
+	curr.ReflectionRoundsMean = 1.0
+	curr.AdoptedRoundCounts = []int{4, 8}
+	r := eval.CompareBenchmarks(benchmarkOf("d", prev), benchmarkOf("d", curr))
+	md := r.Markdown()
+	if !strings.Contains(md, "L1=") {
+		t.Errorf("Markdown missing L1=<value> line:\n%s", md)
+	}
+}
+
 // TestDriftReportMarkdown_EmptyExamplesNoFooter asserts the footer
 // sections are omitted entirely when New/Dropped are empty.
 func TestDriftReportMarkdown_EmptyExamplesNoFooter(t *testing.T) {

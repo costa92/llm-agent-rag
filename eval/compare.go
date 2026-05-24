@@ -377,6 +377,26 @@ func (r DriftReport) Markdown() string {
 			fmt.Fprintf(&b, "* %s\n", q)
 		}
 	}
+	if len(r.Histograms) > 0 {
+		b.WriteString("\n### Histograms\n")
+		for _, h := range r.Histograms {
+			fmt.Fprintf(&b, "\n#### %s\n", h.Name)
+			b.WriteString("| Bucket | Prev | Curr | Δ |\n")
+			b.WriteString("| --- | --- | --- | --- |\n")
+			for i := range h.Delta {
+				prev := 0
+				if i < len(h.Prev) {
+					prev = h.Prev[i]
+				}
+				curr := 0
+				if i < len(h.Curr) {
+					curr = h.Curr[i]
+				}
+				fmt.Fprintf(&b, "| %d | %d | %d | %+d |\n", i, prev, curr, h.Delta[i])
+			}
+			fmt.Fprintf(&b, "L1=%.3f\n", h.L1Distance)
+		}
+	}
 	return b.String()
 }
 
