@@ -65,6 +65,7 @@ type AnswerBenchmark struct
 	field Asker Asker
 	field Judge Judge
 	field Options rag.AskOptions
+	field Parallelism int
 type AnswerDataset struct
 	field Examples []AnswerExample
 	field Name string

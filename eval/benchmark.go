@@ -183,9 +183,20 @@ type BenchmarkResult struct {
 // Compatibility note: this exported struct may grow additively over
 // time, so keyed composite literals are recommended.
 type AnswerBenchmark struct {
-	Asker   Asker          // Asker runs the answer pipeline under evaluation; reuses eval.Asker.
-	Options rag.AskOptions // Options is the base AskOptions applied to every Ask call (overlaid per example).
-	Judge   Judge          // Judge optionally scores each answer for groundedness/relevance; nil = textual metrics only. v1.4.0.
+	Asker       Asker          // Asker runs the answer pipeline under evaluation; reuses eval.Asker.
+	Options     rag.AskOptions // Options is the base AskOptions applied to every Ask call (overlaid per example).
+	Judge       Judge          // Judge optionally scores each answer for groundedness/relevance; nil = textual metrics only. v1.4.0.
+	Parallelism int            // Parallelism bounds concurrent example dispatch: 0 or 1 = sequential (v1.3.0 behavior); >=2 fans out to a worker pool. Negative values coerce to sequential. v1.4.0.
+}
+
+// normalizeParallelism reduces AnswerBenchmark.Parallelism to a valid
+// worker count. Values <= 1 (including negatives) collapse to 1, which
+// the runner uses to route through the v1.3.0 sequential loop unchanged.
+func normalizeParallelism(p int) int {
+	if p < 2 {
+		return 1
+	}
+	return p
 }
 
 // Run executes the benchmark sequentially. The base Options is copied
