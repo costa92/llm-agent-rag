@@ -182,6 +182,7 @@ type BenchmarkResult struct {
 type AnswerBenchmark struct {
 	Asker   Asker          // Asker runs the answer pipeline under evaluation; reuses eval.Asker.
 	Options rag.AskOptions // Options is the base AskOptions applied to every Ask call (overlaid per example).
+	Judge   Judge          // Judge optionally scores each answer for groundedness/relevance; nil = textual metrics only. v1.4.0.
 }
 
 // Run executes the benchmark sequentially. The base Options is copied
@@ -206,7 +207,20 @@ func (b AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (Benchm
 		if err != nil {
 			return BenchmarkResult{}, fmt.Errorf("eval: ask %q: %w", ex.Query, err)
 		}
-		per = append(per, scoreAnswerExample(ex, ans, opts))
+		r := scoreAnswerExample(ex, ans, opts)
+		if b.Judge != nil {
+			j, jerr := b.Judge.Judge(ctx, JudgeRequest{
+				Query:   ex.Query,
+				Answer:  ans.Text,
+				Context: contextPassages(ans),
+			})
+			if jerr != nil {
+				return BenchmarkResult{}, fmt.Errorf("eval: judge %q: %w", ex.Query, jerr)
+			}
+			r.Judgement = j
+			r.JudgeApplied = true
+		}
+		per = append(per, r)
 	}
 	return BenchmarkResult{
 		Dataset:    dataset,
@@ -320,6 +334,22 @@ func aggregateBenchmarkMetrics(per []AnswerExampleResult) BenchmarkMetrics {
 	}
 
 	return metrics
+}
+
+// contextPassages projects the rag.Answer's retrieved hits into the
+// flat []string shape expected by JudgeRequest.Context. The order is
+// preserved (Hits[i] → Context[i]) so the judge sees passages in the
+// same rank order they were retrieved. Mirrors the projection in
+// triad.go's TriadEvaluator.Run (see triad.go:81-87).
+func contextPassages(ans rag.Answer) []string {
+	if len(ans.Hits) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ans.Hits))
+	for _, hit := range ans.Hits {
+		out = append(out, hit.Chunk.Content)
+	}
+	return out
 }
 
 // scoreAnswerExample assembles the per-example trace. Aggregation

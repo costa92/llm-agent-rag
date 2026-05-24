@@ -63,6 +63,7 @@ method (TriadResult) Summary() string
 func WriteJSONL(w io.Writer, r TriadResult) error
 type AnswerBenchmark struct
 	field Asker Asker
+	field Judge Judge
 	field Options rag.AskOptions
 type AnswerDataset struct
 	field Examples []AnswerExample
