@@ -613,6 +613,7 @@ type Answer struct
 	field Trace Trace
 type AskOptions struct
 	field MaxTokens int
+	field MaxTotalTokens int
 	field Metadata map[string]any
 	field QueryPlanner QueryPlanner
 	field Reflection *ReflectionOptions

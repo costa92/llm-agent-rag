@@ -47,6 +47,14 @@ func (s *System) Ask(ctx context.Context, question string, opts AskOptions) (Ans
 	ctx = obs.WithCounter(ctx, counter)
 	stageUsage := obs.NewStageUsageAccumulator()
 	ctx = obs.WithStageUsage(ctx, stageUsage)
+	// v1.7.0 C2: install the cumulative-token budget on ctx when
+	// AskOptions.MaxTotalTokens > 0. Zero (the default) leaves ctx
+	// unchanged — preserving v1.6.0 behavior byte-for-byte. The
+	// countingModel installs a post-Append budget check; enforcement
+	// is wired in v1.7.0 commit 10.
+	if opts.MaxTotalTokens > 0 {
+		ctx = obs.WithTokenBudget(ctx, opts.MaxTotalTokens)
+	}
 	askStart := time.Now()
 
 	var (
