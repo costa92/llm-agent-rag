@@ -221,3 +221,143 @@ type askerFunc func(ctx context.Context, q string, opts rag.AskOptions) (rag.Ans
 func (f askerFunc) Ask(ctx context.Context, q string, opts rag.AskOptions) (rag.Answer, error) {
 	return f(ctx, q, opts)
 }
+
+func TestRetryAskerEventualSuccess(t *testing.T) {
+	a := &flakyAsker{answer: rag.Answer{Text: "ok"}}
+	a.failuresRemaining.Store(2)
+	r := eval.NewRetryAsker(a, eval.RetryPolicy{
+		MaxAttempts: 3,
+		BaseDelay:   time.Microsecond,
+		Classify:    retryAll,
+	})
+	ans, err := r.Ask(context.Background(), "q", rag.AskOptions{})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if ans.Text != "ok" {
+		t.Fatalf("Answer.Text = %q, want %q", ans.Text, "ok")
+	}
+	if got := a.calls.Load(); got != 3 {
+		t.Fatalf("Ask call count = %d, want 3", got)
+	}
+}
+
+func TestRetryAskerExhaustReturnsLastErr(t *testing.T) {
+	a := &flakyAsker{}
+	a.failuresRemaining.Store(10)
+	r := eval.NewRetryAsker(a, eval.RetryPolicy{
+		MaxAttempts: 3,
+		BaseDelay:   time.Microsecond,
+		Classify:    retryAll,
+	})
+	_, err := r.Ask(context.Background(), "q", rag.AskOptions{})
+	if !errors.Is(err, errFlaky) {
+		t.Fatalf("Ask err = %v, want errFlaky", err)
+	}
+	if got := a.calls.Load(); got != 3 {
+		t.Fatalf("Ask call count = %d, want 3 (exhaust)", got)
+	}
+}
+
+// TestRetryAskerWithBenchmark wires the retry adapter through the v1.4.0
+// AnswerBenchmark with Parallelism=4 so we can confirm the race detector
+// stays happy under concurrent retry-on-flake.
+func TestRetryAskerWithBenchmark(t *testing.T) {
+	inner := &atomicScriptedAsker{
+		byQuery: map[string]rag.Answer{
+			"q1": {Text: "ok1"},
+			"q2": {Text: "ok2"},
+			"q3": {Text: "ok3"},
+			"q4": {Text: "ok4"},
+		},
+	}
+	// Wrap with a per-query flake counter (1 failure each).
+	flake := &perQueryFlakeAsker{
+		inner:     inner,
+		remaining: make(map[string]*atomic.Int32),
+	}
+	for _, q := range []string{"q1", "q2", "q3", "q4"} {
+		v := &atomic.Int32{}
+		v.Store(1)
+		flake.remaining[q] = v
+	}
+	wrapped := eval.NewRetryAsker(flake, eval.RetryPolicy{
+		MaxAttempts: 2,
+		BaseDelay:   time.Microsecond,
+		Classify:    retryAll,
+	})
+	dataset := eval.AnswerDataset{
+		Name: "retry-bench",
+		TopK: 1,
+		Examples: []eval.AnswerExample{
+			{Example: eval.Example{Query: "q1"}, GoldAnswers: []string{"ok1"}},
+			{Example: eval.Example{Query: "q2"}, GoldAnswers: []string{"ok2"}},
+			{Example: eval.Example{Query: "q3"}, GoldAnswers: []string{"ok3"}},
+			{Example: eval.Example{Query: "q4"}, GoldAnswers: []string{"ok4"}},
+		},
+	}
+	bench := eval.AnswerBenchmark{
+		Asker:       wrapped,
+		Parallelism: 4,
+	}
+	res, err := bench.Run(context.Background(), dataset)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.PerExample) != 4 {
+		t.Fatalf("PerExample len = %d, want 4", len(res.PerExample))
+	}
+}
+
+// perQueryFlakeAsker is an Asker that fails the first remaining[q]
+// invocations for each query, then delegates to inner. Safe for concurrent
+// use via the atomic.Int32 map values.
+type perQueryFlakeAsker struct {
+	inner     eval.Asker
+	remaining map[string]*atomic.Int32
+}
+
+func (p *perQueryFlakeAsker) Ask(ctx context.Context, q string, opts rag.AskOptions) (rag.Answer, error) {
+	if c, ok := p.remaining[q]; ok {
+		if c.Add(-1) >= 0 {
+			return rag.Answer{}, errFlaky
+		}
+	}
+	return p.inner.Ask(ctx, q, opts)
+}
+
+func TestRetryJudgeEventualSuccess(t *testing.T) {
+	j := &flakyJudge{judgement: eval.Judgement{Groundedness: 0.9}}
+	j.failuresRemaining.Store(1)
+	r := eval.NewRetryJudge(j, eval.RetryPolicy{
+		MaxAttempts: 2,
+		BaseDelay:   time.Microsecond,
+		Classify:    retryAll,
+	})
+	verdict, err := r.Judge(context.Background(), eval.JudgeRequest{Query: "q"})
+	if err != nil {
+		t.Fatalf("Judge: %v", err)
+	}
+	if verdict.Groundedness != 0.9 {
+		t.Fatalf("Judgement.Groundedness = %v, want 0.9", verdict.Groundedness)
+	}
+	if got := j.calls.Load(); got != 2 {
+		t.Fatalf("Judge call count = %d, want 2", got)
+	}
+}
+
+func TestRetryJudgeNonRetryableShortCircuit(t *testing.T) {
+	j := &flakyJudge{}
+	j.failuresRemaining.Store(10)
+	r := eval.NewRetryJudge(j, eval.RetryPolicy{
+		MaxAttempts: 5,
+		BaseDelay:   time.Microsecond,
+		Classify:    func(error) bool { return false },
+	})
+	if _, err := r.Judge(context.Background(), eval.JudgeRequest{Query: "q"}); !errors.Is(err, errFlaky) {
+		t.Fatalf("Judge err = %v, want errFlaky", err)
+	}
+	if got := j.calls.Load(); got != 1 {
+		t.Fatalf("Judge call count = %d, want 1", got)
+	}
+}
