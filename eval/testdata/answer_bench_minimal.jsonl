@@ -1,0 +1,5 @@
+// Minimal hermetic fixture for the v1.3.0 C-Eval answer-quality benchmark.
+// Three examples — the second sets top_k=5 for the whole dataset.
+{"query":"What language is the Go runtime written in?","gold_answers":["Go","go (programming language)"],"required_phrases":["Go"],"gold_chunk_ids":["c1"]}
+{"top_k":5,"query":"Who founded Anthropic?","gold_answers":["Dario Amodei and Daniela Amodei","Dario and Daniela Amodei"],"required_phrases":["Amodei"]}
+{"query":"What is 2+2?","gold_answers":["4","four"],"required_phrases":["4"]}
