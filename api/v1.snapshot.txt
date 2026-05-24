@@ -48,19 +48,59 @@ type HashEmbedder struct
 	field Dim int
 type Vector []float32
 package github.com/costa92/llm-agent-rag/eval
+method (AnswerBenchmark) Run(ctx context.Context, dataset AnswerDataset) (BenchmarkResult, error)
 method (DriftEvalResult) Summary() string
 method (DriftEvaluator) Run(ctx context.Context, dataset Dataset) (DriftEvalResult, error)
 method (GlobalEvalResult) Summary() string
 method (GlobalEvaluator) Run(ctx context.Context, dataset Dataset) (GlobalEvalResult, error)
 method (LLMJudge) Judge(ctx context.Context, req JudgeRequest) (Judgement, error)
+func LoadAnswerJSONL(path string) (AnswerDataset, error)
 func LoadJSONL(path string) (Dataset, error)
 method (RetrievalEvaluator) Run(ctx context.Context, dataset Dataset) (RetrievalResult, error)
 func RunGraphAB(ctx context.Context, retriever Retriever, base rag.SearchOptions, dataset Dataset) (GraphABResult, error)
 method (TriadEvaluator) Run(ctx context.Context, dataset Dataset) (TriadResult, error)
 method (TriadResult) Summary() string
 func WriteJSONL(w io.Writer, r TriadResult) error
+type AnswerBenchmark struct
+	field Asker Asker
+	field Options rag.AskOptions
+type AnswerDataset struct
+	field Examples []AnswerExample
+	field Name string
+	field TopK int
+type AnswerExample struct
+	field Example
+	field GoldAnswers []string
+	field RequiredPhrases []string
+type AnswerExampleResult struct
+	field ActiveEnabled bool
+	field ActiveFired bool
+	field AdoptedRound int
+	field Answer string
+	field ExactMatch bool
+	field Example AnswerExample
+	field F1Token float64
+	field FollowupsUsed int
+	field GraderEnabled bool
+	field ReflectionRounds int
+	field RequiredPhraseHits int
+	field RequiredPhraseTotal int
 type Asker interface
 	method Ask(ctx context.Context, question string, opts rag.AskOptions) (rag.Answer, error)
+type BenchmarkMetrics struct
+	field ActiveRetrievalFireRate float64
+	field AdoptedRoundCounts []int
+	field ExactMatch float64
+	field Examples int
+	field F1Token float64
+	field FollowupQueriesUsedMean float64
+	field GraderAdoptionRate float64
+	field ReflectionRoundsMean float64
+	field RequiredPhraseRecall float64
+type BenchmarkResult struct
+	field Dataset AnswerDataset
+	field Metrics BenchmarkMetrics
+	field PerExample []AnswerExampleResult
 type Dataset struct
 	field Examples []Example
 	field Name string

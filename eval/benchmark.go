@@ -1,5 +1,19 @@
 package eval
 
+// This file implements the v1.3.0 C-Eval answer-quality benchmark
+// harness — a generation-side scoreboard for the standard System.Ask
+// path. It is deliberately pure C-Eval: ExactMatch, token F1, and
+// required-phrase recall scored against labeled gold answers, with
+// no LLM-as-judge call and no external datasets bundled. Reflection,
+// grading, and active-retrieval signals are read off the answer's
+// existing Diagnostics so the same harness scores v1.0.x and v1.2.x
+// pipelines identically.
+//
+// The Asker contract is the existing eval.Asker from triad.go — the
+// benchmark introduces no new seam on rag.System. BenchmarkMetrics
+// ships without json: tags because math.NaN() does not round-trip
+// through encoding/json; callers wrap in their own wire type.
+
 import (
 	"bufio"
 	"context"

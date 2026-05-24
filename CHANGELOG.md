@@ -6,6 +6,33 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [1.3.0] - 2026-05-24
+
+Minor release adding a C-Eval answer-quality benchmark harness to the `eval` package — a generation-side scoreboard for the Ask path scored on textual match (ExactMatch, token F1, required-phrase recall) plus v1.2.x reflection/active-retrieval signal aggregation. Pure C-Eval: no LLM judge, no external datasets bundled.
+
+### Added
+
+- `eval.AnswerExample` — embeds `eval.Example`, adds `GoldAnswers []string` (any-match counts as ExactMatch) and `RequiredPhrases []string` (verbatim substrings that should appear in the answer).
+- `eval.AnswerDataset` — sibling of `Dataset` carrying `[]AnswerExample`.
+- `eval.LoadAnswerJSONL(path) (AnswerDataset, error)` — JSONL loader mirroring `LoadJSONL` semantics (comment/blank lines skipped, first `top_k` honored, 4 MiB line buffer).
+- `eval.AnswerBenchmark` — `{ Asker, Options }`. Sequential runner; reuses the existing `eval.Asker` interface (no new seam added).
+- `eval.BenchmarkMetrics` — fixed struct with `ExactMatch`, `F1Token`, `RequiredPhraseRecall`, `ReflectionRoundsMean`, `AdoptedRoundCounts []int`, `GraderAdoptionRate`, `FollowupQueriesUsedMean`, `ActiveRetrievalFireRate`. NaN sentinels when a metric's underlying feature was off across the whole dataset.
+- `eval.BenchmarkResult` and `eval.AnswerExampleResult` — full per-example trace enabling offline metric recomputation.
+- `eval/testdata/answer_bench_minimal.jsonl` — 3-example synthetic fixture, hermetic.
+
+### Changed
+
+- (none — fully additive)
+
+### Compatibility
+
+- Existing `eval.Asker` interface unchanged and reused.
+- No new third-party imports (stdlib-only invariant preserved).
+- API snapshot diff: 40 lines added, 0 removed, 0 renamed.
+- `*rag.System` satisfies `eval.Asker` structurally (unchanged from v1.2.x).
+- F1Token tokenizer is whitespace + ToLower; documented as "best-effort, not paper-grade". Required-phrase matching is verbatim case-sensitive substring.
+- `BenchmarkMetrics` carries `math.NaN()` for metrics whose underlying feature was off across all examples; the struct intentionally has no `json:` tags — callers wrap it in their own wire types if serializing.
+
 ## [1.2.1] - 2026-05-24
 
 Patch release closing v1.2.0's explicit out-of-scope items: parallel
