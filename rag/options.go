@@ -139,6 +139,18 @@ type ReflectionOptions struct {
 	// below which active retrieval fires. A value <= 0 defaults to 0.4
 	// when EnableActiveRetrieval is true.
 	ActiveRetrievalRelevanceFloor float64
+	// ParallelFollowups, when true, fires the per-round follow-up
+	// retrievals concurrently using a bounded worker pool
+	// (sync.WaitGroup + buffered-channel semaphore). Default false
+	// preserves v1.2.0 sequential dispatch. Determinism invariants:
+	// merged hits remain sorted by score (stable), and
+	// ReflectionRoundDiagnostics.FollowupQueries is always in planner
+	// output order — never completion order — regardless of this flag.
+	ParallelFollowups bool
+	// MaxFollowupConcurrency caps the fan-out when ParallelFollowups
+	// is true. A value <= 0 defaults to MaxFollowupQueries (the
+	// per-round cap). Ignored when ParallelFollowups is false.
+	MaxFollowupConcurrency int
 }
 
 // AskOptions configures System.Ask — the standard retrieve-pack-generate
