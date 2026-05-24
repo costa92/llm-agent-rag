@@ -123,6 +123,26 @@ func (a *StageUsageAccumulator) Append(stage string, usage TokenUsage) {
 	a.mu.Unlock()
 }
 
+// TotalSoFar returns the running sum of entries[i].Usage.TotalTokens
+// across every Append call so far. A nil accumulator returns 0. The sum
+// is computed under the same sync.Mutex that guards Append/Snapshot, so
+// it is safe to call concurrently with Append.
+//
+// v1.7.0: used by the rag-side cumulative token budget check in
+// countingModel.Generate after each successful Append.
+func (a *StageUsageAccumulator) TotalSoFar() int {
+	if a == nil {
+		return 0
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	total := 0
+	for _, e := range a.entries {
+		total += e.Usage.TotalTokens
+	}
+	return total
+}
+
 // Snapshot returns a defensive copy of the entries recorded so far, in the
 // order Append was called. A nil accumulator returns nil.
 func (a *StageUsageAccumulator) Snapshot() []StageTokenUsage {

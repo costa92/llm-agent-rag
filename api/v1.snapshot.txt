@@ -466,6 +466,7 @@ func NewCounter() *Counter
 func NewStageUsageAccumulator() *StageUsageAccumulator
 method (*StageUsageAccumulator) Append(stage string, usage TokenUsage)
 method (*StageUsageAccumulator) Snapshot() []StageTokenUsage
+method (*StageUsageAccumulator) TotalSoFar() int
 func StageUsageFrom(ctx context.Context) *StageUsageAccumulator
 func WithCounter(ctx context.Context, c *Counter) context.Context
 func WithStageUsage(ctx context.Context, a *StageUsageAccumulator) context.Context

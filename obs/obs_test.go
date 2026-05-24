@@ -88,6 +88,55 @@ func TestWithStageUsageRoundTrip(t *testing.T) {
 	}
 }
 
+// --- v1.7.0 C2 TotalSoFar tests ----------------------------------------
+
+// TestStageUsageAccumulator_TotalSoFar_SumsTotalTokens asserts the
+// returned int is the sum of entries[i].Usage.TotalTokens.
+func TestStageUsageAccumulator_TotalSoFar_SumsTotalTokens(t *testing.T) {
+	acc := NewStageUsageAccumulator()
+	if got := acc.TotalSoFar(); got != 0 {
+		t.Fatalf("empty TotalSoFar = %d, want 0", got)
+	}
+	acc.Append("ask", TokenUsage{TotalTokens: 10})
+	acc.Append("reflection_decision", TokenUsage{TotalTokens: 5})
+	acc.Append("grader", TokenUsage{TotalTokens: 7})
+	if got := acc.TotalSoFar(); got != 22 {
+		t.Fatalf("TotalSoFar = %d, want 22", got)
+	}
+}
+
+// TestStageUsageAccumulator_TotalSoFar_NilSafe asserts a nil accumulator
+// returns 0 without panicking.
+func TestStageUsageAccumulator_TotalSoFar_NilSafe(t *testing.T) {
+	var a *StageUsageAccumulator
+	if got := a.TotalSoFar(); got != 0 {
+		t.Fatalf("nil TotalSoFar = %d, want 0", got)
+	}
+}
+
+// TestStageUsageAccumulator_TotalSoFar_ConcurrentSafe pummels TotalSoFar
+// concurrently with Append. The race detector must remain clean.
+func TestStageUsageAccumulator_TotalSoFar_ConcurrentSafe(t *testing.T) {
+	acc := NewStageUsageAccumulator()
+	const goroutines = 200
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 2)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			acc.Append("ask", TokenUsage{TotalTokens: 1})
+		}()
+		go func() {
+			defer wg.Done()
+			_ = acc.TotalSoFar()
+		}()
+	}
+	wg.Wait()
+	if got := acc.TotalSoFar(); got != goroutines {
+		t.Fatalf("final TotalSoFar = %d, want %d", got, goroutines)
+	}
+}
+
 func TestMetricsStageTokenUsageZeroValue(t *testing.T) {
 	var m Metrics
 	if m.StageTokenUsage != nil {
