@@ -36,6 +36,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/costa92/llm-agent-rag/internal/fanout"
 	"github.com/costa92/llm-agent-rag/rag"
 )
 
@@ -358,28 +359,23 @@ func (b AnswerBenchmark) runSequential(ctx context.Context, dataset AnswerDatase
 	}, nil
 }
 
-// runParallel dispatches examples over a bounded worker pool. The
-// semaphore is a buffered chan with capacity `workers`. Results are
-// written by index into a pre-allocated slice so the per-example order
-// matches dataset.Examples regardless of completion order. Errors are
-// sticky: the first Ask or Judge error wins via errMu/firstErr; siblings
-// finish naturally (no context cancellation of siblings — see v1.4.0
-// design Q-G).
+// runParallel dispatches examples over a bounded worker pool provided by
+// internal/fanout (which owns the semaphore, WaitGroup, and panic
+// recovery). Results are written by index into a pre-allocated slice so
+// the per-example order matches dataset.Examples regardless of completion
+// order. Errors are sticky: the first Ask or Judge error wins via
+// errMu/firstErr; siblings finish naturally (no context cancellation of
+// siblings — see v1.4.0 design Q-G). A worker that panics is recovered by
+// fanout and surfaced as the run error instead of crashing the process.
 func (b AnswerBenchmark) runParallel(ctx context.Context, dataset AnswerDataset, workers int) (BenchmarkResult, error) {
 	results := make([]AnswerExampleResult, len(dataset.Examples))
-	sem := make(chan struct{}, workers)
-	var wg sync.WaitGroup
+	total := len(dataset.Examples)
 	var errMu sync.Mutex
 	var firstErr error
 
-	total := len(dataset.Examples)
+	tasks := make([]fanout.Task[struct{}], len(dataset.Examples))
 	for i, ex := range dataset.Examples {
-		sem <- struct{}{}
-		wg.Add(1)
-		go func(i int, ex AnswerExample) {
-			defer wg.Done()
-			defer func() { <-sem }()
-
+		tasks[i] = func(ctx context.Context) (struct{}, error) {
 			// Sticky-error gate: if a sibling already failed, skip
 			// further work. In-flight workers still finish naturally.
 			// Progress is NOT fired for skipped slots — the contract
@@ -389,7 +385,7 @@ func (b AnswerBenchmark) runParallel(ctx context.Context, dataset AnswerDataset,
 			already := firstErr != nil
 			errMu.Unlock()
 			if already {
-				return
+				return struct{}{}, nil
 			}
 
 			r, err := b.runOne(ctx, dataset, ex)
@@ -406,15 +402,25 @@ func (b AnswerBenchmark) runParallel(ctx context.Context, dataset AnswerDataset,
 					firstErr = err
 				}
 				errMu.Unlock()
-				return
+				return struct{}{}, err
 			}
 			results[i] = r
-		}(i, ex)
+			return struct{}{}, nil
+		}
 	}
-	wg.Wait()
+	res, _ := fanout.Run(ctx, workers, tasks)
 
+	// firstErr holds the completion-order Ask/Judge error (the documented
+	// v1.4.0 Q-G contract). A worker panic unwinds before that record, so
+	// also surface any panic fanout recovered into Result.Err — previously
+	// such a panic crashed the whole process.
 	if firstErr != nil {
 		return BenchmarkResult{}, firstErr
+	}
+	for _, r := range res {
+		if r.Err != nil {
+			return BenchmarkResult{}, r.Err
+		}
 	}
 	return BenchmarkResult{
 		Dataset:    dataset,

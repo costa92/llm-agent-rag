@@ -3,8 +3,8 @@ package rag
 import (
 	"context"
 	"sort"
-	"sync"
 
+	"github.com/costa92/llm-agent-rag/internal/fanout"
 	"github.com/costa92/llm-agent-rag/store"
 )
 
@@ -260,23 +260,20 @@ func (s *System) runActiveRetrieval(ctx context.Context, originalQuestion string
 // slice is the result of planned[i]. A retrieval error on a single
 // query leaves that slot nil (fail-open, matching sequential).
 //
-// Determinism: hitSets is pre-allocated by len(planned) and each
-// goroutine writes only to its own index. unionHits later sorts the
-// merged set by score (stable), so the final hit order is identical
-// to the sequential dispatch.
+// Determinism: fanout.Run returns one Result per planned query at its
+// input index, so hitSets[i] is always planned[i]'s outcome regardless
+// of completion order. unionHits later sorts the merged set by score
+// (stable), so the final hit order is identical to the sequential
+// dispatch.
 //
-// Concurrency: the semaphore is a buffered chan with capacity
-// max(1, budget.concurrency). When budget.concurrency <= 0, the
-// effective cap collapses to len(planned) — fan out as much as the
-// per-round work allows.
-//
-// Thread safety: the only shared mutable state is hitSets[i], written
-// once per goroutine at a distinct index. No locks are required for
-// that write. s.retrieve is safe to call concurrently — it reads
-// immutable System fields and writes through obs.Counter, which is
-// already concurrency-safe (atomic.Int64).
+// Concurrency: bounded to max(1, budget.concurrency) workers. When
+// budget.concurrency <= 0, the cap collapses to len(planned) — fan out
+// as much as the per-round work allows. s.retrieve is safe to call
+// concurrently — it reads immutable System fields and writes through
+// obs.Counter, which is already concurrency-safe (atomic.Int64). A
+// panicking retrieve is recovered by fanout into Result.Err and handled
+// fail-open below, rather than crashing the process.
 func (s *System) runFollowupsParallel(ctx context.Context, planned []string, opts SearchOptions, budget activeRetrievalBudget) [][]store.Hit {
-	hitSets := make([][]store.Hit, len(planned))
 	workers := budget.concurrency
 	if workers <= 0 {
 		workers = len(planned)
@@ -284,14 +281,9 @@ func (s *System) runFollowupsParallel(ctx context.Context, planned []string, opt
 	if workers < 1 {
 		workers = 1
 	}
-	sem := make(chan struct{}, workers)
-	var wg sync.WaitGroup
+	tasks := make([]fanout.Task[[]store.Hit], len(planned))
 	for i, q := range planned {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(i int, q string) {
-			defer wg.Done()
-			defer func() { <-sem }()
+		tasks[i] = func(ctx context.Context) ([]store.Hit, error) {
 			hits, _, rerr := s.retrieve(ctx, q, opts)
 			// Observer hook fires per follow-up regardless of
 			// success/error. Under parallel dispatch this MAY fire
@@ -301,13 +293,21 @@ func (s *System) runFollowupsParallel(ctx context.Context, planned []string, opt
 				s.observer.OnFollowupRetrieve(ctx, q, hits, rerr)
 			}
 			if rerr != nil {
-				// Fail-open: leave hitSets[i] nil. Matches the
-				// sequential path which skips the failed query.
-				return
+				return nil, rerr
 			}
-			hitSets[i] = hits
-		}(i, q)
+			return hits, nil
+		}
 	}
-	wg.Wait()
+	results, _ := fanout.Run(ctx, workers, tasks)
+	hitSets := make([][]store.Hit, len(planned))
+	for i, r := range results {
+		// Fail-open: a failed (or recovered-panic) follow-up leaves
+		// hitSets[i] nil, matching the sequential path which skips the
+		// failed query.
+		if r.Err != nil {
+			continue
+		}
+		hitSets[i] = r.Value
+	}
 	return hitSets
 }
