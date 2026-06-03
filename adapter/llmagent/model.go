@@ -11,7 +11,7 @@ import (
 	"context"
 
 	"github.com/costa92/llm-agent-rag/generate"
-	corellm "github.com/costa92/llm-agent/llm"
+	corellm "github.com/costa92/llm-agent-contract/llm"
 )
 
 // ModelAdapter adapts a core llm-agent corellm.ChatModel to the
