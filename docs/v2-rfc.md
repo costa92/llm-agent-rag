@@ -1,3 +1,5 @@
+[English](./v2-rfc.md) | [简体中文](./v2-rfc.zh-CN.md)
+
 # llm-agent-rag v2.0 RFC
 
 **Date:** 2026-05-24

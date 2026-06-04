@@ -1,3 +1,5 @@
+[English](./README.md) | [简体中文](./README.zh-CN.md)
+
 # llm-agent-rag
 
 Standalone Go RAG SDK with abstract import, retrieval, custom LLM generation,

@@ -1,3 +1,5 @@
+[English](./compatibility.md) | [简体中文](./compatibility.zh-CN.md)
+
 # Compatibility policy
 
 This document is the Go-module compatibility promise `llm-agent-rag`
