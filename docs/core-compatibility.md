@@ -1,3 +1,5 @@
+[English](./core-compatibility.md) | [简体中文](./core-compatibility.zh-CN.md)
+
 # Core compatibility
 
 This document explains how `llm-agent-rag` (this repo) relates to

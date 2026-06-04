@@ -1,3 +1,5 @@
+[English](./api-audit-v1.0.md) | [简体中文](./api-audit-v1.0.zh-CN.md)
+
 # `llm-agent-rag` v1.0 exported-surface audit
 
 **Purpose.** This is the freeze-time exported-surface inventory for the

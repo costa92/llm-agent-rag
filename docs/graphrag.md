@@ -1,3 +1,5 @@
+[English](./graphrag.md) | [简体中文](./graphrag.zh-CN.md)
+
 # GraphRAG — relationship-traversal retrieval
 
 `llm-agent-rag` v0.7 added **Tier-1 lightweight GraphRAG**: extract a
