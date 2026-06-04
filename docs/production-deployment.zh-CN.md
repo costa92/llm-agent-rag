@@ -5,7 +5,7 @@
 本指南带你走一遍如何针对真实的
 PostgreSQL + pgvector 后端并带上可观测性钩子来部署 `llm-agent-rag`。它假设
 你已经选定 `postgres.Store` 作为你的存储 —— 如果你仍在
-权衡选项，见 [`backend-selection.md`](./backend-selection.md)。
+权衡选项，见 [`backend-selection.md`](./backend-selection.zh-CN.md)。
 
 ## 前置条件
 

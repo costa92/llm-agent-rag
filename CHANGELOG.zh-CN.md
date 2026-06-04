@@ -485,7 +485,7 @@ v1.0 API 冻结。**不是特性发布** —— 本发布中任何地方都没�
 Go module 导入兼容承诺：在 `v1.x` 系列内
 导出 API 是 **仅增量** 的 —— 导出符号不被重命名、
 删除或重新签名，且任何破坏性变更都需要一个新的主版本（`/v2`）。完整策略写在
-[`docs/compatibility.md`](docs/compatibility.md) 中。
+[`docs/compatibility.md`](docs/compatibility.zh-CN.md) 中。
 
 `postgres` 子包仍然是唯一的非标准库孤岛；其他
 一切都保持仅标准库。
@@ -512,7 +512,7 @@ Go module 导入兼容承诺：在 `v1.x` 系列内
 增量、非破坏性的 v1.0 工作 —— 文档和一个稳定性门禁，无
 运行时变更：
 
-- [`docs/compatibility.md`](docs/compatibility.md) —— 书面的 Go module
+- [`docs/compatibility.md`](docs/compatibility.zh-CN.md) —— 书面的 Go module
   兼容承诺：`v1.x` 仅增量保证覆盖什么、
   明确在其之外的是什么，以及未来的 `/v2` 将如何处理。
 - `docs/api-audit-v1.0.md` —— 冻结期导出面审计：每个
