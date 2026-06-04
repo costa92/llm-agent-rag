@@ -535,7 +535,7 @@ deferred to the sibling `llm-agent-otel` repo via the
 **Hosting:** N/A — this is a library, not a deployable service.
 
 **CI pipeline:** GitHub Actions — `.github/workflows/test.yml`
-(every push and PR to `master` / `main`) and
+(every push and PR to `main`) and
 `.github/workflows/release-precheck.yml` (every push and PR to
 `release/**` branches). See STACK.md for the per-step contents.
 
