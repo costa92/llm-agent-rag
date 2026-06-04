@@ -9,11 +9,11 @@ pgvector 后端、面向 OTel 的观察钩子，以及作为 `go test` 回归门
 
 ## 文档
 
-- [生产部署](./docs/production-deployment.md) —— pgvector
+- [生产部署](./docs/production-deployment.zh-CN.md) —— pgvector
   配置、连接池配置、observer 接线、运维说明
-- [后端选型](./docs/backend-selection.md) —— 内存版 vs
+- [后端选型](./docs/backend-selection.zh-CN.md) —— 内存版 vs
   postgres、一致性契约、新增后端
-- [核心兼容性](./docs/core-compatibility.md) —— 与
+- [核心兼容性](./docs/core-compatibility.zh-CN.md) —— 与
   `github.com/costa92/llm-agent` 的关系，以及可选适配器
 
 ## 范围
@@ -90,7 +90,7 @@ pgvector 后端、面向 OTel 的观察钩子，以及作为 `go test` 回归门
 当前状态：稳定 —— v1.0。公共 API 在 `v1.x` 系列下
 冻结于仅增量的兼容承诺；关于导入兼容规则、semver 策略，
 以及破坏性变更的 `/v2` 流程，见
-[docs/compatibility.md](docs/compatibility.md)。
+[docs/compatibility.md](docs/compatibility.zh-CN.md)。
 
 已实现：
 

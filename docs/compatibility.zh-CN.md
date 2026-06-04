@@ -11,7 +11,7 @@ API 上启用 Go 的 [导入兼容规则][go-compat]。下面所有内容都把�
 > **范围。** 本文档涵盖 `llm-agent-rag` *自身* 的 API。关于
 > 本仓库如何与核心 `github.com/costa92/llm-agent` 仓库关联 ——
 > 双仓拆分、哪些特性跨越边界，以及
-> 跨仓 CI 门禁 —— 见 [`core-compatibility.md`](./core-compatibility.md)。
+> 跨仓 CI 门禁 —— 见 [`core-compatibility.md`](./core-compatibility.zh-CN.md)。
 
 [go-compat]: https://go.dev/blog/v2-go-modules
 
@@ -103,7 +103,7 @@ Go 的 module 工具链和 module proxy 强制执行主版本
   移动。
 - 完整的跨仓故事 —— 双仓拆分、哪些特性跨越
   边界、何时提升什么 —— 记录在
-  [`core-compatibility.md`](./core-compatibility.md) 中。本节只
+  [`core-compatibility.md`](./core-compatibility.zh-CN.md) 中。本节只
   声明 `contract` 包存在、属于 v1.0
   兼容保证的一部分，且不会被单方面改变。
 
@@ -152,7 +152,7 @@ Go 的 module 工具链和 module proxy 强制执行主版本
 这刻意 **不同于仅标准库的核心 `llm-agent`**，
 后者没有非标准库依赖，因此在发布 tag 之前没有
 `go.sum`。这一差异是设计如此 —— 关于两仓依赖拆分背后的
-理据，见 [`core-compatibility.md`](./core-compatibility.md)。
+理据，见 [`core-compatibility.md`](./core-compatibility.zh-CN.md)。
 
 ## 最低 Go 版本
 

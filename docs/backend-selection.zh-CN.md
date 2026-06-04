@@ -46,7 +46,7 @@ PostgreSQL + pgvector 后端。位于 `postgres/` 子包中。
   `LLM_AGENT_RAG_PG_URL` 做环境门控，未设置时干净跳过
 
 完整的配置步骤见
-[`production-deployment.md`](./production-deployment.md)。
+[`production-deployment.md`](./production-deployment.zh-CN.md)。
 
 ## 一致性契约
 
@@ -98,7 +98,7 @@ schema 的后端（如 postgres），工厂在每次调用时创建一个全新�
    `storetest.RunConformance` 的 `*_conformance_test.go`。把任何外部服务测试
    用环境变量门控，使默认的 `go test` 仍然通过。
 3. **记录运维指引。** 在
-   [`production-deployment.md`](./production-deployment.md) 中添加一节，涵盖
+   [`production-deployment.md`](./production-deployment.zh-CN.md) 中添加一节，涵盖
    连接池/连接配置、索引选择和维度语义。
 4. **更新下方矩阵**，填入你后端的能力
    概况。
