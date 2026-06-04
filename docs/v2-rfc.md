@@ -428,7 +428,7 @@ This is the contract for v2.0 — every v1.x exported symbol with its v2.0 dispo
 
 **For the SDK author:**
 
-- `v2/main` cuts from `master@<v1.9.x soak tag>`; the first commit on `v2/main` is the module path bump (`module github.com/costa92/llm-agent-rag/v2`).
+- `v2/main` cuts from `main@<v1.9.x soak tag>`; the first commit on `v2/main` is the module path bump (`module github.com/costa92/llm-agent-rag/v2`).
 - The `contract` package's pinned-symbol list re-baselines against the v2.0 surface at v2.0 GA; cross-repo consumers update their `require` at their own cadence.
 
 ---

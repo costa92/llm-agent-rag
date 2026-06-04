@@ -187,7 +187,7 @@ entry, and `docs/core-compatibility.md`, and is held by convention.
 
 | File | Trigger | Purpose |
 |---|---|---|
-| `test.yml` | push and PR to `master`/`main` | Cross-repo module-boundary check (ripgrep gate forbidding `github.com/costa92/llm-agent` imports outside `adapter/`), `go vet`, `go build`, `go test`, the `internal/apisnapshot` API-surface gate (run explicitly for visibility, also covered by `go test ./...`), and a tagged `go build -tags llmagent ./...` + `go test -tags llmagent ./adapter/...` build to keep the adapter green |
+| `test.yml` | push and PR to `main` | Cross-repo module-boundary check (ripgrep gate forbidding `github.com/costa92/llm-agent` imports outside `adapter/`), `go vet`, `go build`, `go test`, the `internal/apisnapshot` API-surface gate (run explicitly for visibility, also covered by `go test ./...`), and a tagged `go build -tags llmagent ./...` + `go test -tags llmagent ./adapter/...` build to keep the adapter green |
 | `release-precheck.yml` | push and PR to `release/**` branches | Fails the build if `go mod edit -json` reports any `replace` directives, so a release tag can never accidentally ship pinned to a local-replace dependency |
 
 **Setup:** both workflows use `actions/setup-go@v5` with `go-version-file: go.mod` — the Go version is single-sourced from `go.mod`.
@@ -198,8 +198,8 @@ invokes `GOWORK=off GOCACHE=/tmp/go-build go test ./...`.
 
 ## Tagging Discipline
 
-- Branch: `master` (verified by `git branch --show-current`). CI
-  triggers on both `master` and `main` for forward compatibility.
+- Branch: `main` (verified by `git branch --show-current`). CI
+  triggers on `main`.
 - Tags so far (`git tag --list`):
   `v0.1.0 v0.1.1 v0.1.2 v0.1.3 v0.1.4 v0.2.0 v0.3.0 v0.4.0 v0.5.0
   v0.6.0 v1.0.0 v1.0.1`
