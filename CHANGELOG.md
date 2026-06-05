@@ -6,9 +6,32 @@ this file.
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [1.11.0] - 2026-06-05
+
+Three additive query/document-transform features for the retrieval pipeline: **step-back prompting**, **conversation-aware query rewriting**, and **contextual compression**. All are opt-in and gated so an unconfigured pipeline is byte-for-byte unchanged.
+
+### Added
+
+- `rag.SearchOptions.EnableStepBack bool` + `advanced.GenerateStepBack` — step-back prompting. When enabled, an LLM abstracts the query into a higher-level background question that `LLMExpansionPreprocessor` retrieves as an additional variant alongside the original (joining the existing MQE/HyDE variants and merged by `VariantRetriever`).
+- `rag.System.AskConversation(ctx, history []generate.Message, question string, opts AskOptions)` — multi-turn answering. It condenses conversation history plus a follow-up question into a standalone retrieval query (resolving coreference/ellipsis) via the new `rag.QueryCondenser` seam, then delegates to `Ask`.
+  - `rag.QueryCondenser` interface + `rag.LLMCondenser` (default) + `advanced.CondenseQuery` helper.
+  - `rag.Options.QueryCondenser` — override the condenser; defaults to an `LLMCondenser` over the System's model, or a passthrough when no model is configured.
+  - `rag.Diagnostics.OriginalQuestion` / `rag.Diagnostics.CondensedQuery` — record the rewrite on the answer.
+- `compress` package — contextual compression run between rerank and pack:
+  - `compress.Compressor` interface + `compress.NoopCompressor` (default), `compress.ExtractiveCompressor` (keeps the top-N query-relevant sentences per chunk by embedding cosine similarity; content stays verbatim, citations exact), and `compress.AbstractiveCompressor` (per-chunk query-focused LLM summary).
+  - `rag.Options.Compressor` + `rag.SearchOptions.EnableCompression bool` — wire and enable compression.
+  - `rag.Diagnostics.CompressedChunkIDs []string` — the chunks whose content was shortened.
+
+### Compatibility
+
+- All three features are opt-in: `EnableStepBack` / `EnableCompression` default false, `AskConversation` with empty history makes no extra model call and equals `Ask`, and `Options.Compressor` / `Options.QueryCondenser` default to no-op / passthrough. An unconfigured pipeline is byte-for-byte unchanged.
+- Surface is strictly additive — the v1 API snapshot gate (`internal/apisnapshot`) was regenerated with only additions; no exported symbol was renamed, removed, or re-signed.
+- Known limitation: the `AskConversation` condense model call runs before `Ask` installs its token counters, so its cost is not attributed in `Diagnostics.Metrics` (a dedicated `StageCondense` tag is future-additive).
+- stdlib-only invariant maintained.
+
 ## [1.9.0] - 2026-05-24
 
-**Final additive v1.x minor**. `AskOptions.MaxTotalTokens` enforcement extended to `AskGlobal` and `AskDrift` (C-BudgetExpand). v1.x is now feature-frozen — see `docs/v2-rfc.md` for the reshape track.
+**Final additive v1.x minor** *(superseded — additive v1.x minors continued: v1.10.0 dependency decoupling and v1.11.0 query/document transforms)*. `AskOptions.MaxTotalTokens` enforcement extended to `AskGlobal` and `AskDrift` (C-BudgetExpand). v1.x was intended to be feature-frozen here — see `docs/v2-rfc.md` for the reshape track.
 
 ### Added
 
@@ -26,7 +49,7 @@ this file.
 
 - `MaxTotalTokens=0` is unlimited on both AskGlobal and AskDrift — existing v1.8.0 callers unaffected byte-for-byte.
 - Budget enforcement runs AFTER each successful sub-stage Generate (`global_map`, `global_reduce`, `drift_primer`, `drift_local`, `drift_synth`), reusing the v1.7.0 countingModel post-Append check. `BudgetExceededError.Stage` carries the sub-stage tag that tripped.
-- **v1.9.0 is the final additive v1.x minor.** The next release is v2.0, which will reshape `wrapBudgetError`, `BudgetExceededError`, and the per-stage instrument seams. See `docs/v2-rfc.md` for the migration manifest.
+- **v1.9.0 was intended as the final additive v1.x minor** — superseded: additive minors continued (v1.10.0, v1.11.0). The v2.0 reshape track still reshapes `wrapBudgetError`, `BudgetExceededError`, and the per-stage instrument seams. See `docs/v2-rfc.md` for the migration manifest.
 - stdlib-only invariant maintained.
 - API snapshot diff: 2 lines added (two `MaxTotalTokens int` fields), 0 removed, 0 renamed.
 - Race-detector clean on all new tests.

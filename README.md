@@ -223,6 +223,42 @@ top-level `Ask`, while `Observer.OnRetrieve` may fire multiple times during
 one `Ask` when reflection runs because each internal retrieval round emits its
 own retrieval trace.
 
+### Query transforms and compression
+
+Three opt-in transforms reshape queries and retrieved chunks. All default off,
+so an unconfigured `Ask` is unchanged.
+
+- **Step-back prompting** (`SearchOptions.EnableStepBack`): an LLM abstracts the
+  query into a higher-level background question, retrieved as an extra variant
+  alongside the original (and any MQE/HyDE variants).
+- **Conversation-aware rewriting** (`System.AskConversation`): condenses chat
+  history plus a follow-up into a standalone retrieval query, then delegates to
+  `Ask`. Inspect `ans.Diagnostics.OriginalQuestion` /
+  `ans.Diagnostics.CondensedQuery`.
+- **Contextual compression** (`Options.Compressor` +
+  `SearchOptions.EnableCompression`): shrinks retrieved chunks to query-relevant
+  content between rerank and pack. `compress.ExtractiveCompressor` keeps the most
+  relevant sentences verbatim; `compress.AbstractiveCompressor` writes a
+  per-chunk LLM summary. Inspect `ans.Diagnostics.CompressedChunkIDs`.
+
+```go
+sys := rag.New(rag.Options{
+	Model:      model,
+	Compressor: compress.ExtractiveCompressor{Embedder: embedder, MaxSentences: 2},
+})
+
+// Step-back + compression on a single-turn Ask.
+ans, _ := sys.Ask(ctx, "How many points does Lv5 need?", rag.AskOptions{
+	Search: rag.SearchOptions{Namespace: "kb", EnableStepBack: true, EnableCompression: true},
+})
+
+// Multi-turn: resolve the follow-up against conversation history.
+ans, _ = sys.AskConversation(ctx, history, "and the annual fee?", rag.AskOptions{
+	Search: rag.SearchOptions{Namespace: "kb"},
+})
+fmt.Println(ans.Diagnostics.CondensedQuery)
+```
+
 ## Minimal example workflow
 
 1. Build a `rag.System`

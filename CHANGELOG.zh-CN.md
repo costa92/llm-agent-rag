@@ -6,9 +6,32 @@
 <!-- Keep a Changelog format: https://keepachangelog.com/en/1.1.0/ -->
 <!-- Semver: https://semver.org/ -->
 
+## [1.11.0] - 2026-06-05
+
+为检索管线新增三个增量的查询/文档变换特性：**step-back 提问**、**对话感知的查询改写**、**上下文压缩**。三者均为可选、带开关，未配置时管线逐字节不变。
+
+### Added
+
+- `rag.SearchOptions.EnableStepBack bool` + `advanced.GenerateStepBack` —— step-back 提问。开启后，LLM 将查询抽象为更高层的背景性问题，由 `LLMExpansionPreprocessor` 作为额外变体与原查询一起检索（与既有 MQE/HyDE 变体并列，经 `VariantRetriever` 合并）。
+- `rag.System.AskConversation(ctx, history []generate.Message, question string, opts AskOptions)` —— 多轮问答。通过新增的 `rag.QueryCondenser` 接缝，将对话历史与追问改写（消解指代/省略）为独立检索查询，再委托给 `Ask`。
+  - `rag.QueryCondenser` 接口 + `rag.LLMCondenser`（默认）+ `advanced.CondenseQuery` 辅助函数。
+  - `rag.Options.QueryCondenser` —— 覆盖 condenser；默认是基于 System 模型的 `LLMCondenser`，无模型时为 passthrough。
+  - `rag.Diagnostics.OriginalQuestion` / `rag.Diagnostics.CondensedQuery` —— 在答案上记录改写轨迹。
+- `compress` 包 —— 在 rerank 与 pack 之间运行的上下文压缩：
+  - `compress.Compressor` 接口 + `compress.NoopCompressor`（默认）、`compress.ExtractiveCompressor`（按嵌入余弦相似度保留每个 chunk 中与查询最相关的前 N 句；内容保持原文，引用精确）、`compress.AbstractiveCompressor`（逐 chunk 面向查询的 LLM 摘要）。
+  - `rag.Options.Compressor` + `rag.SearchOptions.EnableCompression bool` —— 接线并启用压缩。
+  - `rag.Diagnostics.CompressedChunkIDs []string` —— 被缩短内容的 chunk 列表。
+
+### Compatibility
+
+- 三个特性均为可选：`EnableStepBack` / `EnableCompression` 默认 false，`AskConversation` 空历史不发额外模型调用、等价于 `Ask`，`Options.Compressor` / `Options.QueryCondenser` 默认 no-op / passthrough。未配置时管线逐字节不变。
+- 导出面严格增量 —— v1 API 快照门（`internal/apisnapshot`）仅新增重新生成；无任何导出符号被重命名、移除或改签名。
+- 已知限制：`AskConversation` 的 condense 模型调用在 `Ask` 安装 token 计数器之前运行，其成本不计入 `Diagnostics.Metrics`（专用 `StageCondense` 标签留待未来增量）。
+- 维持仅标准库不变式。
+
 ## [1.9.0] - 2026-05-24
 
-**最后一个增量的 v1.x minor**。`AskOptions.MaxTotalTokens` 强制执行扩展到 `AskGlobal` 和 `AskDrift`（C-BudgetExpand）。v1.x 现已特性冻结 —— 重塑轨道见 `docs/v2-rfc.md`。
+**最后一个增量的 v1.x minor** *(已被推翻 —— 增量 v1.x minor 仍在继续：v1.10.0 依赖解耦、v1.11.0 查询/文档变换)*。`AskOptions.MaxTotalTokens` 强制执行扩展到 `AskGlobal` 和 `AskDrift`（C-BudgetExpand）。v1.x 原打算在此特性冻结 —— 重塑轨道见 `docs/v2-rfc.md`。
 
 ### Added
 
@@ -26,7 +49,7 @@
 
 - `MaxTotalTokens=0` 在 AskGlobal 和 AskDrift 上都是无限制 —— 现有 v1.8.0 调用方逐字节不受影响。
 - 预算强制执行在每个成功的子阶段 Generate（`global_map`、`global_reduce`、`drift_primer`、`drift_local`、`drift_synth`）之后运行，复用 v1.7.0 的 countingModel post-Append 检查。`BudgetExceededError.Stage` 携带触发的子阶段标签。
-- **v1.9.0 是最后一个增量的 v1.x minor。** 下一个发布是 v2.0，它将重塑 `wrapBudgetError`、`BudgetExceededError` 和按阶段的仪表接缝。迁移清单见 `docs/v2-rfc.md`。
+- **v1.9.0 原打算作为最后一个增量的 v1.x minor** —— 已被推翻：增量 minor 仍在继续（v1.10.0、v1.11.0）。v2.0 重塑轨道仍将重塑 `wrapBudgetError`、`BudgetExceededError` 和按阶段的仪表接缝。迁移清单见 `docs/v2-rfc.md`。
 - 维持仅标准库不变式。
 - API 快照差异：新增 2 行（两个 `MaxTotalTokens int` 字段），删除 0 行，重命名 0 行。
 - 所有新测试 race-detector 干净。

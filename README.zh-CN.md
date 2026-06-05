@@ -224,6 +224,40 @@ Observer 行为保持增量：`Observer.OnAsk` 仍然在每个顶层
 可能在一次 `Ask` 中触发多次，因为每个内部检索轮次都会发出
 自己的检索链路。
 
+### 查询变换与压缩
+
+三个可选变换用于重塑查询和检索到的文本块。三者均默认关闭，未配置时
+`Ask` 行为不变。
+
+- **Step-back 提问**（`SearchOptions.EnableStepBack`）：LLM 将查询抽象为更高层
+  的背景性问题，作为额外变体与原查询（以及任何 MQE/HyDE 变体）一起检索。
+- **对话感知改写**（`System.AskConversation`）：将对话历史与追问压缩为独立检索
+  查询，再委托给 `Ask`。可查看 `ans.Diagnostics.OriginalQuestion` /
+  `ans.Diagnostics.CondensedQuery`。
+- **上下文压缩**（`Options.Compressor` + `SearchOptions.EnableCompression`）：在
+  rerank 与 pack 之间把检索到的文本块缩到与查询相关的内容。
+  `compress.ExtractiveCompressor` 原文保留最相关的句子；
+  `compress.AbstractiveCompressor` 为每个文本块生成 LLM 摘要。可查看
+  `ans.Diagnostics.CompressedChunkIDs`。
+
+```go
+sys := rag.New(rag.Options{
+	Model:      model,
+	Compressor: compress.ExtractiveCompressor{Embedder: embedder, MaxSentences: 2},
+})
+
+// 单轮 Ask 上启用 step-back + 压缩。
+ans, _ := sys.Ask(ctx, "Lv5 需要多少积分？", rag.AskOptions{
+	Search: rag.SearchOptions{Namespace: "kb", EnableStepBack: true, EnableCompression: true},
+})
+
+// 多轮：结合对话历史消解追问。
+ans, _ = sys.AskConversation(ctx, history, "那年费多少？", rag.AskOptions{
+	Search: rag.SearchOptions{Namespace: "kb"},
+})
+fmt.Println(ans.Diagnostics.CondensedQuery)
+```
+
 ## 最小示例工作流
 
 1. 构建一个 `rag.System`
