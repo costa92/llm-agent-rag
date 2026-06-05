@@ -6,6 +6,7 @@ method (ModelAdapter) Generate(ctx context.Context, req generate.Request) (gener
 type ModelAdapter struct
 	field Inner corellm.ChatModel
 package github.com/costa92/llm-agent-rag/advanced
+func CondenseQuery(ctx context.Context, model generate.Model, history []generate.Message, question string) (string, error)
 func ExpandQuery(ctx context.Context, model generate.Model, query string, n int) ([]string, error)
 func GenerateHypothetical(ctx context.Context, model generate.Model, query string) (string, error)
 func GenerateStepBack(ctx context.Context, model generate.Model, query string) (string, error)
@@ -602,6 +603,7 @@ method (*BudgetExceededError) Error() string
 method (*BudgetExceededError) Unwrap() error
 func ExportGraderDataset(ans Answer) []GraderExample
 func GraderCacheKey(query, hitID, answer, mode string) string
+method (LLMCondenser) Condense(ctx context.Context, history []generate.Message, question string) (string, error)
 func MarshalDiagnostics(d Diagnostics) ([]byte, error)
 method (*MemoryGraderCache) Get(key string) (ChunkScore, bool)
 method (*MemoryGraderCache) Put(key string, score ChunkScore)
@@ -616,6 +618,7 @@ method (PromptGrader) ScoreRelevance(ctx context.Context, query string, hit stor
 method (PromptGrader) ScoreSupport(ctx context.Context, answer string, hit store.Hit) (float64, string, error)
 method (PromptQueryPlanner) PlanFollowups(ctx context.Context, question string, prevAnswer string, scores []ChunkScore) ([]string, error)
 method (*System) Ask(ctx context.Context, question string, opts AskOptions) (Answer, error)
+method (*System) AskConversation(ctx context.Context, history []generate.Message, question string, opts AskOptions) (Answer, error)
 method (*System) AskDrift(ctx context.Context, question string, opts DriftOptions) (Answer, error)
 method (*System) AskGlobal(ctx context.Context, question string, opts GlobalOptions) (Answer, error)
 method (*System) Import(ctx context.Context, docs []ingest.Document, opts ingest.ImportOptions) (ingest.ImportResult, error)
@@ -667,6 +670,7 @@ type Citation struct
 	field Title string
 type Diagnostics struct
 	field AutoRouteCandidates []retrieve.RouteCandidate
+	field CondensedQuery string
 	field Drift DriftDiagnostics
 	field ExpandedChunkIDs []string
 	field Global GlobalDiagnostics
@@ -675,6 +679,7 @@ type Diagnostics struct
 	field InjectionFindings []InjectionFinding
 	field MatchedSections []string
 	field Metrics obs.Metrics
+	field OriginalQuestion string
 	field PromptChunkIDs []string
 	field Reflection ReflectionDiagnostics
 	field RerankScores []rerank.RerankScore
@@ -733,6 +738,8 @@ type InjectionFinding struct
 	field Action string
 	field ChunkID string
 	field Patterns []string
+type LLMCondenser struct
+	field Model generate.Model
 type MemoryGraderCache struct
 type NoopGrader struct
 type NoopQueryPlanner struct
@@ -756,6 +763,7 @@ type Options struct
 	field Observer Observer
 	field Packer pack.Packer
 	field Preprocessor retrieve.QueryPreprocessor
+	field QueryCondenser QueryCondenser
 	field QueryPlanner QueryPlanner
 	field Redactor guard.Redactor
 	field Reranker rerank.Reranker
@@ -769,6 +777,8 @@ type PromptGrader struct
 type PromptQueryPlanner struct
 	field MaxQueries int
 	field Model generate.Model
+type QueryCondenser interface
+	method Condense(ctx context.Context, history []generate.Message, question string) (string, error)
 type QueryPlanner interface
 	method PlanFollowups(ctx context.Context, question string, prevAnswer string, scores []ChunkScore) ([]string, error)
 type ReflectionDecision string

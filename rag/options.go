@@ -294,4 +294,9 @@ type Options struct {
 	// active retrieval then degrades to a no-op without breaking the
 	// Ask call.
 	QueryPlanner QueryPlanner
+	// QueryCondenser, when set, rewrites multi-turn follow-up questions
+	// into standalone retrieval queries for System.AskConversation. A nil
+	// condenser defaults to an LLMCondenser over the System's model, or a
+	// passthrough when no model is configured.
+	QueryCondenser QueryCondenser
 }

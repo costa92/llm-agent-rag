@@ -74,6 +74,13 @@ type Diagnostics struct {
 	// Reflection attributes a bounded self-reflection Ask run. It is the
 	// zero value for an ordinary single-round Ask — the field is additive.
 	Reflection ReflectionDiagnostics
+	// OriginalQuestion is the caller's pre-condense question on a
+	// System.AskConversation run; empty for an ordinary Ask. Additive.
+	OriginalQuestion string
+	// CondensedQuery is the standalone query AskConversation derived from
+	// OriginalQuestion plus conversation history; empty for an ordinary
+	// Ask. Additive.
+	CondensedQuery string
 }
 
 // ChunkScore is the per-chunk grading evidence produced by a Grader for
@@ -322,14 +329,14 @@ type System struct {
 	driftPrimerModel generate.Model
 	driftLocalModel  generate.Model
 	driftSynthModel  generate.Model
-	template        prompt.Template
-	pre             retrieve.QueryPreprocessor
-	ret             retrieve.Retriever
-	reranker        rerank.Reranker
-	packer          pack.Packer
-	maxChars        int
-	observer        Observer
-	redactor        guard.Redactor
+	template         prompt.Template
+	pre              retrieve.QueryPreprocessor
+	ret              retrieve.Retriever
+	reranker         rerank.Reranker
+	packer           pack.Packer
+	maxChars         int
+	observer         Observer
+	redactor         guard.Redactor
 
 	injectionScanner guard.InjectionScanner
 	sanitizeMode     guard.SanitizeMode
@@ -342,6 +349,7 @@ type System struct {
 	grader Grader
 
 	queryPlanner QueryPlanner
+	condenser    QueryCondenser
 }
 
 // New constructs a System from opts, filling unset dependencies with the
@@ -424,6 +432,7 @@ func New(opts Options) *System {
 		grader: opts.Grader,
 
 		queryPlanner: opts.QueryPlanner,
+		condenser:    opts.QueryCondenser,
 	}
 	// Build the per-stage counting models. A nil opts.Model stays nil so
 	// Ask still returns ErrModelRequired; both s.model and s.reflectionModel
