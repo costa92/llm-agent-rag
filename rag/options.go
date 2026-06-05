@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"github.com/costa92/llm-agent-rag/compress"
 	"github.com/costa92/llm-agent-rag/embed"
 	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/graph"
@@ -30,11 +31,13 @@ type SearchOptions struct {
 	EnableMQE                    bool           // EnableMQE turns on multi-query expansion.
 	EnableHyDE                   bool           // EnableHyDE turns on hypothetical-document expansion.
 	MQECount                     int            // MQECount is the number of expansion queries to generate.
+	EnableStepBack               bool           // EnableStepBack turns on step-back (higher-level) query expansion.
 	EnableRerank                 bool           // EnableRerank turns on reranking of retrieved hits.
 	EnableStructure              bool           // EnableStructure turns on structure-aware retrieval.
 	EnableGraph                  bool           // EnableGraph turns on graph retrieval.
 	EnableTreeExpansion          bool           // EnableTreeExpansion turns on document-tree neighbor expansion.
 	ExpansionDepth               int            // ExpansionDepth bounds tree-expansion depth.
+	EnableCompression            bool           // EnableCompression turns on contextual compression of retrieved chunks.
 }
 
 // ReflectionMode selects how Ask evaluates whether to stop, continue, or
@@ -293,4 +296,14 @@ type Options struct {
 	// active retrieval then degrades to a no-op without breaking the
 	// Ask call.
 	QueryPlanner QueryPlanner
+	// QueryCondenser, when set, rewrites multi-turn follow-up questions
+	// into standalone retrieval queries for System.AskConversation. A nil
+	// condenser defaults to an LLMCondenser over the System's model, or a
+	// passthrough when no model is configured.
+	QueryCondenser QueryCondenser
+	// Compressor, when set, shrinks retrieved chunk content to
+	// query-relevant material between rerank and pack on a System.Ask run
+	// that sets SearchOptions.EnableCompression. A nil Compressor defaults
+	// to compress.NoopCompressor (no compression).
+	Compressor compress.Compressor
 }
