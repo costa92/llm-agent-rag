@@ -435,6 +435,25 @@ func (s *System) askRound(ctx context.Context, originalQuestion string, retrieva
 		rerankedIDs = append([]string(nil), rerankTrace.OutputChunkIDs...)
 		rerankScores = append([]rerank.RerankScore(nil), rerankTrace.Scores...)
 	}
+	var compressedIDs []string
+	if opts.Search.EnableCompression {
+		stageStart = time.Now()
+		preLen := make(map[string]int, len(rankedHits))
+		for _, h := range rankedHits {
+			preLen[h.Chunk.ID] = len(h.Chunk.Content)
+		}
+		compressed, cerr := s.effectiveCompressor().Compress(ctx, originalQuestion, rankedHits)
+		if cerr != nil {
+			return askRoundResult{}, cerr
+		}
+		rankedHits = compressed
+		for _, h := range rankedHits {
+			if was, ok := preLen[h.Chunk.ID]; ok && len(h.Chunk.Content) < was {
+				compressedIDs = append(compressedIDs, h.Chunk.ID)
+			}
+		}
+		metrics.Stages = append(metrics.Stages, obs.StageTiming{Stage: "compress", Duration: time.Since(stageStart)})
+	}
 	packedHits := rankedHits
 	packedIDs := chunkIDs(packedHits)
 	var droppedIDs []string
@@ -510,6 +529,7 @@ func (s *System) askRound(ctx context.Context, originalQuestion string, retrieva
 			Metrics:             metrics,
 			InjectionFindings:   injectionFindings,
 			GraphTrace:          retrieveTrace.Graph,
+			CompressedChunkIDs:  append([]string(nil), compressedIDs...),
 		},
 		Trace: Trace{
 			Question:            originalQuestion,

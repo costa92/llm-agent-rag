@@ -11,6 +11,7 @@ package rag
 import (
 	"context"
 
+	"github.com/costa92/llm-agent-rag/compress"
 	"github.com/costa92/llm-agent-rag/embed"
 	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/graph"
@@ -81,6 +82,10 @@ type Diagnostics struct {
 	// OriginalQuestion plus conversation history; empty for an ordinary
 	// Ask. Additive.
 	CondensedQuery string
+	// CompressedChunkIDs lists the chunks whose Content contextual
+	// compression shortened on this run; empty when compression is off or
+	// nothing shrank. Additive.
+	CompressedChunkIDs []string
 }
 
 // ChunkScore is the per-chunk grading evidence produced by a Grader for
@@ -350,6 +355,7 @@ type System struct {
 
 	queryPlanner QueryPlanner
 	condenser    QueryCondenser
+	compressor   compress.Compressor
 }
 
 // New constructs a System from opts, filling unset dependencies with the
@@ -433,6 +439,7 @@ func New(opts Options) *System {
 
 		queryPlanner: opts.QueryPlanner,
 		condenser:    opts.QueryCondenser,
+		compressor:   opts.Compressor,
 	}
 	// Build the per-stage counting models. A nil opts.Model stays nil so
 	// Ask still returns ErrModelRequired; both s.model and s.reflectionModel
@@ -524,4 +531,14 @@ func (s *System) effectiveQueryPlanner() QueryPlanner {
 		return NoopQueryPlanner{}
 	}
 	return s.queryPlanner
+}
+
+// effectiveCompressor returns the configured Compressor, or a
+// compress.NoopCompressor when none was set, so the compression stage is
+// always callable and defaults to a no-op. Mirrors effectiveQueryPlanner.
+func (s *System) effectiveCompressor() compress.Compressor {
+	if s.compressor == nil {
+		return compress.NoopCompressor{}
+	}
+	return s.compressor
 }
