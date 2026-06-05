@@ -69,3 +69,23 @@ Question: %s`, query)
 	}
 	return strings.TrimSpace(resp.Text), nil
 }
+
+// GenerateStepBack asks the model to abstract query into a more general,
+// higher-level question that surfaces background knowledge. The result is
+// retrieved alongside the original query (step-back prompting).
+func GenerateStepBack(ctx context.Context, model generate.Model, query string) (string, error) {
+	if model == nil {
+		return "", ErrModelRequired
+	}
+	prompt := fmt.Sprintf(`Generate a more general, higher-level version of the question below that retrieves useful background knowledge. Keep the original intent. Output only the rewritten question, no numbering, no commentary.
+
+Question: %s`, query)
+
+	resp, err := model.Generate(ctx, generate.Request{
+		Messages: []generate.Message{{Role: "user", Content: prompt}},
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resp.Text), nil
+}
