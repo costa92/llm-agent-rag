@@ -322,14 +322,14 @@ type System struct {
 	driftPrimerModel generate.Model
 	driftLocalModel  generate.Model
 	driftSynthModel  generate.Model
-	template        prompt.Template
-	pre             retrieve.QueryPreprocessor
-	ret             retrieve.Retriever
-	reranker        rerank.Reranker
-	packer          pack.Packer
-	maxChars        int
-	observer        Observer
-	redactor        guard.Redactor
+	template         prompt.Template
+	pre              retrieve.QueryPreprocessor
+	ret              retrieve.Retriever
+	reranker         rerank.Reranker
+	packer           pack.Packer
+	maxChars         int
+	observer         Observer
+	redactor         guard.Redactor
 
 	injectionScanner guard.InjectionScanner
 	sanitizeMode     guard.SanitizeMode
@@ -342,6 +342,7 @@ type System struct {
 	grader Grader
 
 	queryPlanner QueryPlanner
+	condenser    QueryCondenser
 }
 
 // New constructs a System from opts, filling unset dependencies with the
@@ -424,6 +425,7 @@ func New(opts Options) *System {
 		grader: opts.Grader,
 
 		queryPlanner: opts.QueryPlanner,
+		condenser:    opts.QueryCondenser,
 	}
 	// Build the per-stage counting models. A nil opts.Model stays nil so
 	// Ask still returns ErrModelRequired; both s.model and s.reflectionModel
