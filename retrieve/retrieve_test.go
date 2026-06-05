@@ -1382,3 +1382,34 @@ func TestHybridRetrieverRRFConstantConfigurable(t *testing.T) {
 		t.Fatalf("k=1: want x before y, got %+v", small)
 	}
 }
+
+func TestLLMExpansionPreprocessorAppendsStepBack(t *testing.T) {
+	model := &scriptedModel{resps: []string{"how is the level system designed"}}
+	pre := LLMExpansionPreprocessor{Model: model}
+	res, err := pre.Process(context.Background(), Request{
+		Query:          "how many points does lv5 need",
+		EnableStepBack: true,
+	})
+	if err != nil {
+		t.Fatalf("Process(): %v", err)
+	}
+	if len(res.QueryVariants) != 2 {
+		t.Fatalf("QueryVariants = %#v, want 2", res.QueryVariants)
+	}
+	if res.QueryVariants[0] != "how many points does lv5 need" {
+		t.Fatalf("first variant = %q, want original query", res.QueryVariants[0])
+	}
+	if res.QueryVariants[1] != "how is the level system designed" {
+		t.Fatalf("second variant = %q, want step-back query", res.QueryVariants[1])
+	}
+}
+
+func TestLLMExpansionPreprocessorStepBackRequiresModel(t *testing.T) {
+	_, err := LLMExpansionPreprocessor{}.Process(context.Background(), Request{
+		Query:          "anything",
+		EnableStepBack: true,
+	})
+	if !errors.Is(err, advanced.ErrModelRequired) {
+		t.Fatalf("err = %v, want advanced.ErrModelRequired", err)
+	}
+}

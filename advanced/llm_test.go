@@ -57,3 +57,25 @@ func TestGenerateHypotheticalTrimsWhitespace(t *testing.T) {
 		t.Fatalf("got not trimmed: %q", got)
 	}
 }
+
+func TestGenerateStepBackTrimsWhitespace(t *testing.T) {
+	got, err := GenerateStepBack(context.Background(), scriptedModel{
+		resp: "  How is the user level system designed?  \n",
+	}, "how many points does Lv5 need?")
+	if err != nil {
+		t.Fatalf("GenerateStepBack(): %v", err)
+	}
+	if !strings.Contains(got, "level system") {
+		t.Fatalf("got = %q", got)
+	}
+	if strings.HasPrefix(got, " ") || strings.HasSuffix(got, "\n") {
+		t.Fatalf("got not trimmed: %q", got)
+	}
+}
+
+func TestGenerateStepBackRequiresModel(t *testing.T) {
+	_, err := GenerateStepBack(context.Background(), nil, "anything")
+	if !errors.Is(err, ErrModelRequired) {
+		t.Fatalf("err = %v, want ErrModelRequired", err)
+	}
+}

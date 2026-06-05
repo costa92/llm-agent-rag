@@ -1,8 +1,8 @@
-// Package advanced provides LLM-backed query-transformation helpers that
-// improve recall before retrieval runs. ExpandQuery rewrites a query into
-// several semantically-equivalent alternatives (multi-query expansion) and
-// GenerateHypothetical synthesises a hypothetical answer document (HyDE).
-// Both take a generate.Model and are stateless helpers, not pipeline stages.
+// Package advanced provides stateless, LLM-backed query-transformation
+// helpers that reshape a query before retrieval to improve recall, such as
+// multi-query expansion and hypothetical-document (HyDE) generation. Each
+// helper takes a generate.Model and is a standalone function, not a pipeline
+// stage.
 package advanced
 
 import (
@@ -58,6 +58,26 @@ func GenerateHypothetical(ctx context.Context, model generate.Model, query strin
 		return "", ErrModelRequired
 	}
 	prompt := fmt.Sprintf(`Write a short hypothetical answer (2-3 sentences) that would directly answer the question below. Do not say "I don't know" — invent plausible-sounding content; this output is used to find similar real documents, not shown to the user.
+
+Question: %s`, query)
+
+	resp, err := model.Generate(ctx, generate.Request{
+		Messages: []generate.Message{{Role: "user", Content: prompt}},
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resp.Text), nil
+}
+
+// GenerateStepBack asks the model to abstract query into a more general,
+// higher-level question that surfaces background knowledge. The result is
+// retrieved alongside the original query (step-back prompting).
+func GenerateStepBack(ctx context.Context, model generate.Model, query string) (string, error) {
+	if model == nil {
+		return "", ErrModelRequired
+	}
+	prompt := fmt.Sprintf(`Generate a more general, higher-level version of the question below that retrieves useful background knowledge. Keep the original intent. Output only the rewritten question, no numbering, no commentary.
 
 Question: %s`, query)
 

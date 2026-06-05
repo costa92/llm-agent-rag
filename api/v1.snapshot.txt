@@ -8,6 +8,7 @@ type ModelAdapter struct
 package github.com/costa92/llm-agent-rag/advanced
 func ExpandQuery(ctx context.Context, model generate.Model, query string, n int) ([]string, error)
 func GenerateHypothetical(ctx context.Context, model generate.Model, query string) (string, error)
+func GenerateStepBack(ctx context.Context, model generate.Model, query string) (string, error)
 var ErrModelRequired = errors.New("advanced: generator required")
 package github.com/costa92/llm-agent-rag/agentic
 method (CorrectiveAsker) Ask(ctx context.Context, question string, opts rag.AskOptions) (rag.Answer, error)
@@ -854,6 +855,7 @@ type SearchOptions struct
 	field EnableHyDE bool
 	field EnableMQE bool
 	field EnableRerank bool
+	field EnableStepBack bool
 	field EnableStructure bool
 	field EnableTreeExpansion bool
 	field ExpansionDepth int
@@ -1011,6 +1013,7 @@ type Request struct
 	field EnableGraph bool
 	field EnableHyDE bool
 	field EnableMQE bool
+	field EnableStepBack bool
 	field EnableStructure bool
 	field EnableTreeExpansion bool
 	field ExpansionDepth int
