@@ -48,3 +48,27 @@ func (s *System) effectiveCondenser() QueryCondenser {
 	}
 	return LLMCondenser{Model: s.model}
 }
+
+// AskConversation answers a follow-up question in a multi-turn conversation.
+// It condenses history + question into a standalone retrieval query
+// (resolving coreference and ellipsis) via the effective QueryCondenser, then
+// delegates to Ask. With empty history the condense step returns the question
+// unchanged with no extra model call, so the answer is identical to
+// Ask(ctx, question, opts); AskConversation additionally records
+// OriginalQuestion and CondensedQuery on the result's Diagnostics.
+func (s *System) AskConversation(ctx context.Context, history []generate.Message, question string, opts AskOptions) (Answer, error) {
+	if s.model == nil {
+		return Answer{}, ErrModelRequired
+	}
+	standalone, err := s.effectiveCondenser().Condense(ctx, history, question)
+	if err != nil {
+		return Answer{}, err
+	}
+	ans, err := s.Ask(ctx, standalone, opts)
+	if err != nil {
+		return ans, err
+	}
+	ans.Diagnostics.OriginalQuestion = question
+	ans.Diagnostics.CondensedQuery = standalone
+	return ans, nil
+}
