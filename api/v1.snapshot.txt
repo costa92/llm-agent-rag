@@ -34,6 +34,20 @@ type Result struct
 var ErrAskerRequired = errors.New("agentic: Asker is required")
 var ErrJudgeRequired = errors.New("agentic: Judge is required")
 var ErrReformulatorRequired = errors.New("agentic: Reformulator is required")
+package github.com/costa92/llm-agent-rag/compress
+method (AbstractiveCompressor) Compress(ctx context.Context, query string, hits []store.Hit) ([]store.Hit, error)
+method (ExtractiveCompressor) Compress(ctx context.Context, query string, hits []store.Hit) ([]store.Hit, error)
+method (NoopCompressor) Compress(_ context.Context, _ string, hits []store.Hit) ([]store.Hit, error)
+type AbstractiveCompressor struct
+	field Model generate.Model
+type Compressor interface
+	method Compress(ctx context.Context, query string, hits []store.Hit) ([]store.Hit, error)
+type ExtractiveCompressor struct
+	field Embedder embed.Embedder
+	field MaxSentences int
+type NoopCompressor struct
+var ErrEmbedderRequired = errors.New("compress: embedder required")
+var ErrModelRequired = errors.New("compress: model required")
 package github.com/costa92/llm-agent-rag/embed
 func CosineSimilarity(a, b Vector) float64
 method (*HashEmbedder) Dimension() int
@@ -666,6 +680,7 @@ type Citation struct
 	field Title string
 type Diagnostics struct
 	field AutoRouteCandidates []retrieve.RouteCandidate
+	field CompressedChunkIDs []string
 	field Drift DriftDiagnostics
 	field ExpandedChunkIDs []string
 	field Global GlobalDiagnostics
@@ -745,6 +760,7 @@ type Observer struct
 type Options struct
 	field CommunityDetector graph.CommunityDetector
 	field CommunitySummarizer graph.CommunitySummarizer
+	field Compressor compress.Compressor
 	field Embedder embed.Embedder
 	field EntityExtractor graph.EntityExtractor
 	field EntityResolver graph.EntityResolver
@@ -850,6 +866,7 @@ type SearchOptions struct
 	field AutoRouteMaxCandidates int
 	field AutoRouteMinScore float64
 	field EnableAutoRoute bool
+	field EnableCompression bool
 	field EnableGraph bool
 	field EnableHyDE bool
 	field EnableMQE bool

@@ -11,6 +11,7 @@ package rag
 import (
 	"context"
 
+	"github.com/costa92/llm-agent-rag/compress"
 	"github.com/costa92/llm-agent-rag/embed"
 	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/graph"
@@ -74,6 +75,10 @@ type Diagnostics struct {
 	// Reflection attributes a bounded self-reflection Ask run. It is the
 	// zero value for an ordinary single-round Ask — the field is additive.
 	Reflection ReflectionDiagnostics
+	// CompressedChunkIDs lists the chunks whose Content contextual
+	// compression shortened on this run; empty when compression is off or
+	// nothing shrank. Additive.
+	CompressedChunkIDs []string
 }
 
 // ChunkScore is the per-chunk grading evidence produced by a Grader for
@@ -322,14 +327,14 @@ type System struct {
 	driftPrimerModel generate.Model
 	driftLocalModel  generate.Model
 	driftSynthModel  generate.Model
-	template        prompt.Template
-	pre             retrieve.QueryPreprocessor
-	ret             retrieve.Retriever
-	reranker        rerank.Reranker
-	packer          pack.Packer
-	maxChars        int
-	observer        Observer
-	redactor        guard.Redactor
+	template         prompt.Template
+	pre              retrieve.QueryPreprocessor
+	ret              retrieve.Retriever
+	reranker         rerank.Reranker
+	packer           pack.Packer
+	maxChars         int
+	observer         Observer
+	redactor         guard.Redactor
 
 	injectionScanner guard.InjectionScanner
 	sanitizeMode     guard.SanitizeMode
@@ -342,6 +347,7 @@ type System struct {
 	grader Grader
 
 	queryPlanner QueryPlanner
+	compressor   compress.Compressor
 }
 
 // New constructs a System from opts, filling unset dependencies with the
@@ -424,6 +430,7 @@ func New(opts Options) *System {
 		grader: opts.Grader,
 
 		queryPlanner: opts.QueryPlanner,
+		compressor:   opts.Compressor,
 	}
 	// Build the per-stage counting models. A nil opts.Model stays nil so
 	// Ask still returns ErrModelRequired; both s.model and s.reflectionModel
@@ -515,4 +522,14 @@ func (s *System) effectiveQueryPlanner() QueryPlanner {
 		return NoopQueryPlanner{}
 	}
 	return s.queryPlanner
+}
+
+// effectiveCompressor returns the configured Compressor, or a
+// compress.NoopCompressor when none was set, so the compression stage is
+// always callable and defaults to a no-op. Mirrors effectiveQueryPlanner.
+func (s *System) effectiveCompressor() compress.Compressor {
+	if s.compressor == nil {
+		return compress.NoopCompressor{}
+	}
+	return s.compressor
 }

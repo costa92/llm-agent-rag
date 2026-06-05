@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"github.com/costa92/llm-agent-rag/compress"
 	"github.com/costa92/llm-agent-rag/embed"
 	"github.com/costa92/llm-agent-rag/generate"
 	"github.com/costa92/llm-agent-rag/graph"
@@ -35,6 +36,7 @@ type SearchOptions struct {
 	EnableGraph                  bool           // EnableGraph turns on graph retrieval.
 	EnableTreeExpansion          bool           // EnableTreeExpansion turns on document-tree neighbor expansion.
 	ExpansionDepth               int            // ExpansionDepth bounds tree-expansion depth.
+	EnableCompression            bool           // EnableCompression turns on contextual compression of retrieved chunks.
 }
 
 // ReflectionMode selects how Ask evaluates whether to stop, continue, or
@@ -293,4 +295,9 @@ type Options struct {
 	// active retrieval then degrades to a no-op without breaking the
 	// Ask call.
 	QueryPlanner QueryPlanner
+	// Compressor, when set, shrinks retrieved chunk content to
+	// query-relevant material between rerank and pack on a System.Ask run
+	// that sets SearchOptions.EnableCompression. A nil Compressor defaults
+	// to compress.NoopCompressor (no compression).
+	Compressor compress.Compressor
 }
