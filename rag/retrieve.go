@@ -49,6 +49,7 @@ func (s *System) retrieve(ctx context.Context, query string, opts SearchOptions)
 		EnableMQE:                    opts.EnableMQE,
 		EnableHyDE:                   opts.EnableHyDE,
 		MQECount:                     opts.MQECount,
+		EnableStepBack:               opts.EnableStepBack,
 		EnableStructure:              opts.EnableStructure,
 		EnableGraph:                  opts.EnableGraph,
 		EnableTreeExpansion:          opts.EnableTreeExpansion,

@@ -30,6 +30,7 @@ type SearchOptions struct {
 	EnableMQE                    bool           // EnableMQE turns on multi-query expansion.
 	EnableHyDE                   bool           // EnableHyDE turns on hypothetical-document expansion.
 	MQECount                     int            // MQECount is the number of expansion queries to generate.
+	EnableStepBack               bool           // EnableStepBack turns on step-back (higher-level) query expansion.
 	EnableRerank                 bool           // EnableRerank turns on reranking of retrieved hits.
 	EnableStructure              bool           // EnableStructure turns on structure-aware retrieval.
 	EnableGraph                  bool           // EnableGraph turns on graph retrieval.
