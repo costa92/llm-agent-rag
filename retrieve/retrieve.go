@@ -40,6 +40,7 @@ type Request struct {
 	EnableMQE                    bool           // EnableMQE turns on multi-query expansion.
 	EnableHyDE                   bool           // EnableHyDE turns on hypothetical-document expansion.
 	MQECount                     int            // MQECount is the number of expansion queries to generate.
+	EnableStepBack               bool           // EnableStepBack turns on step-back (higher-level) query expansion.
 	EnableStructure              bool           // EnableStructure turns on structure-aware retrieval.
 	EnableGraph                  bool           // EnableGraph turns on graph retrieval.
 	EnableTreeExpansion          bool           // EnableTreeExpansion turns on document-tree neighbor expansion.
@@ -259,6 +260,16 @@ func (p LLMExpansionPreprocessor) Process(ctx context.Context, req Request) (Pre
 			return PreprocessResult{}, err
 		}
 		variants = appendUniqueQueries(variants, hypo)
+	}
+	if req.EnableStepBack {
+		if p.Model == nil {
+			return PreprocessResult{}, advanced.ErrModelRequired
+		}
+		stepback, err := advanced.GenerateStepBack(ctx, p.Model, req.Query)
+		if err != nil {
+			return PreprocessResult{}, err
+		}
+		variants = appendUniqueQueries(variants, stepback)
 	}
 	if len(variants) == 0 {
 		variants = []string{req.Query}

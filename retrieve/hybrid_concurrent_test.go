@@ -255,4 +255,3 @@ func TestHybridRetriever_TracePathsPreserved(t *testing.T) {
 		t.Fatalf("Graph.MaxHop = %d, want 2 (from Graph)", trace.Graph.MaxHop)
 	}
 }
-
