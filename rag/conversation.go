@@ -27,8 +27,10 @@ func (c LLMCondenser) Condense(ctx context.Context, history []generate.Message, 
 	return advanced.CondenseQuery(ctx, c.Model, history, question)
 }
 
-// passthroughCondenser returns the question unchanged. It is the default when
-// no model is configured, so AskConversation degrades to plain Ask.
+// passthroughCondenser returns the question unchanged. It is the
+// effectiveCondenser fallback when no model is configured. (AskConversation
+// itself still requires a model and returns ErrModelRequired when none is set,
+// so this fallback is reached only via an explicit Options.QueryCondenser.)
 type passthroughCondenser struct{}
 
 // Condense returns question unchanged.
