@@ -69,3 +69,39 @@ Question: %s`, query)
 	}
 	return strings.TrimSpace(resp.Text), nil
 }
+
+// CondenseQuery rewrites question into a standalone retrieval query using the
+// conversation history, resolving pronouns and omitted context. With empty
+// history it returns question unchanged without calling the model. An empty
+// model reply also falls back to the original question.
+func CondenseQuery(ctx context.Context, model generate.Model, history []generate.Message, question string) (string, error) {
+	if len(history) == 0 {
+		return question, nil
+	}
+	if model == nil {
+		return "", ErrModelRequired
+	}
+	var hist strings.Builder
+	for _, m := range history {
+		hist.WriteString(m.Role)
+		hist.WriteString(": ")
+		hist.WriteString(m.Content)
+		hist.WriteString("\n")
+	}
+	prompt := fmt.Sprintf(`Given the conversation history, rewrite the latest question into a standalone, complete retrieval query that resolves any pronouns or omitted context. If no rewrite is needed, return the question unchanged. Output only the rewritten question, no commentary.
+
+Conversation history:
+%sLatest question: %s`, hist.String(), question)
+
+	resp, err := model.Generate(ctx, generate.Request{
+		Messages: []generate.Message{{Role: "user", Content: prompt}},
+	})
+	if err != nil {
+		return "", err
+	}
+	out := strings.TrimSpace(resp.Text)
+	if out == "" {
+		return question, nil
+	}
+	return out, nil
+}
