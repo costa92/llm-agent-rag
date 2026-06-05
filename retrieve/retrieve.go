@@ -229,12 +229,13 @@ func (NoopPreprocessor) Process(_ context.Context, req Request) (PreprocessResul
 }
 
 // LLMExpansionPreprocessor is a QueryPreprocessor that uses an LLM to expand
-// the query via multi-query expansion and HyDE when the request enables them.
+// the query via multi-query expansion, HyDE, and step-back prompting when the
+// request enables them.
 type LLMExpansionPreprocessor struct {
 	Model generate.Model // Model generates the expansion queries.
 }
 
-// Process expands req's query with MQE and HyDE variants when enabled.
+// Process expands req's query with MQE, HyDE, and step-back variants when enabled.
 func (p LLMExpansionPreprocessor) Process(ctx context.Context, req Request) (PreprocessResult, error) {
 	variants := uniqueQueries(req.Query)
 	if req.EnableMQE {
